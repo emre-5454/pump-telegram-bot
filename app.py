@@ -8,7 +8,7 @@ CHAT_ID = "6977265844"
 
 @app.route('/', methods=['POST'])
 def webhook():
-    data = request.json
+    data =request.get_json(silent=True) or request.data.decode("utf-8") or "TradingView alarmı geldi"
     
     message = f"ALARM GELDİ 🚨\n\n{data}"
     
