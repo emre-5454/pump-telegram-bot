@@ -98,7 +98,6 @@ def main():
 
         time.sleep(60)
 
-main()
 import threading
 import os
 
