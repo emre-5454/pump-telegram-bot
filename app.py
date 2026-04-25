@@ -1,10 +1,13 @@
+from flask import Flask
 import ccxt
 import requests
 import time
+import threading
 import os
-from flask import Flask
+
 app = Flask(__name__)
-TELEGRAM_TOKEN = ""8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 exchange = ccxt.mexc({
@@ -22,9 +25,16 @@ COOLDOWN = 30 * 60
 
 sent = {}
 
+@app.route("/")
+def home():
+    return "MEXC pump scanner çalışıyor", 200
+
 def telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    try:
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    except Exception as e:
+        print("Telegram hata:", e)
 
 def get_symbols():
     markets = exchange.load_markets()
@@ -54,7 +64,6 @@ def scan(symbol):
 
     start_price = opens[-3]
     last_price = closes[-1]
-
     price_change = ((last_price - start_price) / start_price) * 100
 
     if recent_volume < MIN_USDT_VOLUME:
@@ -68,8 +77,7 @@ def scan(symbol):
 
         sent[symbol] = now
 
-        msg = f"""
-🚨 MEXC PARA GİRİŞİ
+        msg = f"""🚨 MEXC PARA GİRİŞİ
 
 Coin: {symbol}
 Fiyat: {last_price}
@@ -82,25 +90,25 @@ Son 15dk Hacim: {recent_volume:,.0f} USDT
 - Üst direnç yakın mı?
 - Hacim devam ediyor mu?
 """
-
         telegram(msg)
 
 def main():
     telegram("✅ MEXC pump scanner başladı hocam.")
 
-    symbols = get_symbols()
-
     while True:
-        for symbol in symbols:
-            try:
-                scan(symbol)
-            except Exception as e:
-                print(symbol, e)
+        try:
+            symbols = get_symbols()
+            print(f"{len(symbols)} coin taranıyor...")
+            for symbol in symbols:
+                try:
+                    scan(symbol)
+                except Exception as e:
+                    print(symbol, e)
+
+        except Exception as e:
+            print("Ana tarama hatası:", e)
 
         time.sleep(60)
-
-import threading
-import os
 
 if __name__ == "__main__":
     threading.Thread(target=main, daemon=True).start()
