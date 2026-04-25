@@ -11,15 +11,9 @@ CHAT_ID = "6977265844"
 def webhook():
     if request.method == 'GET':
         return "OK", 200
-data = request.get_json(silent=True)
+data = request.data.decode("utf-8") or "TradingView alarmı geldi"
 
-if data:
-    coin = data.get("coin", "Bilinmiyor")
-    price = data.get("price", "Yok")
-
-    message = f"🚨 ALARM GELDİ\n\nCoin: {coin}\nFiyat: {price}"
-else:
-    message = "🚨 TradingView alarmı geldi (veri boş)"
+message = f"🚨 ALARM GELDİ\n\n{data}"
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
