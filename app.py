@@ -2,7 +2,8 @@ import ccxt
 import requests
 import time
 import os
-
+from flask import Flask
+app = Flask(__name__)
 TELEGRAM_TOKEN = "BURAYA_TOKEN"
 CHAT_ID = "6977265844"
 
