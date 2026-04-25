@@ -9,7 +9,13 @@ CHAT_ID = "6977265844"
   
 @app.route('/', methods=['POST'])
 def webhook():
-    data =request.get_json(silent=True) or request.data.decode("utf-8") or "TradingView alarmı geldi"  
+@app.route('/', methods=['GET', 'POST'])
+def webhook():
+    if request.method == 'GET':
+        return "OK", 200
+
+    data = request.get_json(silent=True) or request.data.decode("utf-8") or "TradingView alarmı geldi"
+
     message = f"ALARM GELDİ 🚨\n\n{data}"
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
