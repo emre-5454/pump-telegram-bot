@@ -26,7 +26,7 @@ def scan():
     while True:
         try:
             tickers = exchange.fetch_tickers()
-
+sent_coins = set()
             for coin, data in tickers.items():
                 if "/USDT" not in coin:
                     continue
@@ -35,7 +35,10 @@ def scan():
                 change = data.get("percentage") or 0
                 price = data.get("last") or 0
 
-                if volume > MIN_USDT_VOLUME and change > MIN_PRICE_CHANGE:
+                if (
+    volume > 15000000
+    and change > 5
+):
                     msg = f"""🚨 BINANCE PARA GİRİŞİ
 
 Coin: {coin}
