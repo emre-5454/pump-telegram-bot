@@ -10,12 +10,12 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-exchange = ccxt.binance({
-    "enableRateLimit": True
-})
+exchange = ccxt.binance({"enableRateLimit": True})
 
-MIN_USDT_VOLUME = 100000
-MIN_PRICE_CHANGE = 0.5
+MIN_USDT_VOLUME = 15_000_000
+MIN_PRICE_CHANGE = 5
+COOLDOWN_SECONDS = 60 * 60
+sent_coins = {}
 
 def telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -26,7 +26,8 @@ def scan():
     while True:
         try:
             tickers = exchange.fetch_tickers()
-sent_coins = set()
+            now = time.time()
+
             for coin, data in tickers.items():
                 if "/USDT" not in coin:
                     continue
@@ -35,10 +36,15 @@ sent_coins = set()
                 change = data.get("percentage") or 0
                 price = data.get("last") or 0
 
+                last_sent = sent_coins.get(coin, 0)
+
                 if (
-    volume > 15000000
-    and change > 5
-):
+                    volume > MIN_USDT_VOLUME
+                    and change > MIN_PRICE_CHANGE
+                    and now - last_sent > COOLDOWN_SECONDS
+                ):
+                    sent_coins[coin] = now
+
                     msg = f"""🚨 BINANCE PARA GİRİŞİ
 
 Coin: {coin}
