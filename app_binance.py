@@ -77,7 +77,7 @@ def scan(symbol):
 
         sent[symbol] = now
 
-        msg = f"""🚨 MEXC PARA GİRİŞİ
+        msg = f"""🚨 BİNANCE PARA GİRİŞİ
 
 Coin: {symbol}
 Fiyat: {last_price}
