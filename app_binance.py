@@ -7,7 +7,7 @@ import os
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = "TOKEN_BURAYA"
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 exchange = ccxt.binance({
