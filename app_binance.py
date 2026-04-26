@@ -27,7 +27,7 @@ sent = {}
 
 @app.route("/")
 def home():
-    return "MEXC pump scanner çalışıyor", 200
+    return "BİNANCE pump scanner çalışıyor", 200
 
 def telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -93,7 +93,7 @@ Son 15dk Hacim: {recent_volume:,.0f} USDT
         telegram(msg)
 
 def main():
-    telegram("✅ MEXC pump scanner başladı hocam.")
+    telegram("✅ BİNANCE pump scanner başladı hocam.")
 
     while True:
         try:
