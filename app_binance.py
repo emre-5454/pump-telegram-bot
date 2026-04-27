@@ -1,30 +1,16 @@
 from flask import Flask
-import ccxt
-import requests
-import time
-import threading
-import os
+import requests, time, threading, os
 
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
-exchange = ccxt.binance({
-    "enableRateLimit": True,
-    "options": {
-        "defaultType": "spot",
-        "defaultSubType": "spot"
-    }
-})
-TIMEFRAME = "5m"
-LIMIT = 6
 
 MIN_LAST_VOLUME_USDT = 100_000
 MIN_VOLUME_MULTIPLIER = 3
 MIN_PRICE_CHANGE_15M = 0.8
 MAX_PRICE_CHANGE_15M = 4
 COOLDOWN_SECONDS = 60 * 60
-
 HEARTBEAT_SECONDS = 10 * 60
 
 sent_coins = {}
@@ -33,8 +19,17 @@ def telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
+def get_symbols():
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    data = requests.get(url, timeout=15).json()
+    return [
+        s["symbol"] for s in data["symbols"]
+        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+    ]
+
 def scan_symbol(symbol):
-    candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=6"
+    candles = requests.get(url, timeout=15).json()
 
     if len(candles) < 6:
         return None
@@ -42,13 +37,13 @@ def scan_symbol(symbol):
     last = candles[-1]
     prev = candles[-4:-1]
 
-    open_15m = prev[0][1]
-    close_now = last[4]
+    open_15m = float(prev[0][1])
+    close_now = float(last[4])
 
     change_15m = ((close_now - open_15m) / open_15m) * 100
 
-    last_volume_usdt = last[5] * close_now
-    avg_prev_volume_usdt = sum(c[5] * c[4] for c in prev) / len(prev)
+    last_volume_usdt = float(last[5]) * close_now
+    avg_prev_volume_usdt = sum(float(c[5]) * float(c[4]) for c in prev) / len(prev)
 
     if avg_prev_volume_usdt == 0:
         return None
@@ -62,7 +57,7 @@ def scan_symbol(symbol):
         and change_15m < MAX_PRICE_CHANGE_15M
     ):
         return {
-            "symbol": symbol,
+            "symbol": symbol.replace("USDT", "/USDT"),
             "price": close_now,
             "change": change_15m,
             "volume": last_volume_usdt,
@@ -74,12 +69,7 @@ def scan_symbol(symbol):
 def scan():
     telegram("✅ BINANCE erken pump scanner başladı hocam.")
 
-    markets = exchange.load_markets()
-    symbols = [
-        s for s in markets
-        if s.endswith("/USDT") and markets[s].get("spot")
-    ]
-
+    symbols = get_symbols()
     last_heartbeat = 0
 
     while True:
@@ -91,9 +81,7 @@ def scan():
 
         for symbol in symbols:
             try:
-                last_sent = sent_coins.get(symbol, 0)
-
-                if now - last_sent < COOLDOWN_SECONDS:
+                if now - sent_coins.get(symbol, 0) < COOLDOWN_SECONDS:
                     continue
 
                 result = scan_symbol(symbol)
