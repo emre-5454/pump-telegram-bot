@@ -12,61 +12,106 @@ CHAT_ID = "6977265844"
 
 exchange = ccxt.binance({"enableRateLimit": True})
 
-MIN_USDT_VOLUME = 15_000_000
-MIN_PRICE_CHANGE = 5
+TIMEFRAME = "5m"
+LIMIT = 6
+
+MIN_LAST_VOLUME_USDT = 100_000
+MIN_VOLUME_MULTIPLIER = 3
+MIN_PRICE_CHANGE_15M = 0.8
+MAX_PRICE_CHANGE_15M = 4
 COOLDOWN_SECONDS = 60 * 60
+
 sent_coins = {}
 
 def telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-def scan():
-    telegram("✅ BINANCE pump scanner başladı hocam.")
-    while True:
-        try:
-            tickers = exchange.fetch_tickers()
-            now = time.time()
+def scan_symbol(symbol):
+    candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
 
-            for coin, data in tickers.items():
-                if "/USDT" not in coin:
+    if len(candles) < 6:
+        return
+
+    last = candles[-1]
+    prev = candles[-4:-1]
+
+    open_15m = prev[0][1]
+    close_now = last[4]
+
+    change_15m = ((close_now - open_15m) / open_15m) * 100
+
+    last_volume_usdt = last[5] * close_now
+    avg_prev_volume_usdt = sum(c[5] * c[4] for c in prev) / len(prev)
+
+    if avg_prev_volume_usdt == 0:
+        return
+
+    volume_multiplier = last_volume_usdt / avg_prev_volume_usdt
+
+    if (
+        last_volume_usdt > MIN_LAST_VOLUME_USDT
+        and volume_multiplier > MIN_VOLUME_MULTIPLIER
+        and change_15m > MIN_PRICE_CHANGE_15M
+        and change_15m < MAX_PRICE_CHANGE_15M
+    ):
+        return {
+            "symbol": symbol,
+            "price": close_now,
+            "change": change_15m,
+            "volume": last_volume_usdt,
+            "multiplier": volume_multiplier
+        }
+
+def scan():
+    telegram("✅ BINANCE erken pump scanner başladı hocam.")
+
+    markets = exchange.load_markets()
+    symbols = [
+        s for s in markets
+        if s.endswith("/USDT") and markets[s].get("spot")
+    ]
+
+    while True:
+        now = time.time()
+
+        for symbol in symbols:
+            try:
+                last_sent = sent_coins.get(symbol, 0)
+
+                if now - last_sent < COOLDOWN_SECONDS:
                     continue
 
-                volume = data.get("quoteVolume") or 0
-                change = data.get("percentage") or 0
-                price = data.get("last") or 0
+                result = scan_symbol(symbol)
 
-                last_sent = sent_coins.get(coin, 0)
+                if result:
+                    sent_coins[symbol] = now
 
-                if (
-                    volume > MIN_USDT_VOLUME
-                    and change > MIN_PRICE_CHANGE
-                    and now - last_sent > COOLDOWN_SECONDS
-                ):
-                    sent_coins[coin] = now
+                    msg = f"""🚨 BINANCE ERKEN PARA GİRİŞİ
 
-                    msg = f"""🚨 BINANCE PARA GİRİŞİ
-
-Coin: {coin}
-Fiyat: {price}
-24s Değişim: %{round(change, 2)}
-24s Hacim: {round(volume):,} USDT
+Coin: {result['symbol']}
+Fiyat: {result['price']}
+Son 15dk Değişim: %{round(result['change'], 2)}
+Son 5dk Hacim: {round(result['volume']):,} USDT
+Hacim Artışı: {round(result['multiplier'], 2)}x
 
 ⚠️ Kontrol:
-- 5m mum güçlü mü?
-- Üst direnç yakın mı?
+- 5m mum direnç kırıyor mu?
+- Fitil mi bıraktı?
 - Hacim devam ediyor mu?"""
                     telegram(msg)
 
-            time.sleep(60)
+                time.sleep(0.2)
 
-        except Exception as e:
-            print("Hata:", e)
-            time.sleep(20)
+            except Exception as e:
+                print(symbol, e)
+                continue
+
+        time.sleep(60)
 
 @app.route("/")
 def home():
-    return "BINANCE bot aktif"
+    return "BINANCE erken pump bot aktif"
 
 if __name__ == "__main__":
     threading.Thread(target=scan, daemon=True).start()
