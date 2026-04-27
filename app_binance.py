@@ -21,6 +21,8 @@ MIN_PRICE_CHANGE_15M = 0.8
 MAX_PRICE_CHANGE_15M = 4
 COOLDOWN_SECONDS = 60 * 60
 
+HEARTBEAT_SECONDS = 10 * 60
+
 sent_coins = {}
 
 def telegram(msg):
@@ -31,7 +33,7 @@ def scan_symbol(symbol):
     candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
 
     if len(candles) < 6:
-        return
+        return None
 
     last = candles[-1]
     prev = candles[-4:-1]
@@ -45,7 +47,7 @@ def scan_symbol(symbol):
     avg_prev_volume_usdt = sum(c[5] * c[4] for c in prev) / len(prev)
 
     if avg_prev_volume_usdt == 0:
-        return
+        return None
 
     volume_multiplier = last_volume_usdt / avg_prev_volume_usdt
 
@@ -63,6 +65,8 @@ def scan_symbol(symbol):
             "multiplier": volume_multiplier
         }
 
+    return None
+
 def scan():
     telegram("✅ BINANCE erken pump scanner başladı hocam.")
 
@@ -72,8 +76,14 @@ def scan():
         if s.endswith("/USDT") and markets[s].get("spot")
     ]
 
+    last_heartbeat = 0
+
     while True:
         now = time.time()
+
+        if now - last_heartbeat > HEARTBEAT_SECONDS:
+            telegram("🟢 BINANCE bot çalışıyor hocam")
+            last_heartbeat = now
 
         for symbol in symbols:
             try:
@@ -111,7 +121,7 @@ Hacim Artışı: {round(result['multiplier'], 2)}x
 
 @app.route("/")
 def home():
-    return "BINANCE erken pump bot aktif"
+    return "BINANCE erken pump bot aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=scan, daemon=True).start()
