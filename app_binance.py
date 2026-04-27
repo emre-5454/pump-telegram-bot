@@ -1,5 +1,8 @@
 from flask import Flask
-import requests, time, threading, os
+import requests
+import time
+import threading
+import os
 
 app = Flask(__name__)
 
@@ -11,13 +14,13 @@ MIN_VOLUME_MULTIPLIER = 3
 MIN_PRICE_CHANGE_15M = 0.8
 MAX_PRICE_CHANGE_15M = 4
 COOLDOWN_SECONDS = 60 * 60
-HEARTBEAT_SECONDS = 10 * 60
+HEARTBEAT_SECONDS = 30 * 60
 
 sent_coins = {}
 
 def telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
 
 def get_symbols():
     url = "https://api.binance.com/api/v3/exchangeInfo"
@@ -67,29 +70,28 @@ def scan_symbol(symbol):
     return None
 
 def scan():
-    telegram("✅ BINANCE erken pump scanner başladı hocam.")
-
     symbols = get_symbols()
     last_heartbeat = 0
 
     while True:
-        now = time.time()
+        try:
+            now = time.time()
 
-        if now - last_heartbeat > HEARTBEAT_SECONDS:
-            telegram("🟢 BINANCE bot çalışıyor hocam")
-            last_heartbeat = now
+            if now - last_heartbeat > HEARTBEAT_SECONDS:
+                telegram("🟢 BINANCE bot çalışıyor hocam")
+                last_heartbeat = now
 
-        for symbol in symbols:
-            try:
-                if now - sent_coins.get(symbol, 0) < COOLDOWN_SECONDS:
-                    continue
+            for symbol in symbols:
+                try:
+                    if now - sent_coins.get(symbol, 0) < COOLDOWN_SECONDS:
+                        continue
 
-                result = scan_symbol(symbol)
+                    result = scan_symbol(symbol)
 
-                if result:
-                    sent_coins[symbol] = now
+                    if result:
+                        sent_coins[symbol] = now
 
-                    msg = f"""🚨 BINANCE ERKEN PARA GİRİŞİ
+                        msg = f"""🚨 BINANCE ERKEN PARA GİRİŞİ
 
 Coin: {result['symbol']}
 Fiyat: {result['price']}
@@ -101,15 +103,19 @@ Hacim Artışı: {round(result['multiplier'], 2)}x
 - 5m mum direnç kırıyor mu?
 - Fitil mi bıraktı?
 - Hacim devam ediyor mu?"""
-                    telegram(msg)
+                        telegram(msg)
 
-                time.sleep(0.2)
+                    time.sleep(0.2)
 
-            except Exception as e:
-                print(symbol, e)
-                continue
+                except Exception as e:
+                    print("COIN HATA:", symbol, e)
+                    continue
 
-        time.sleep(60)
+            time.sleep(60)
+
+        except Exception as e:
+            print("GENEL HATA:", e)
+            time.sleep(10)
 
 @app.route("/")
 def home():
