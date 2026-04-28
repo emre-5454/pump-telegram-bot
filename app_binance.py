@@ -7,33 +7,33 @@ import os
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-CHAT_ID = "6977265844"
+CHAT_ID = "CHAT_ID"
 
-MIN_LAST_VOLUME_USDT = 1_500_000
-MIN_VOLUME_MULTIPLIER = 4
-MIN_PRICE_CHANGE_15M = 0.3
-MAX_PRICE_CHANGE_15M = 2
-COOLDOWN_SECONDS = 60 * 60
-HEARTBEAT_SECONDS = 30 * 60
+# AYARLAR
+MIN_VOLUME = 1_500_000
+VOLUME_MULTIPLIER = 3
+PREP_MAX_CHANGE = 2
+PUMP_MIN_CHANGE = 3.5
+
+COOLDOWN = 60 * 60
+HEARTBEAT = 60 * 30
 
 sent_coins = {}
 
 def telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 def get_symbols():
-    url = "https://api.binance.com/api/v3/exchangeInfo"
-    data = requests.get(url, timeout=15).json()
-    return [
-        s["symbol"] for s in data["symbols"]
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
-    ]
+    data = requests.get("https://api.binance.com/api/v3/exchangeInfo").json()
+    return [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"]
 
-def scan_symbol(symbol):
+def get_klines(symbol):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=12"
-    candles = requests.get(url, timeout=15).json()
+    return requests.get(url).json()
 
+def analyze(symbol):
+    candles = get_klines(symbol)
     if len(candles) < 12:
         return None
 
@@ -43,29 +43,26 @@ def scan_symbol(symbol):
     open_15m = float(candles[-4][1])
     close_now = float(last[4])
 
-    change_15m = ((close_now - open_15m) / open_15m) * 100
+    change = ((close_now - open_15m) / open_15m) * 100
 
-    last_volume_usdt = float(last[5]) * close_now
-    avg_prev_volume_usdt = sum(float(c[5]) * float(c[4]) for c in prev) / len(prev)
+    last_volume = float(last[5]) * close_now
+    avg_volume = sum(float(c[5]) * float(c[4]) for c in prev) / len(prev)
 
-    if avg_prev_volume_usdt == 0:
+    if avg_volume == 0:
         return None
 
-    volume_multiplier = last_volume_usdt / avg_prev_volume_usdt
+    multiplier = last_volume / avg_volume
 
-    if (
-        last_volume_usdt > MIN_LAST_VOLUME_USDT
-        and volume_multiplier > MIN_VOLUME_MULTIPLIER
-        and change_15m > MIN_PRICE_CHANGE_15M
-        and change_15m < MAX_PRICE_CHANGE_15M
-    ):
-        return {
-            "symbol": symbol.replace("USDT", "/USDT"),
-            "price": close_now,
-            "change": change_15m,
-            "volume": last_volume_usdt,
-            "multiplier": volume_multiplier
-        }
+    if last_volume < MIN_VOLUME or multiplier < VOLUME_MULTIPLIER:
+        return None
+
+    # 🟡 ÖN HAZIRLIK
+    if change < PREP_MAX_CHANGE:
+        return ("prep", symbol, close_now, change, last_volume, multiplier)
+
+    # 🔴 PUMP
+    if change > PUMP_MIN_CHANGE:
+        return ("pump", symbol, close_now, change, last_volume, multiplier)
 
     return None
 
@@ -73,54 +70,67 @@ def scan():
     symbols = get_symbols()
     last_heartbeat = 0
 
+    telegram("🚀 BINANCE PRO BOT başladı hocam")
+
     while True:
         try:
             now = time.time()
 
-            if now - last_heartbeat > HEARTBEAT_SECONDS:
-                telegram("🟢 BINANCE bot çalışıyor hocam")
+            if now - last_heartbeat > HEARTBEAT:
+                telegram("🟢 Bot çalışıyor hocam")
                 last_heartbeat = now
 
             for symbol in symbols:
                 try:
-                    if now - sent_coins.get(symbol, 0) < COOLDOWN_SECONDS:
+                    if now - sent_coins.get(symbol, 0) < COOLDOWN:
                         continue
 
-                    result = scan_symbol(symbol)
+                    result = analyze(symbol)
 
                     if result:
+                        typ, sym, price, change, volume, mult = result
+
                         sent_coins[symbol] = now
 
-                        msg = f"""🟡 BINANCE ÖN HAZIRLIK
+                        if typ == "prep":
+                            msg = f"""🟡 ÖN HAZIRLIK
 
-Coin: {result['symbol']}
-Fiyat: {result['price']}
-Son 15dk Değişim: %{round(result['change'], 2)}
-Son 5dk Hacim: {round(result['volume']):,} USDT
-Hacim Artışı: {round(result['multiplier'], 2)}x
+Coin: {sym.replace("USDT","/USDT")}
+Fiyat: {price}
+15dk Değişim: %{round(change,2)}
+Hacim: {round(volume):,}
+Hacim Artışı: {round(mult,2)}x
 
-⚠️ Kontrol:
-- Fiyat sıkışmadan çıkıyor mu?
-- 5m mum güçlü mü?
-- Fitil bırakıyor mu?
-- Hacim devam ediyor mu?"""
+⚠️ Pump hazırlığı olabilir"""
+
+                        elif typ == "pump":
+                            msg = f"""🔴 PUMP BAŞLADI
+
+Coin: {sym.replace("USDT","/USDT")}
+Fiyat: {price}
+15dk Değişim: %{round(change,2)}
+Hacim: {round(volume):,}
+Hacim Artışı: {round(mult,2)}x
+
+🚀 Hareket başladı dikkat"""
+
                         telegram(msg)
 
-                    time.sleep(0.25)
+                    time.sleep(0.2)
 
                 except Exception as e:
-                    print("COIN HATA:", symbol, e)
+                    print("Coin hata:", e)
                     continue
 
             time.sleep(60)
 
         except Exception as e:
-            print("GENEL HATA:", e)
+            print("Genel hata:", e)
             time.sleep(10)
 
 @app.route("/")
 def home():
-    return "BINANCE ön hazırlık bot aktif", 200
+    return "PRO BOT çalışıyor hocam"
 
 if __name__ == "__main__":
     threading.Thread(target=scan, daemon=True).start()
