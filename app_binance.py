@@ -35,6 +35,53 @@ def get_klines(symbol):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=12"
     return requests.get(url, timeout=15).json()
 
+def score_signal(signal_type, change, volume, multiplier, body_ratio):
+    score = 0
+
+    if multiplier >= 3:
+        score += 2
+    if multiplier >= 6:
+        score += 1
+
+    if volume >= 1_500_000:
+        score += 1
+    if volume >= 5_000_000:
+        score += 1
+
+    if change > 0:
+        score += 2
+    if change > 1:
+        score += 1
+
+    if body_ratio >= 0.55:
+        score += 2
+
+    if signal_type == "pump":
+        score += 2
+    elif signal_type == "buy_prep":
+        score += 1
+    elif signal_type == "sell_pressure":
+        score -= 3
+    elif signal_type == "neutral":
+        score -= 1
+
+    if score < 0:
+        score = 0
+    if score > 10:
+        score = 10
+
+    return score
+
+def score_text(score):
+    if score >= 8:
+        return "🟢 GÜÇLÜ SİNYAL"
+    elif score >= 6:
+        return "🟡 TAKİP EDİLEBİLİR"
+    elif score >= 4:
+        return "⚪ ZAYIF / İZLE"
+    else:
+        return "🔴 UZAK DUR"
+
 def analyze(symbol):
     candles = get_klines(symbol)
 
@@ -64,31 +111,41 @@ def analyze(symbol):
 
     candle_range = last_high - last_low
     body = abs(last_close - last_open)
-
-    if candle_range == 0:
-        body_ratio = 0
-    else:
-        body_ratio = body / candle_range
+    body_ratio = body / candle_range if candle_range > 0 else 0
 
     if last_volume < MIN_VOLUME or multiplier < VOLUME_MULTIPLIER:
         return None
 
     if change > PUMP_MIN_CHANGE and last_close > last_open:
-        return ("pump", symbol, close_now, change, last_volume, multiplier, body_ratio)
+        signal_type = "pump"
+    elif 0 < change < PREP_MAX_CHANGE and last_close > last_open:
+        signal_type = "buy_prep"
+    elif change < SELL_MIN_CHANGE or last_close < last_open:
+        signal_type = "sell_pressure"
+    else:
+        signal_type = "neutral"
 
-    if 0 < change < PREP_MAX_CHANGE and last_close > last_open:
-        return ("buy_prep", symbol, close_now, change, last_volume, multiplier, body_ratio)
+    score = score_signal(signal_type, change, last_volume, multiplier, body_ratio)
 
-    if change < SELL_MIN_CHANGE or last_close < last_open:
-        return ("sell_pressure", symbol, close_now, change, last_volume, multiplier, body_ratio)
+    if score < 4:
+        return None
 
-    return ("neutral", symbol, close_now, change, last_volume, multiplier, body_ratio)
+    return {
+        "type": signal_type,
+        "symbol": symbol,
+        "price": close_now,
+        "change": change,
+        "volume": last_volume,
+        "multiplier": multiplier,
+        "body_ratio": body_ratio,
+        "score": score
+    }
 
 def scan():
     symbols = get_symbols()
     last_heartbeat = 0
 
-    telegram("🚀 BINANCE yön ayıran PRO BOT başladı hocam")
+    telegram("🚀 BINANCE SKORLU PRO BOT başladı hocam")
 
     while True:
         try:
@@ -106,33 +163,35 @@ def scan():
                     result = analyze(symbol)
 
                     if result:
-                        typ, sym, price, change, volume, mult, body_ratio = result
                         sent_coins[symbol] = now
+
+                        typ = result["type"]
+                        score = result["score"]
 
                         if typ == "buy_prep":
                             title = "🟡 ALIM HAZIRLIĞI"
                             note = "Hacim artıyor + fiyat yukarı dönüyor. Pump hazırlığı olabilir."
-
                         elif typ == "pump":
                             title = "🔴 PUMP BAŞLADI"
                             note = "Fiyat güçlü hareket ediyor. FOMO yapmadan retest kontrol et."
-
                         elif typ == "sell_pressure":
                             title = "🔻 SATIŞ BASKISI"
                             note = "Hacim artıyor ama fiyat düşüyor. Dump / likidite temizliği olabilir."
-
                         else:
                             title = "⚪ KARARSIZ HACİM"
                             note = "Hacim var ama yön net değil. İzle, direkt işlem yok."
 
                         msg = f"""{title}
 
-Coin: {sym.replace("USDT","/USDT")}
-Fiyat: {price}
-15dk Değişim: %{round(change, 2)}
-Hacim: {round(volume):,}
-Hacim Artışı: {round(mult, 2)}x
-Mum Gövde Gücü: %{round(body_ratio * 100, 1)}
+Coin: {result['symbol'].replace("USDT","/USDT")}
+Skor: {score}/10
+Durum: {score_text(score)}
+
+Fiyat: {result['price']}
+15dk Değişim: %{round(result['change'], 2)}
+Hacim: {round(result['volume']):,}
+Hacim Artışı: {round(result['multiplier'], 2)}x
+Mum Gövde Gücü: %{round(result['body_ratio'] * 100, 1)}
 
 Not: {note}
 
@@ -158,7 +217,7 @@ Not: {note}
 
 @app.route("/")
 def home():
-    return "BINANCE yön ayıran PRO BOT aktif", 200
+    return "BINANCE skorlu PRO BOT aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=scan, daemon=True).start()
