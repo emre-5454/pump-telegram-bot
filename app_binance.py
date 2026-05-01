@@ -1,225 +1,142 @@
-from flask import Flask
-import requests
-import time
-import threading
-import os
-
-app = Flask(__name__)
+import ccxt, time, requests
+import pandas as pd
+import numpy as np
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-MIN_VOLUME = 1_500_000
-VOLUME_MULTIPLIER = 3
-PREP_MAX_CHANGE = 2
-PUMP_MIN_CHANGE = 3.5
-SELL_MIN_CHANGE = -1.0
+TIMEFRAME = "15m"
+LIMIT = 100
+SLEEP_SECONDS = 60
 
-COOLDOWN = 60 * 60
-HEARTBEAT = 60 * 30
+exchanges = {
+    "BINANCE": ccxt.binance(),
+    "MEXC": ccxt.mexc()
+}
 
-sent_coins = {}
-
-def telegram(msg):
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-def get_symbols():
-    data = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=15).json()
-    return [
-        s["symbol"] for s in data["symbols"]
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
-    ]
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-def get_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=12"
-    return requests.get(url, timeout=15).json()
+def analyze(df):
+    close = df["close"]
+    volume = df["volume"]
 
-def score_signal(signal_type, change, volume, multiplier, body_ratio):
+    ma20 = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+
+    upper = ma20 + 2 * std20
+    lower = ma20 - 2 * std20
+
+    bb_width = (upper - lower) / ma20
+    rsi_val = rsi(close)
+
+    vol_avg = volume.rolling(20).mean()
+    volume_ratio = volume / vol_avg
+
+    last = df.iloc[-1]
+
     score = 0
 
-    if multiplier >= 3:
+    bb_squeeze = bb_width.iloc[-1] < 0.08
+    vol_early = volume_ratio.iloc[-1] > 1.5
+    vol_pump = volume_ratio.iloc[-1] > 2
+    rsi_early = rsi_val.iloc[-1] > 45
+    rsi_pump = rsi_val.iloc[-1] > 50
+    above_mid = close.iloc[-1] > ma20.iloc[-1]
+    upper_break = close.iloc[-1] > upper.iloc[-1]
+
+    if bb_squeeze:
         score += 2
-    if multiplier >= 6:
-        score += 1
-
-    if volume >= 1_500_000:
-        score += 1
-    if volume >= 5_000_000:
-        score += 1
-
-    if change > 0:
+    if vol_early:
+        score += 3
+    if rsi_early:
         score += 2
-    if change > 1:
-        score += 1
-
-    if body_ratio >= 0.55:
-        score += 2
-
-    if signal_type == "pump":
-        score += 2
-    elif signal_type == "buy_prep":
-        score += 1
-    elif signal_type == "sell_pressure":
-        score -= 3
-    elif signal_type == "neutral":
-        score -= 1
-
-    if score < 0:
-        score = 0
-    if score > 10:
-        score = 10
-
-    return score
-
-def score_text(score):
-    if score >= 8:
-        return "🟢 GÜÇLÜ SİNYAL"
-    elif score >= 6:
-        return "🟡 TAKİP EDİLEBİLİR"
-    elif score >= 4:
-        return "⚪ ZAYIF / İZLE"
-    else:
-        return "🔴 UZAK DUR"
-
-def analyze(symbol):
-    candles = get_klines(symbol)
-
-    if len(candles) < 12:
-        return None
-
-    last = candles[-1]
-    prev = candles[-7:-1]
-
-    open_15m = float(candles[-4][1])
-    close_now = float(last[4])
-
-    last_open = float(last[1])
-    last_high = float(last[2])
-    last_low = float(last[3])
-    last_close = float(last[4])
-
-    change = ((close_now - open_15m) / open_15m) * 100
-
-    last_volume = float(last[5]) * close_now
-    avg_volume = sum(float(c[5]) * float(c[4]) for c in prev) / len(prev)
-
-    if avg_volume == 0:
-        return None
-
-    multiplier = last_volume / avg_volume
-
-    candle_range = last_high - last_low
-    body = abs(last_close - last_open)
-    body_ratio = body / candle_range if candle_range > 0 else 0
-
-    if last_volume < MIN_VOLUME or multiplier < VOLUME_MULTIPLIER:
-        return None
-
-    if change > PUMP_MIN_CHANGE and last_close > last_open:
-        signal_type = "pump"
-    elif 0 < change < PREP_MAX_CHANGE and last_close > last_open:
-        signal_type = "buy_prep"
-    elif change < SELL_MIN_CHANGE or last_close < last_open:
-        signal_type = "sell_pressure"
-    else:
-        signal_type = "neutral"
-
-    score = score_signal(signal_type, change, last_volume, multiplier, body_ratio)
-
-    if score < 4:
-        return None
+    if upper_break:
+        score += 3
 
     return {
-        "type": signal_type,
-        "symbol": symbol,
-        "price": close_now,
-        "change": change,
-        "volume": last_volume,
-        "multiplier": multiplier,
-        "body_ratio": body_ratio,
-        "score": score
+        "price": close.iloc[-1],
+        "rsi": rsi_val.iloc[-1],
+        "bb_width": bb_width.iloc[-1],
+        "volume_ratio": volume_ratio.iloc[-1],
+        "score": score,
+        "early": bb_squeeze and vol_early and rsi_early and above_mid,
+        "pump": bb_squeeze and vol_pump and rsi_pump and upper_break
     }
 
-def scan():
-    symbols = get_symbols()
-    last_heartbeat = 0
+def get_usdt_pairs(exchange):
+    markets = exchange.load_markets()
+    return [
+        s for s in markets
+        if s.endswith("/USDT") and markets[s].get("active", True)
+    ]
 
-    telegram("🚀 BINANCE SKORLU PRO BOT başladı hocam")
+sent_cache = {}
 
-    while True:
+while True:
+    for ex_name, exchange in exchanges.items():
         try:
-            now = time.time()
+            pairs = get_usdt_pairs(exchange)
 
-            if now - last_heartbeat > HEARTBEAT:
-                telegram("🟢 Bot çalışıyor hocam")
-                last_heartbeat = now
-
-            for symbol in symbols:
+            for symbol in pairs:
                 try:
-                    if now - sent_coins.get(symbol, 0) < COOLDOWN:
-                        continue
+                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
+                    df = pd.DataFrame(
+                        ohlcv,
+                        columns=["time", "open", "high", "low", "close", "volume"]
+                    )
 
-                    result = analyze(symbol)
+                    result = analyze(df)
+                    cache_key = f"{ex_name}-{symbol}"
 
-                    if result:
-                        sent_coins[symbol] = now
+                    if result["pump"] and sent_cache.get(cache_key) != "pump":
+                        msg = f"""
+🚨 PUMP HAZIRLIĞI
 
-                        typ = result["type"]
-                        score = result["score"]
+Borsa: {ex_name}
+Coin: {symbol}
+Fiyat: {result['price']:.6f}
+RSI: {result['rsi']:.2f}
+Hacim Artışı: {result['volume_ratio']:.2f}x
+BB Width: {result['bb_width']:.4f}
+Puan: {result['score']}/10
 
-                        if typ == "buy_prep":
-                            title = "🟡 ALIM HAZIRLIĞI"
-                            note = "Hacim artıyor + fiyat yukarı dönüyor. Pump hazırlığı olabilir."
-                        elif typ == "pump":
-                            title = "🔴 PUMP BAŞLADI"
-                            note = "Fiyat güçlü hareket ediyor. FOMO yapmadan retest kontrol et."
-                        elif typ == "sell_pressure":
-                            title = "🔻 SATIŞ BASKISI"
-                            note = "Hacim artıyor ama fiyat düşüyor. Dump / likidite temizliği olabilir."
-                        else:
-                            title = "⚪ KARARSIZ HACİM"
-                            note = "Hacim var ama yön net değil. İzle, direkt işlem yok."
+Sinyal: ÜST BANT KIRILIM + HACİM
+"""
+                        send_telegram(msg)
+                        sent_cache[cache_key] = "pump"
 
-                        msg = f"""{title}
+                    elif result["early"] and result["score"] >= 5 and sent_cache.get(cache_key) != "early":
+                        msg = f"""
+🟡 ERKEN PARA GİRİŞİ
 
-Coin: {result['symbol'].replace("USDT","/USDT")}
-Skor: {score}/10
-Durum: {score_text(score)}
+Borsa: {ex_name}
+Coin: {symbol}
+Fiyat: {result['price']:.6f}
+RSI: {result['rsi']:.2f}
+Hacim Artışı: {result['volume_ratio']:.2f}x
+BB Width: {result['bb_width']:.4f}
+Puan: {result['score']}/10
 
-Fiyat: {result['price']}
-15dk Değişim: %{round(result['change'], 2)}
-Hacim: {round(result['volume']):,}
-Hacim Artışı: {round(result['multiplier'], 2)}x
-Mum Gövde Gücü: %{round(result['body_ratio'] * 100, 1)}
-
-Not: {note}
-
-⚠️ Kontrol:
-- 5m mum kapanışı güçlü mü?
-- Fitil uzun mu?
-- Direnç kırıldı mı?
-- Hacim devam ediyor mu?"""
-
-                        telegram(msg)
+Sinyal: ORTA BANT ÜSTÜ + HACİM ARTIŞI
+"""
+                        send_telegram(msg)
+                        sent_cache[cache_key] = "early"
 
                     time.sleep(0.2)
 
-                except Exception as e:
-                    print("Coin hata:", symbol, e)
+                except Exception:
                     continue
 
-            time.sleep(60)
-
         except Exception as e:
-            print("Genel hata:", e)
-            time.sleep(10)
+            send_telegram(f"⚠️ {ex_name} hata: {str(e)}")
 
-@app.route("/")
-def home():
-    return "BINANCE skorlu PRO BOT aktif", 200
-
-if __name__ == "__main__":
-    threading.Thread(target=scan, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    time.sleep(SLEEP_SECONDS)
