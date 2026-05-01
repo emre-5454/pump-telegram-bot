@@ -9,11 +9,15 @@ CHAT_ID = "6977265844"
 TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
-COOLDOWN_SECONDS = 7200  # aynı coin aynı modda 2 saat tekrar atmaz
+COOLDOWN_SECONDS = 7200  # 2 saat
 
 exchanges = {
-    "BINANCE": ccxt.binance(),
-    "MEXC": ccxt.mexc()
+    "BINANCE": ccxt.binance({
+        "options": {"defaultType": "future"}
+    }),
+    "MEXC": ccxt.mexc({
+        "options": {"defaultType": "swap"}
+    })
 }
 
 ENABLED_MODES = ["ORTA", "SNIPER"]
@@ -21,21 +25,21 @@ ENABLED_MODES = ["ORTA", "SNIPER"]
 MODES = {
     "ORTA": {
         "emoji": "🟡",
-        "title": "GÜÇLÜ SETUP",
+        "title": "BALİNA ADAYI",
         "bb_width": 0.075,
         "volume": 2.0,
         "rsi_min": 50,
         "rsi_max": 74,
-        "score": 7
+        "score": 8
     },
     "SNIPER": {
         "emoji": "🚨",
-        "title": "PUMP HAZIRLIĞI",
+        "title": "BALİNA ONAYLI PUMP HAZIRLIĞI",
         "bb_width": 0.06,
         "volume": 2.5,
         "rsi_min": 53,
         "rsi_max": 80,
-        "score": 8
+        "score": 10
     }
 }
 
@@ -55,7 +59,27 @@ def rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def analyze(df):
+def get_oi_and_funding(exchange, symbol):
+    oi_change = 0
+    funding_rate = 0
+
+    try:
+        oi_now = exchange.fetch_open_interest(symbol)
+        oi_value = oi_now.get("openInterestAmount") or oi_now.get("openInterestValue") or 0
+    except Exception:
+        oi_value = 0
+
+    try:
+        funding = exchange.fetch_funding_rate(symbol)
+        funding_rate = funding.get("fundingRate", 0) or 0
+    except Exception:
+        funding_rate = 0
+
+    # Not: CCXT çoğu borsada geçmiş OI verisini vermez.
+    # Bu yüzden burada OI var mı / funding sağlıklı mı filtresi kullanıyoruz.
+    return oi_value, funding_rate, oi_change
+
+def analyze(df, exchange, symbol):
     close = df["close"]
     volume = df["volume"]
 
@@ -72,6 +96,10 @@ def analyze(df):
     volume_ratio = volume / vol_avg
 
     last_close = close.iloc[-1]
+    prev_close = close.iloc[-2]
+
+    price_change = ((last_close - prev_close) / prev_close) * 100
+
     last_open = df["open"].iloc[-1]
     last_high = df["high"].iloc[-1]
     last_low = df["low"].iloc[-1]
@@ -92,15 +120,28 @@ def analyze(df):
 
     fake_pump = (
         upper_wick_ratio > 0.45
-        or body_ratio < 0.35
-        or last_rsi > 80
+        or body_ratio < 0.30
+        or last_rsi > 82
     )
 
     real_pump = (
-        body_ratio > 0.55
-        and upper_wick_ratio < 0.30
+        body_ratio > 0.50
+        and upper_wick_ratio < 0.35
         and last_volume_ratio > 2
         and last_rsi < 80
+    )
+
+    oi_value, funding_rate, oi_change = get_oi_and_funding(exchange, symbol)
+
+    funding_ok = funding_rate < 0.01
+    oi_ok = oi_value > 0
+
+    whale_ok = (
+        oi_ok
+        and funding_ok
+        and last_volume_ratio > 2
+        and price_change > 0
+        and not fake_pump
     )
 
     score = 0
@@ -113,9 +154,16 @@ def analyze(df):
         score += 2
     if upper_break:
         score += 3
+    if oi_ok:
+        score += 1
+    if funding_ok:
+        score += 1
+    if whale_ok:
+        score += 2
 
     return {
         "price": last_close,
+        "price_change": price_change,
         "rsi": last_rsi,
         "volume_ratio": last_volume_ratio,
         "bb_width": last_bb_width,
@@ -125,7 +173,12 @@ def analyze(df):
         "body_ratio": body_ratio,
         "upper_wick_ratio": upper_wick_ratio,
         "real_pump": real_pump,
-        "fake_pump": fake_pump
+        "fake_pump": fake_pump,
+        "oi_value": oi_value,
+        "funding_rate": funding_rate,
+        "oi_ok": oi_ok,
+        "funding_ok": funding_ok,
+        "whale_ok": whale_ok
     }
 
 def detect_mode(result):
@@ -141,10 +194,16 @@ def detect_mode(result):
             and result["above_mid"]
             and result["score"] >= mode["score"]
             and not result["fake_pump"]
+            and result["funding_ok"]
         )
 
         if mode_name == "SNIPER":
-            condition = condition and result["upper_break"]
+            condition = (
+                condition
+                and result["upper_break"]
+                and result["whale_ok"]
+                and result["real_pump"]
+            )
 
         if condition:
             signals.append(mode_name)
@@ -158,13 +217,20 @@ def detect_mode(result):
 
 def get_pairs(exchange):
     markets = exchange.load_markets()
-    return [
-        symbol for symbol, info in markets.items()
-        if symbol.endswith("/USDT") and info.get("active", True)
-    ]
+    pairs = []
+
+    for symbol, info in markets.items():
+        if (
+            symbol.endswith("/USDT")
+            and info.get("active", True)
+            and (info.get("swap") or info.get("future"))
+        ):
+            pairs.append(symbol)
+
+    return pairs
 
 def run_bot():
-    send_telegram("✅ Fake Pump filtreli Pump Scanner Bot aktif.")
+    send_telegram("✅ OI + Funding Balina Filtreli Pump Scanner aktif.")
 
     while True:
         for ex_name, exchange in exchanges.items():
@@ -183,7 +249,7 @@ def run_bot():
                             columns=["time", "open", "high", "low", "close", "volume"]
                         )
 
-                        result = analyze(df)
+                        result = analyze(df, exchange, symbol)
                         mode_name = detect_mode(result)
 
                         if not mode_name:
@@ -204,24 +270,29 @@ Mod: {mode_name}
 Borsa: {ex_name}
 Coin: {symbol}
 Fiyat: {result['price']:.6f}
+Son Mum Değişim: %{result['price_change']:.2f}
 
 RSI: {result['rsi']:.2f}
 Hacim: {result['volume_ratio']:.2f}x
 BB: {result['bb_width']:.4f}
-Puan: {result['score']}/10
+Puan: {result['score']}/12
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick_ratio']:.2f}
 
+OI Var: {'EVET ✅' if result['oi_ok'] else 'YOK ⚠️'}
+Funding: {result['funding_rate']:.5f}
+Funding Sağlıklı: {'EVET ✅' if result['funding_ok'] else 'HAYIR ❌'}
+
 Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
 Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
 Fake Pump: {'EVET ❌' if result['fake_pump'] else 'HAYIR ✅'}
-Gerçek Pump Gücü: {'VAR ✅' if result['real_pump'] else 'ZAYIF ⚠️'}
+Balina Onayı: {'VAR 🐋✅' if result['whale_ok'] else 'YOK ⚠️'}
 """
                         send_telegram(message)
                         sent_cache[cache_key] = now
 
-                        time.sleep(0.25)
+                        time.sleep(0.35)
 
                     except Exception:
                         continue
