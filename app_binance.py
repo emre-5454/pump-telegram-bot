@@ -9,39 +9,32 @@ CHAT_ID = "6977265844"
 TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
-COOLDOWN_SECONDS = 3600  # aynı coin 1 saat tekrar atmaz
+COOLDOWN_SECONDS = 10800  # aynı coin aynı modda 3 saat tekrar atmaz
 
 exchanges = {
     "BINANCE": ccxt.binance(),
     "MEXC": ccxt.mexc()
 }
 
+ENABLED_MODES = ["ORTA", "SNIPER"]
+
 MODES = {
-    "AGRESIF": {
-        "emoji": "🟢",
-        "title": "ERKEN PUMP ADAYI",
-        "bb_width": 0.10,
-        "volume": 1.5,
-        "rsi_min": 45,
-        "rsi_max": 75,
-        "score": 6
-    },
     "ORTA": {
         "emoji": "🟡",
         "title": "GÜÇLÜ SETUP",
-        "bb_width": 0.08,
-        "volume": 2.0,
-        "rsi_min": 50,
-        "rsi_max": 75,
-        "score": 7
+        "bb_width": 0.06,
+        "volume": 2.5,
+        "rsi_min": 52,
+        "rsi_max": 72,
+        "score": 8
     },
     "SNIPER": {
         "emoji": "🚨",
         "title": "PUMP HAZIRLIĞI",
-        "bb_width": 0.06,
-        "volume": 2.5,
+        "bb_width": 0.05,
+        "volume": 3.0,
         "rsi_min": 55,
-        "rsi_max": 80,
+        "rsi_max": 78,
         "score": 9
     }
 }
@@ -68,6 +61,7 @@ def analyze(df):
 
     ma20 = close.rolling(20).mean()
     std20 = close.rolling(20).std()
+
     upper = ma20 + 2 * std20
     lower = ma20 - 2 * std20
 
@@ -86,13 +80,12 @@ def analyze(df):
     above_mid = last_close > ma20.iloc[-1]
 
     score = 0
-    if last_bb_width < 0.10:
-        score += 2
-    if last_volume_ratio > 1.5:
+
+    if last_bb_width < 0.06:
         score += 2
     if last_volume_ratio > 2.5:
-        score += 1
-    if last_rsi > 50:
+        score += 3
+    if 52 < last_rsi < 72:
         score += 2
     if upper_break:
         score += 3
@@ -110,7 +103,9 @@ def analyze(df):
 def detect_mode(result):
     signals = []
 
-    for mode_name, mode in MODES.items():
+    for mode_name in ENABLED_MODES:
+        mode = MODES[mode_name]
+
         condition = (
             result["bb_width"] < mode["bb_width"]
             and result["volume_ratio"] > mode["volume"]
@@ -129,8 +124,6 @@ def detect_mode(result):
         return "SNIPER"
     if "ORTA" in signals:
         return "ORTA"
-    if "AGRESIF" in signals:
-        return "AGRESIF"
 
     return None
 
@@ -142,7 +135,7 @@ def get_pairs(exchange):
     ]
 
 def run_bot():
-    send_telegram("✅ 3 Modlu Pump Scanner Bot çalışmaya başladı.")
+    send_telegram("✅ Spam azaltılmış Pump Scanner Bot çalışmaya başladı.")
 
     while True:
         for ex_name, exchange in exchanges.items():
