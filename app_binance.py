@@ -1,6 +1,7 @@
-import ccxt, time, requests
+import ccxt
+import time
+import requests
 import pandas as pd
-import numpy as np
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
@@ -9,14 +10,23 @@ TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
 
+MIN_EARLY_SCORE = 8
+MIN_PUMP_SCORE = 9
+COOLDOWN_SECONDS = 3600  # aynı coin 1 saat tekrar atmaz
+
 exchanges = {
     "BINANCE": ccxt.binance(),
     "MEXC": ccxt.mexc()
 }
 
-def send_telegram(msg):
+sent_cache = {}
+
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    try:
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+    except:
+        pass
 
 def rsi(series, period=14):
     delta = series.diff()
@@ -32,8 +42,8 @@ def analyze(df):
     ma20 = close.rolling(20).mean()
     std20 = close.rolling(20).std()
 
-    upper = ma20 + 2 * std20
-    lower = ma20 - 2 * std20
+    upper = ma20 + (2 * std20)
+    lower = ma20 - (2 * std20)
 
     bb_width = (upper - lower) / ma20
     rsi_val = rsi(close)
@@ -41,64 +51,90 @@ def analyze(df):
     vol_avg = volume.rolling(20).mean()
     volume_ratio = volume / vol_avg
 
-    last = df.iloc[-1]
+    last_close = close.iloc[-1]
+    last_rsi = rsi_val.iloc[-1]
+    last_volume_ratio = volume_ratio.iloc[-1]
+    last_bb_width = bb_width.iloc[-1]
+
+    bb_squeeze = last_bb_width < 0.08
+    upper_break = last_close > upper.iloc[-1]
+    above_mid = last_close > ma20.iloc[-1]
 
     score = 0
-
-    bb_squeeze = bb_width.iloc[-1] < 0.08
-    vol_early = volume_ratio.iloc[-1] > 1.5
-    vol_pump = volume_ratio.iloc[-1] > 2
-    rsi_early = rsi_val.iloc[-1] > 45
-    rsi_pump = rsi_val.iloc[-1] > 50
-    above_mid = close.iloc[-1] > ma20.iloc[-1]
-    upper_break = close.iloc[-1] > upper.iloc[-1]
-
     if bb_squeeze:
         score += 2
-    if vol_early:
+    if last_volume_ratio > 2:
         score += 3
-    if rsi_early:
+    if last_rsi > 50:
         score += 2
     if upper_break:
         score += 3
 
+    early = (
+        bb_squeeze
+        and last_volume_ratio > 2
+        and 50 < last_rsi < 70
+        and above_mid
+        and score >= MIN_EARLY_SCORE
+    )
+
+    pump = (
+        bb_squeeze
+        and last_volume_ratio > 2.5
+        and 55 < last_rsi < 80
+        and upper_break
+        and score >= MIN_PUMP_SCORE
+    )
+
     return {
-        "price": close.iloc[-1],
-        "rsi": rsi_val.iloc[-1],
-        "bb_width": bb_width.iloc[-1],
-        "volume_ratio": volume_ratio.iloc[-1],
+        "price": last_close,
+        "rsi": last_rsi,
+        "volume_ratio": last_volume_ratio,
+        "bb_width": last_bb_width,
         "score": score,
-        "early": bb_squeeze and vol_early and rsi_early and above_mid,
-        "pump": bb_squeeze and vol_pump and rsi_pump and upper_break
+        "early": early,
+        "pump": pump
     }
 
-def get_usdt_pairs(exchange):
+def get_pairs(exchange):
     markets = exchange.load_markets()
-    return [
-        s for s in markets
-        if s.endswith("/USDT") and markets[s].get("active", True)
-    ]
+    pairs = []
+    for symbol, info in markets.items():
+        if symbol.endswith("/USDT") and info.get("active", True):
+            pairs.append(symbol)
+    return pairs
 
-sent_cache = {}
+def run_bot():
+    send_telegram("✅ Pump scanner bot çalışmaya başladı.")
 
-while True:
-    for ex_name, exchange in exchanges.items():
-        try:
-            pairs = get_usdt_pairs(exchange)
+    while True:
+        for ex_name, exchange in exchanges.items():
+            try:
+                pairs = get_pairs(exchange)
 
-            for symbol in pairs:
-                try:
-                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
-                    df = pd.DataFrame(
-                        ohlcv,
-                        columns=["time", "open", "high", "low", "close", "volume"]
-                    )
+                for symbol in pairs:
+                    try:
+                        cache_key = f"{ex_name}-{symbol}"
+                        now = time.time()
 
-                    result = analyze(df)
-                    cache_key = f"{ex_name}-{symbol}"
+                        if cache_key in sent_cache:
+                            if now - sent_cache[cache_key] < COOLDOWN_SECONDS:
+                                continue
 
-                    if result["pump"] and sent_cache.get(cache_key) != "pump":
-                        msg = f"""
+                        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
+
+                        if not ohlcv or len(ohlcv) < 50:
+                            continue
+
+                        df = pd.DataFrame(
+                            ohlcv,
+                            columns=["time", "open", "high", "low", "close", "volume"]
+                        )
+
+                        result = analyze(df)
+
+                        if result["pump"]:
+                            message = f"""
 🚨 PUMP HAZIRLIĞI
 
 Borsa: {ex_name}
@@ -111,11 +147,11 @@ Puan: {result['score']}/10
 
 Sinyal: ÜST BANT KIRILIM + HACİM
 """
-                        send_telegram(msg)
-                        sent_cache[cache_key] = "pump"
+                            send_telegram(message)
+                            sent_cache[cache_key] = now
 
-                    elif result["early"] and result["score"] >= 5 and sent_cache.get(cache_key) != "early":
-                        msg = f"""
+                        elif result["early"]:
+                            message = f"""
 🟡 ERKEN PARA GİRİŞİ
 
 Borsa: {ex_name}
@@ -128,15 +164,18 @@ Puan: {result['score']}/10
 
 Sinyal: ORTA BANT ÜSTÜ + HACİM ARTIŞI
 """
-                        send_telegram(msg)
-                        sent_cache[cache_key] = "early"
+                            send_telegram(message)
+                            sent_cache[cache_key] = now
 
-                    time.sleep(0.2)
+                        time.sleep(0.25)
 
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
 
-        except Exception as e:
-            send_telegram(f"⚠️ {ex_name} hata: {str(e)}")
+            except Exception as e:
+                send_telegram(f"⚠️ {ex_name} hata: {str(e)}")
 
-    time.sleep(SLEEP_SECONDS)
+        time.sleep(SLEEP_SECONDS)
+
+if __name__ == "__main__":
+    run_bot()
