@@ -9,7 +9,7 @@ CHAT_ID = "6977265844"
 TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
-COOLDOWN_SECONDS = 7200  # 2 saat
+COOLDOWN_SECONDS = 7200  # aynı coin aynı modda 2 saat tekrar atmaz
 
 exchanges = {
     "BINANCE": ccxt.binance(),
@@ -45,7 +45,7 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except:
+    except Exception:
         pass
 
 def rsi(series, period=14):
@@ -72,12 +72,36 @@ def analyze(df):
     volume_ratio = volume / vol_avg
 
     last_close = close.iloc[-1]
+    last_open = df["open"].iloc[-1]
+    last_high = df["high"].iloc[-1]
+    last_low = df["low"].iloc[-1]
+
     last_rsi = rsi_val.iloc[-1]
     last_volume_ratio = volume_ratio.iloc[-1]
     last_bb_width = bb_width.iloc[-1]
 
     upper_break = last_close > upper.iloc[-1]
     above_mid = last_close > ma20.iloc[-1]
+
+    candle_range = last_high - last_low
+    body = abs(last_close - last_open)
+    upper_wick = last_high - max(last_close, last_open)
+
+    body_ratio = body / candle_range if candle_range != 0 else 0
+    upper_wick_ratio = upper_wick / candle_range if candle_range != 0 else 0
+
+    fake_pump = (
+        upper_wick_ratio > 0.45
+        or body_ratio < 0.35
+        or last_rsi > 80
+    )
+
+    real_pump = (
+        body_ratio > 0.55
+        and upper_wick_ratio < 0.30
+        and last_volume_ratio > 2
+        and last_rsi < 80
+    )
 
     score = 0
 
@@ -97,7 +121,11 @@ def analyze(df):
         "bb_width": last_bb_width,
         "score": score,
         "upper_break": upper_break,
-        "above_mid": above_mid
+        "above_mid": above_mid,
+        "body_ratio": body_ratio,
+        "upper_wick_ratio": upper_wick_ratio,
+        "real_pump": real_pump,
+        "fake_pump": fake_pump
     }
 
 def detect_mode(result):
@@ -112,6 +140,7 @@ def detect_mode(result):
             and mode["rsi_min"] < result["rsi"] < mode["rsi_max"]
             and result["above_mid"]
             and result["score"] >= mode["score"]
+            and not result["fake_pump"]
         )
 
         if mode_name == "SNIPER":
@@ -135,7 +164,7 @@ def get_pairs(exchange):
     ]
 
 def run_bot():
-    send_telegram("✅ Dengeli Pump Scanner Bot aktif.")
+    send_telegram("✅ Fake Pump filtreli Pump Scanner Bot aktif.")
 
     while True:
         for ex_name, exchange in exchanges.items():
@@ -175,17 +204,26 @@ Mod: {mode_name}
 Borsa: {ex_name}
 Coin: {symbol}
 Fiyat: {result['price']:.6f}
+
 RSI: {result['rsi']:.2f}
 Hacim: {result['volume_ratio']:.2f}x
 BB: {result['bb_width']:.4f}
 Puan: {result['score']}/10
+
+Mum Gücü: {result['body_ratio']:.2f}
+Üst Fitil: {result['upper_wick_ratio']:.2f}
+
+Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
+Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
+Fake Pump: {'EVET ❌' if result['fake_pump'] else 'HAYIR ✅'}
+Gerçek Pump Gücü: {'VAR ✅' if result['real_pump'] else 'ZAYIF ⚠️'}
 """
                         send_telegram(message)
                         sent_cache[cache_key] = now
 
                         time.sleep(0.25)
 
-                    except:
+                    except Exception:
                         continue
 
             except Exception as e:
