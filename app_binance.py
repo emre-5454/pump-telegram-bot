@@ -9,7 +9,7 @@ CHAT_ID = "6977265844"
 TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
-COOLDOWN_SECONDS = 10800  # aynı coin aynı modda 3 saat tekrar atmaz
+COOLDOWN_SECONDS = 7200  # 2 saat
 
 exchanges = {
     "BINANCE": ccxt.binance(),
@@ -22,20 +22,20 @@ MODES = {
     "ORTA": {
         "emoji": "🟡",
         "title": "GÜÇLÜ SETUP",
-        "bb_width": 0.06,
-        "volume": 2.5,
-        "rsi_min": 52,
-        "rsi_max": 72,
-        "score": 8
+        "bb_width": 0.075,
+        "volume": 2.0,
+        "rsi_min": 50,
+        "rsi_max": 74,
+        "score": 7
     },
     "SNIPER": {
         "emoji": "🚨",
         "title": "PUMP HAZIRLIĞI",
-        "bb_width": 0.05,
-        "volume": 3.0,
-        "rsi_min": 55,
-        "rsi_max": 78,
-        "score": 9
+        "bb_width": 0.06,
+        "volume": 2.5,
+        "rsi_min": 53,
+        "rsi_max": 80,
+        "score": 8
     }
 }
 
@@ -45,7 +45,7 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except Exception:
+    except:
         pass
 
 def rsi(series, period=14):
@@ -81,11 +81,11 @@ def analyze(df):
 
     score = 0
 
-    if last_bb_width < 0.06:
+    if last_bb_width < 0.075:
         score += 2
-    if last_volume_ratio > 2.5:
+    if last_volume_ratio > 2.0:
         score += 3
-    if 52 < last_rsi < 72:
+    if 50 < last_rsi < 74:
         score += 2
     if upper_break:
         score += 3
@@ -135,7 +135,7 @@ def get_pairs(exchange):
     ]
 
 def run_bot():
-    send_telegram("✅ Spam azaltılmış Pump Scanner Bot çalışmaya başladı.")
+    send_telegram("✅ Dengeli Pump Scanner Bot aktif.")
 
     while True:
         for ex_name, exchange in exchanges.items():
@@ -176,19 +176,16 @@ Borsa: {ex_name}
 Coin: {symbol}
 Fiyat: {result['price']:.6f}
 RSI: {result['rsi']:.2f}
-Hacim Artışı: {result['volume_ratio']:.2f}x
-BB Width: {result['bb_width']:.4f}
+Hacim: {result['volume_ratio']:.2f}x
+BB: {result['bb_width']:.4f}
 Puan: {result['score']}/10
-
-Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
-Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
 """
                         send_telegram(message)
                         sent_cache[cache_key] = now
 
                         time.sleep(0.25)
 
-                    except Exception:
+                    except:
                         continue
 
             except Exception as e:
