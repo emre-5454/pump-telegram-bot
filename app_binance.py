@@ -8,7 +8,7 @@ CHAT_ID = "6977265844"
 TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
-COOLDOWN = 7200  # aynı coin aynı modda 2 saat tekrar atmaz
+COOLDOWN = 10800  # aynı coin aynı modda 2 saat tekrar atmaz
 
 exchange = ccxt.binance()
 sent_cache = {}
@@ -91,11 +91,11 @@ def analyze(symbol):
         )
 
         score = 0
-        if bb_width < 0.06:
+        if bb_width < 0.05:
             score += 2
-        if volume_ratio > 2:
+        if volume_ratio > 2.5:
             score += 3
-        if 50 < rsi < 72:
+        if 50 < rsi < 70:
             score += 2
         if upper_break:
             score += 3
@@ -103,22 +103,22 @@ def analyze(symbol):
         mode = None
 
         orta = (
-            bb_width < 0.06
-            and volume_ratio > 2.0
-            and 50 < rsi < 72
+            bb_width < 0.05
+            and volume_ratio > 2.5
+            and 50 < rsi < 70
             and score >= 7
             and above_mid
             and not fake_pump
         )
 
         sniper = (
-            bb_width < 0.05
-            and volume_ratio > 2.5
-            and 55 < rsi < 70
+            bb_width < 0.04
+            and volume_ratio > 3.0
+            and 55 < rsi < 68
             and score >= 9
             and upper_break
-            and body_ratio > 0.50
-            and upper_wick_ratio < 0.25
+            and body_ratio > 0.55
+            and upper_wick_ratio < 0.20
             and not fake_pump
             and real_pump
         )
