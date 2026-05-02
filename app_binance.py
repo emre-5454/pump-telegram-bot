@@ -14,9 +14,9 @@ SLEEP_SECONDS = 60
 COOLDOWN = 3600  # aynı coin 1 saat tekrar atmaz
 
 # FİLTRE AYARLARI
-MIN_VOLUME_RATIO = 1.5
-RSI_MIN = 45
-RSI_MAX = 75
+MIN_VOLUME_RATIO = 2.0
+RSI_MIN = 50
+RSI_MAX = 72
 MIN_BODY_RATIO = 0.35
 
 exchange = ccxt.binance()
