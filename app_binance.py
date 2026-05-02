@@ -3,163 +3,165 @@ import time
 import requests
 import pandas as pd
 
+# TELEGRAM BİLGİLERİ
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
+
 # AYARLAR
 TIMEFRAME = "15m"
-SLEEP = 60
+LIMIT = 80
+SLEEP_SECONDS = 60
 COOLDOWN = 3600  # aynı coin 1 saat tekrar atmaz
 
-exchange = ccxt.binance({
-    "options": {"defaultType": "future"}
-})
+# FİLTRE AYARLARI
+MIN_VOLUME_RATIO = 1.5
+RSI_MIN = 45
+RSI_MAX = 75
+MIN_BODY_RATIO = 0.35
+
+exchange = ccxt.binance()
 
 sent_cache = {}
 
-# TELEGRAM
-def send(msg):
+def send_telegram(message):
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": message},
+            timeout=10
         )
-    except:
-        pass
+        print("TELEGRAM:", r.status_code, r.text)
+    except Exception as e:
+        print("TELEGRAM HATA:", e)
 
-# RSI
-def rsi(series, period=14):
+def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# OI + FUNDING (GÜVENLİ)
-def get_oi_funding(symbol):
-    oi = 0
-    funding = 0
-
-    try:
-        data = exchange.fetch_open_interest(symbol)
-        oi = data.get("openInterestAmount", 0)
-    except:
-        pass
-
-    try:
-        f = exchange.fetch_funding_rate(symbol)
-        funding = f.get("fundingRate", 0)
-    except:
-        pass
-
-    return oi, funding
-
-# ANALİZ
 def analyze(symbol):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
-        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
 
-        close = df["c"]
-        volume = df["v"]
+        if not ohlcv or len(ohlcv) < 30:
+            return None
+
+        df = pd.DataFrame(
+            ohlcv,
+            columns=["time", "open", "high", "low", "close", "volume"]
+        )
+
+        close = df["close"]
+        volume = df["volume"]
 
         ma20 = close.rolling(20).mean()
-        std = close.rolling(20).std()
+        std20 = close.rolling(20).std()
+        upper = ma20 + 2 * std20
 
-        upper = ma20 + 2 * std
+        rsi = calculate_rsi(close).iloc[-1]
+
+        vol_avg = volume.rolling(20).mean().iloc[-1]
+        if vol_avg == 0 or pd.isna(vol_avg):
+            return None
+
+        volume_ratio = volume.iloc[-1] / vol_avg
 
         last_price = close.iloc[-1]
         prev_price = close.iloc[-2]
-
         price_change = ((last_price - prev_price) / prev_price) * 100
 
-        r = rsi(close).iloc[-1]
-        vol_ratio = volume.iloc[-1] / volume.rolling(20).mean().iloc[-1]
+        candle_range = df["high"].iloc[-1] - df["low"].iloc[-1]
+        candle_body = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
+        body_ratio = candle_body / candle_range if candle_range != 0 else 0
 
-        oi, funding = get_oi_funding(symbol)
+        upper_break = last_price > upper.iloc[-1]
 
-        # FAKE PUMP ENGELİ
-        candle_range = df["h"].iloc[-1] - df["l"].iloc[-1]
-        body = abs(df["c"].iloc[-1] - df["o"].iloc[-1])
-
-        body_ratio = body / candle_range if candle_range != 0 else 0
-
-        fake = body_ratio < 0.3 or r > 80
-
-        # SİNYAL ŞARTI (BALİNA)
-        if (
-            vol_ratio > 2.2
-            and 52 < r < 72
-            and last_price > upper.iloc[-1]
-            and funding < 0.01
-            and not fake
+        signal = (
+            volume_ratio > MIN_VOLUME_RATIO
+            and RSI_MIN < rsi < RSI_MAX
+            and upper_break
             and price_change > 0
-        ):
+            and body_ratio > MIN_BODY_RATIO
+        )
+
+        if signal:
             return {
+                "symbol": symbol,
                 "price": last_price,
-                "rsi": r,
-                "vol": vol_ratio,
-                "funding": funding,
-                "oi": oi
+                "price_change": price_change,
+                "rsi": rsi,
+                "volume_ratio": volume_ratio,
+                "body_ratio": body_ratio
             }
 
-    except:
-        return None
+    except Exception as e:
+        print("ANALIZ HATA:", symbol, e)
 
     return None
 
-# BOT
-def run():
-    send("✅ BOT AKTİF (BALİNA MODU)")
-
+def get_pairs():
     markets = exchange.load_markets()
+    pairs = []
 
-    while True:
-        for symbol in markets:
-            try:
-                if "/USDT" not in symbol:
-                    continue
+    for symbol, info in markets.items():
+        if symbol.endswith("/USDT") and info.get("active", True):
+            pairs.append(symbol)
 
-                if not markets[symbol].get("swap", False):
-                    continue
+    return pairs
 
-                result = analyze(symbol)
+def run_bot():
+    send_telegram("✅ Binance Pump Bot aktif hocam.")
 
-                if not result:
-                    continue
-
-                now = time.time()
-
-                if symbol in sent_cache:
-                    if now - sent_cache[symbol] < COOLDOWN:
-                        continue
-
-                msg = f"""
-🚨 BALİNA SİNYALİ
-
-Coin: {symbol}
-Fiyat: {result['price']:.6f}
-
-RSI: {result['rsi']:.2f}
-Hacim: {result['vol']:.2f}x
-Funding: {result['funding']:.5f}
-OI: {result['oi']}
-"""
-
-                send(msg)
-                sent_cache[symbol] = now
-
-                time.sleep(0.2)
-
-            except Exception as e:
-                print("PAIR HATA:", symbol, e)
-
-        time.sleep(SLEEP)
-
-# ÇÖKME ENGEL
-if __name__ == "__main__":
     while True:
         try:
-            run()
+            pairs = get_pairs()
+
+            for symbol in pairs:
+                try:
+                    now = time.time()
+
+                    if symbol in sent_cache:
+                        if now - sent_cache[symbol] < COOLDOWN:
+                            continue
+
+                    result = analyze(symbol)
+
+                    if not result:
+                        continue
+
+                    message = f"""
+🚨 BINANCE PUMP ADAYI
+
+Coin: {result['symbol']}
+Fiyat: {result['price']:.6f}
+Son Mum Değişim: %{result['price_change']:.2f}
+
+RSI: {result['rsi']:.2f}
+Hacim Artışı: {result['volume_ratio']:.2f}x
+Mum Gücü: {result['body_ratio']:.2f}
+
+⚠️ Kontrol:
+- 5m mum güçlü mü?
+- Üst direnç yakın mı?
+- Hacim devam ediyor mu?
+"""
+
+                    send_telegram(message)
+                    sent_cache[symbol] = now
+
+                    time.sleep(0.25)
+
+                except Exception as e:
+                    print("PAIR HATA:", symbol, e)
+
+            print("TARAMA BİTTİ")
+            time.sleep(SLEEP_SECONDS)
+
         except Exception as e:
             print("GENEL HATA:", e)
             time.sleep(10)
+
+if __name__ == "__main__":
+    run_bot()
