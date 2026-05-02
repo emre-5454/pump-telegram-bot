@@ -2,29 +2,29 @@ import ccxt
 import time
 import requests
 import pandas as pd
+
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 TIMEFRAME = "15m"
 LIMIT = 100
 SLEEP_SECONDS = 60
-COOLDOWN = 10800  # aynı coin aynı modda 2 saat tekrar atmaz
+COOLDOWN = 14400  # 4 saat
 
 exchange = ccxt.binance()
 sent_cache = {}
 
 def send_telegram(message):
     try:
-        r = requests.post(
+        requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": message},
             timeout=10
         )
-        print("TELEGRAM:", r.status_code, r.text)
-    except Exception as e:
-        print("TELEGRAM HATA:", e)
+    except:
+        pass
 
-def calculate_rsi(series, period=14):
+def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
@@ -48,10 +48,9 @@ def analyze(symbol):
         ma20 = close.rolling(20).mean()
         std20 = close.rolling(20).std()
         upper = ma20 + 2 * std20
-        lower = ma20 - 2 * std20
 
-        bb_width = ((upper - lower) / ma20).iloc[-1]
-        rsi = calculate_rsi(close).iloc[-1]
+        bb_width = ((upper - (ma20 - 2 * std20)) / ma20).iloc[-1]
+        r = rsi(close).iloc[-1]
 
         vol_avg = volume.rolling(20).mean().iloc[-1]
         if vol_avg == 0 or pd.isna(vol_avg):
@@ -75,19 +74,18 @@ def analyze(symbol):
         upper_wick_ratio = upper_wick / candle_range if candle_range != 0 else 0
 
         upper_break = last_close > upper.iloc[-1]
-        above_mid = last_close > ma20.iloc[-1]
 
         fake_pump = (
             upper_wick_ratio > 0.45
             or body_ratio < 0.35
-            or rsi > 80
+            or r > 80
         )
 
         real_pump = (
             body_ratio > 0.50
             and upper_wick_ratio < 0.25
             and volume_ratio > 2
-            and rsi < 80
+            and r < 80
         )
 
         score = 0
@@ -95,61 +93,41 @@ def analyze(symbol):
             score += 2
         if volume_ratio > 2.5:
             score += 3
-        if 50 < rsi < 70:
+        if 52 < r < 70:
             score += 2
         if upper_break:
             score += 3
 
-        mode = None
-
-        orta = (
-            bb_width < 0.05
-            and volume_ratio > 2.5
-            and 50 < rsi < 70
-            and score >= 7
-            and above_mid
-            and not fake_pump
-        )
-
         sniper = (
             bb_width < 0.04
             and volume_ratio > 3.0
-            and 55 < rsi < 68
+            and 55 < r < 68
             and score >= 9
             and upper_break
             and body_ratio > 0.55
             and upper_wick_ratio < 0.20
             and not fake_pump
             and real_pump
+            and price_change > 0
         )
 
-        if sniper:
-            mode = "SNIPER"
-        elif orta:
-            mode = "ORTA"
-
-        if not mode:
+        if not sniper:
             return None
 
         return {
             "symbol": symbol,
-            "mode": mode,
             "price": last_close,
             "price_change": price_change,
-            "rsi": rsi,
+            "rsi": r,
             "volume_ratio": volume_ratio,
             "bb_width": bb_width,
             "score": score,
             "body_ratio": body_ratio,
-            "upper_wick_ratio": upper_wick_ratio,
-            "upper_break": upper_break,
-            "above_mid": above_mid,
-            "fake_pump": fake_pump,
-            "real_pump": real_pump
+            "upper_wick_ratio": upper_wick_ratio
         }
 
     except Exception as e:
-        print("ANALIZ HATA:", symbol, e)
+        print("HATA:", symbol, e)
 
     return None
 
@@ -161,7 +139,7 @@ def get_pairs():
     ]
 
 def run_bot():
-    send_telegram("✅ Binance ORTA + SNIPER bot aktif hocam.")
+    send_telegram("🚨 SNIPER BOT AKTİF")
 
     while True:
         try:
@@ -169,51 +147,39 @@ def run_bot():
 
             for symbol in pairs:
                 try:
+                    now = time.time()
+
+                    if symbol in sent_cache:
+                        if now - sent_cache[symbol] < COOLDOWN:
+                            continue
+
                     result = analyze(symbol)
                     if not result:
                         continue
 
-                    cache_key = f"{result['symbol']}-{result['mode']}"
-                    now = time.time()
-
-                    if cache_key in sent_cache and now - sent_cache[cache_key] < COOLDOWN:
-                        continue
-
-                    if result["mode"] == "SNIPER":
-                        title = "🚨 PUMP HAZIRLIĞI"
-                    else:
-                        title = "🟡 GÜÇLÜ SETUP"
-
                     message = f"""
-{title}
+🚨 SNIPER SİNYAL
 
-Mod: {result['mode']}
-Borsa: BINANCE
 Coin: {result['symbol']}
 Fiyat: {result['price']:.6f}
 
 RSI: {result['rsi']:.2f}
 Hacim: {result['volume_ratio']:.2f}x
-BB: {result['bb_width']:.4f}
 Puan: {result['score']}/10
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick_ratio']:.2f}
 
-Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
-Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
-Fake Pump: {'EVET ❌' if result['fake_pump'] else 'HAYIR ✅'}
-Gerçek Pump Gücü: {'VAR ✅' if result['real_pump'] else 'ZAYIF ⚠️'}
+🔥 GERÇEK PUMP ADAYI
 """
                     send_telegram(message)
-                    sent_cache[cache_key] = now
+                    sent_cache[symbol] = now
 
-                    time.sleep(0.25)
+                    time.sleep(0.3)
 
                 except Exception as e:
                     print("PAIR HATA:", symbol, e)
 
-            print("TARAMA BİTTİ")
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
