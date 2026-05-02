@@ -11,7 +11,7 @@ CHAT_ID = "6977265844"
 TIMEFRAME = "15m"
 LIMIT = 80
 SLEEP_SECONDS = 60
-COOLDOWN = 3600  # aynı coin 1 saat tekrar atmaz
+COOLDOWN = 7200  # aynı coin 1 saat tekrar atmaz
 
 # FİLTRE AYARLARI
 MIN_VOLUME_RATIO = 2.0
