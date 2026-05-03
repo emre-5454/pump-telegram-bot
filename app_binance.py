@@ -82,16 +82,16 @@ def analyze(symbol):
         )
 
         real_pump = (
-            body_ratio > 0.50
-            and upper_wick_ratio < 0.25
-            and volume_ratio > 2
+            body_ratio > 0.60
+            and upper_wick_ratio < 0.20
+            and volume_ratio > 3.5
             and r < 80
         )
 
         score = 0
         if bb_width < 0.05:
             score += 2
-        if volume_ratio > 2.5:
+        if volume_ratio > 3.0:
             score += 3
         if 52 < r < 70:
             score += 2
@@ -100,8 +100,8 @@ def analyze(symbol):
 
         sniper = (
             bb_width < 0.04
-            and volume_ratio > 3.0
-            and 55 < r < 68
+            and volume_ratio > 3.5
+            and 57 < r < 65
             and score >= 9
             and upper_break
             and body_ratio > 0.55
