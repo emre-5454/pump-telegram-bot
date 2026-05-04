@@ -5,11 +5,15 @@ import requests
 import pandas as pd
 import threading
 import os
+from openai import OpenAI
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+TELEGRAM_TOKEN ="8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 TIMEFRAME = "15m"
 LIMIT = 100
@@ -35,6 +39,44 @@ def calculate_rsi(series, period=14):
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
+def llm_yorum(result):
+    try:
+        prompt = f"""
+Sen profesyonel ama temkinli bir crypto trader asistanısın.
+Bu veri bir otomatik sinyal botundan geliyor.
+
+Veriler:
+Coin: {result['symbol']}
+Fiyat: {result['price']:.6f}
+15m RSI: {result['rsi']:.2f}
+Hacim Artışı: {result['volume_ratio']:.2f}x
+Bollinger Genişliği: {result['bb_width']:.4f}
+Bot Puanı: {result['score']}/10
+Mum Gücü: {result['body_ratio']:.2f}
+Üst Fitil: {result['upper_wick_ratio']:.2f}
+Üst Bant Kırılım: {result['upper_break']}
+Orta Bant Üstü: {result['above_mid']}
+Fake Pump: {result['fake_pump']}
+Gerçek Pump Gücü: {result['real_pump']}
+
+Sadece şu formatta kısa cevap ver:
+Karar: AL / BEKLE / KAÇ
+Risk: Düşük / Orta / Yüksek
+Sebep: tek cümle
+Plan: tek cümle
+"""
+
+        response = client.responses.create(
+            model="gpt-5.2",
+            input=prompt,
+            max_output_tokens=120
+        )
+
+        return response.output_text
+
+    except Exception as e:
+        return f"LLM yorum alınamadı: {e}"
 
 def analyze(symbol):
     try:
@@ -163,7 +205,7 @@ def get_pairs():
     ]
 
 def run_bot():
-    send_telegram("✅ Binance SNIPER / ONAY bot aktif hocam.")
+    send_telegram("✅ Binance SNIPER + LLM bot aktif hocam.")
 
     while True:
         try:
@@ -179,6 +221,8 @@ def run_bot():
                     result = analyze(symbol)
                     if not result:
                         continue
+
+                    yorum = llm_yorum(result)
 
                     para_girisi = (
                         result["volume_ratio"] > 3.5
@@ -206,6 +250,9 @@ Fake Pump: {'EVET ❌' if result['fake_pump'] else 'HAYIR ✅'}
 Gerçek Pump Gücü: {'VAR ✅' if result['real_pump'] else 'ZAYIF ⚠️'}
 Para Girişi: {'GÜÇLÜ 💰' if para_girisi else 'ZAYIF ⚠️'}
 
+🧠 LLM YORUMU
+{yorum}
+
 📍 Giriş: Retest bekle
 🛑 Stop: Son 15m mum altı
 🎯 Hedef: Risk x2
@@ -227,7 +274,7 @@ Para Girişi: {'GÜÇLÜ 💰' if para_girisi else 'ZAYIF ⚠️'}
 
 @app.route("/")
 def home():
-    return "Binance SNIPER bot aktif", 200
+    return "Binance SNIPER LLM bot aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
