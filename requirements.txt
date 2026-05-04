@@ -4,3 +4,4 @@ gunicorn
 ccxt
 pandas
 numpy
+openai
