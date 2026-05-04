@@ -5,22 +5,24 @@ import requests
 import pandas as pd
 import threading
 import os
-from openai import OpenAI
 
 app = Flask(__name__)
 
 TELEGRAM_TOKEN ="8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+exchange = ccxt.binance({"enableRateLimit": True})
 
 TIMEFRAME = "15m"
-LIMIT = 100
+LIMIT = 120
 SLEEP_SECONDS = 60
 COOLDOWN = 6 * 60 * 60
 
-exchange = ccxt.binance({"enableRateLimit": True})
+MIN_VOLUME_RATIO = 3.0
+MIN_BODY_RATIO = 0.55
+MAX_UPPER_WICK = 0.25
+MIN_SCORE = 8
+
 sent_cache = {}
 
 def send_telegram(message):
@@ -40,48 +42,24 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def llm_yorum(result):
-    try:
-        prompt = f"""
-Sen profesyonel ama temkinli bir crypto trader asistanısın.
-Bu veri bir otomatik sinyal botundan geliyor.
+def detect_structure(df, lookback=20):
+    recent = df.tail(lookback)
 
-Veriler:
-Coin: {result['symbol']}
-Fiyat: {result['price']:.6f}
-15m RSI: {result['rsi']:.2f}
-Hacim Artışı: {result['volume_ratio']:.2f}x
-Bollinger Genişliği: {result['bb_width']:.4f}
-Bot Puanı: {result['score']}/10
-Mum Gücü: {result['body_ratio']:.2f}
-Üst Fitil: {result['upper_wick_ratio']:.2f}
-Üst Bant Kırılım: {result['upper_break']}
-Orta Bant Üstü: {result['above_mid']}
-Fake Pump: {result['fake_pump']}
-Gerçek Pump Gücü: {result['real_pump']}
+    prev_high = recent["high"].iloc[:-1].max()
+    prev_low = recent["low"].iloc[:-1].min()
 
-Sadece şu formatta kısa cevap ver:
-Karar: AL / BEKLE / KAÇ
-Risk: Düşük / Orta / Yüksek
-Sebep: tek cümle
-Plan: tek cümle
-"""
+    last_close = recent["close"].iloc[-1]
+    last_low = recent["low"].iloc[-1]
 
-        response = client.responses.create(
-            model="gpt-5.2",
-            input=prompt,
-            max_output_tokens=120
-        )
+    bos = last_close > prev_high
+    msb = last_low > prev_low and last_close > recent["close"].rolling(5).mean().iloc[-1]
 
-        return response.output_text
-
-    except Exception as e:
-        return f"LLM yorum alınamadı: {e}"
+    return bos, msb, prev_high, prev_low
 
 def analyze(symbol):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
-        if not ohlcv or len(ohlcv) < 30:
+        if not ohlcv or len(ohlcv) < 50:
             return None
 
         df = pd.DataFrame(
@@ -127,54 +105,50 @@ def analyze(symbol):
         upper_break = last_close > upper.iloc[-1]
         above_mid = last_close > ma20.iloc[-1]
 
-        fake_pump = (
-            upper_wick_ratio > 0.25
-            or body_ratio < 0.55
-            or rsi > 72
-            or price_change <= 0
-        )
+        bos, msb, prev_high, prev_low = detect_structure(df)
 
-        real_pump = (
-            body_ratio > 0.60
-            and upper_wick_ratio < 0.20
-            and volume_ratio > 3.5
-            and 55 < rsi < 70
-            and price_change > 0
+        fake_pump = (
+            upper_wick_ratio > MAX_UPPER_WICK
+            or body_ratio < MIN_BODY_RATIO
+            or rsi > 75
+            or price_change <= 0
         )
 
         score = 0
 
-        if bb_width < 0.05:
+        if volume_ratio >= MIN_VOLUME_RATIO:
             score += 2
-        if volume_ratio > 3.5:
-            score += 3
-        if 55 < rsi < 70:
+        if volume_ratio >= 5:
+            score += 1
+        if body_ratio >= MIN_BODY_RATIO:
             score += 2
+        if upper_wick_ratio <= MAX_UPPER_WICK:
+            score += 1
+        if 55 <= rsi <= 70:
+            score += 1
         if upper_break:
-            score += 2
+            score += 1
         if above_mid:
             score += 1
-        if body_ratio > 0.60:
+        if bos:
             score += 1
-        if upper_wick_ratio < 0.20:
+        if msb:
             score += 1
 
         if score > 10:
             score = 10
 
-        sniper = (
-            score >= 8
-            and volume_ratio > 3.5
-            and 55 < rsi < 70
-            and upper_break
+        structure_setup = (
+            score >= MIN_SCORE
+            and volume_ratio >= MIN_VOLUME_RATIO
+            and body_ratio >= MIN_BODY_RATIO
+            and upper_wick_ratio <= MAX_UPPER_WICK
             and above_mid
-            and body_ratio > 0.60
-            and upper_wick_ratio < 0.20
             and not fake_pump
-            and real_pump
+            and (bos or upper_break)
         )
 
-        if not sniper:
+        if not structure_setup:
             return None
 
         return {
@@ -189,8 +163,11 @@ def analyze(symbol):
             "upper_wick_ratio": upper_wick_ratio,
             "upper_break": upper_break,
             "above_mid": above_mid,
-            "fake_pump": fake_pump,
-            "real_pump": real_pump
+            "bos": bos,
+            "msb": msb,
+            "prev_high": prev_high,
+            "prev_low": prev_low,
+            "fake_pump": fake_pump
         }
 
     except Exception as e:
@@ -205,7 +182,7 @@ def get_pairs():
     ]
 
 def run_bot():
-    send_telegram("✅ Binance SNIPER + LLM bot aktif hocam.")
+    send_telegram("✅ BINANCE STRUCTURE SNIPER bot aktif hocam.")
 
     while True:
         try:
@@ -222,39 +199,32 @@ def run_bot():
                     if not result:
                         continue
 
-                    yorum = llm_yorum(result)
-
-                    para_girisi = (
-                        result["volume_ratio"] > 3.5
-                        and result["body_ratio"] > 0.60
-                        and result["price_change"] > 0
-                    )
-
                     message = f"""
-🚨 BINANCE SNIPER SİNYAL
+🟢 BINANCE STRUCTURE SETUP
 
 Coin: {result['symbol']}
 Fiyat: {result['price']:.6f}
+15m Değişim: %{result['price_change']:.2f}
+
+Skor: {result['score']}/10
 
 RSI: {result['rsi']:.2f}
 Hacim: {result['volume_ratio']:.2f}x
-BB: {result['bb_width']:.4f}
-Puan: {result['score']}/10
+BB Genişlik: {result['bb_width']:.4f}
+
+BOS: {'VAR ✅' if result['bos'] else 'YOK ❌'}
+MSB: {'VAR ✅' if result['msb'] else 'YOK ❌'}
+BB Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
+Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick_ratio']:.2f}
-
-Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
-Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
 Fake Pump: {'EVET ❌' if result['fake_pump'] else 'HAYIR ✅'}
-Gerçek Pump Gücü: {'VAR ✅' if result['real_pump'] else 'ZAYIF ⚠️'}
-Para Girişi: {'GÜÇLÜ 💰' if para_girisi else 'ZAYIF ⚠️'}
 
-🧠 LLM YORUMU
-{yorum}
+Kırılan Seviye: {result['prev_high']:.6f}
 
-📍 Giriş: Retest bekle
-🛑 Stop: Son 15m mum altı
+📍 Karar: Retest bekle
+🛑 Stop: Kırılan seviye altı / son dip
 🎯 Hedef: Risk x2
 """
                     send_telegram(message)
@@ -274,7 +244,7 @@ Para Girişi: {'GÜÇLÜ 💰' if para_girisi else 'ZAYIF ⚠️'}
 
 @app.route("/")
 def home():
-    return "Binance SNIPER LLM bot aktif", 200
+    return "Binance Structure Sniper aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
