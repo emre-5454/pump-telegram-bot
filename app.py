@@ -3,7 +3,7 @@ import time
 import requests
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-CHAT_ID = "CHAT_IDINIZ"
+CHAT_ID = "6977265844"
 
 exchange = ccxt.mexc({"enableRateLimit": True})
 
