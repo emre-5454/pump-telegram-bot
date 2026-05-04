@@ -1,178 +1,148 @@
-from flask import Flask
 import ccxt
-import requests
 import time
-import threading
-import os
-
-app = Flask(__name__)
+import requests
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-CHAT_ID = "6977265844"
+CHAT_ID = "CHAT_IDINIZ"
 
 exchange = ccxt.mexc({"enableRateLimit": True})
 
-MIN_LAST_VOLUME_USDT = 80_000
-MIN_VOLUME_MULTIPLIER = 3
-MIN_PRICE_CHANGE_15M = 0.2
-MAX_PRICE_CHANGE_15M = 2.0
+# 🔥 MEXC GEVŞEK AYARLAR
+MIN_LAST_VOLUME_USDT = 20000
+MIN_VOLUME_MULTIPLIER = 2.5
+MIN_PRICE_CHANGE_15M = 0.5
+MAX_PRICE_CHANGE_15M = 5
 MIN_BODY_RATIO = 0.4
 
-WATCH_CONFIRM_SECONDS = 60 * 60
 COOLDOWN_SECONDS = 3 * 60 * 60
-HEARTBEAT_SECONDS = 30 * 60
+SLEEP_SECONDS = 60
 
-watchlist = {}
 sent_coins = {}
 
 def telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    except:
+        pass
 
 def scan_symbol(symbol):
-    candles = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=12)
+    try:
+        candles = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=12)
+        if len(candles) < 12:
+            return None
 
-    if len(candles) < 12:
-        return None
+        last = candles[-1]
+        prev = candles[-2]
 
-    last = candles[-1]
-    prev = candles[-7:-1]
+        last_open = last[1]
+        last_high = last[2]
+        last_low = last[3]
+        last_close = last[4]
+        last_volume = last[5]
 
-    open_15m = candles[-4][1]
-    close_now = last[4]
+        prev_close = prev[4]
 
-    change_15m = ((close_now - open_15m) / open_15m) * 100
+        price_change = ((last_close - prev_close) / prev_close) * 100
 
-    open_price = last[1]
-    high = last[2]
-    low = last[3]
-    close_price = last[4]
+        candle_range = last_high - last_low
+        if candle_range == 0:
+            return None
 
-    candle_range = high - low
-    body = abs(close_price - open_price)
+        body = abs(last_close - last_open)
+        body_ratio = body / candle_range
 
-    if candle_range == 0:
-        return None
+        volumes = [c[5] for c in candles[:-1]]
+        avg_volume = sum(volumes) / len(volumes)
 
-    body_ratio = body / candle_range
+        if avg_volume == 0:
+            return None
 
-    if body_ratio < MIN_BODY_RATIO:
-        return None
+        volume_ratio = last_volume / avg_volume
 
-    if close_price <= open_price:
-        return None
+        volume_usdt = last_volume * last_close
 
-    last_volume_usdt = last[5] * close_now
-    avg_prev_volume_usdt = sum(c[5] * c[4] for c in prev) / len(prev)
+        # 🎯 ANA FİLTRE
+        if volume_usdt < MIN_LAST_VOLUME_USDT:
+            return None
 
-    if avg_prev_volume_usdt == 0:
-        return None
+        if volume_ratio < MIN_VOLUME_MULTIPLIER:
+            return None
 
-    volume_multiplier = last_volume_usdt / avg_prev_volume_usdt
+        if price_change < MIN_PRICE_CHANGE_15M or price_change > MAX_PRICE_CHANGE_15M:
+            return None
 
-    if (
-        last_volume_usdt > MIN_LAST_VOLUME_USDT
-        and volume_multiplier > MIN_VOLUME_MULTIPLIER
-        and change_15m > MIN_PRICE_CHANGE_15M
-        and change_15m < MAX_PRICE_CHANGE_15M
-    ):
+        if body_ratio < MIN_BODY_RATIO:
+            return None
+
         return {
             "symbol": symbol,
-            "price": close_now,
-            "change": change_15m,
-            "volume": last_volume_usdt,
-            "multiplier": volume_multiplier,
+            "price": last_close,
+            "price_change": price_change,
+            "volume_ratio": volume_ratio,
+            "volume_usdt": volume_usdt,
             "body_ratio": body_ratio
         }
 
-    return None
+    except:
+        return None
 
-def scan():
-    telegram("✅ MEXC DOUBLE scanner başladı hocam.")
-
+def get_pairs():
     markets = exchange.load_markets()
-    symbols = [
-        s for s in markets
-        if s.endswith("/USDT") and markets[s].get("spot")
+    return [
+        symbol for symbol in markets
+        if symbol.endswith("/USDT")
     ]
 
-    last_heartbeat = 0
+def run():
+    telegram("🚀 MEXC ERKEN PUMP SCANNER başladı hocam")
 
     while True:
         try:
-            now = time.time()
+            pairs = get_pairs()
 
-            if now - last_heartbeat > HEARTBEAT_SECONDS:
-                telegram("🟢 MEXC bot çalışıyor hocam")
-                last_heartbeat = now
-
-            for symbol in symbols:
+            for symbol in pairs:
                 try:
-                    if now - sent_coins.get(symbol, 0) < COOLDOWN_SECONDS:
+                    now = time.time()
+
+                    if symbol in sent_coins and now - sent_coins[symbol] < COOLDOWN_SECONDS:
                         continue
 
                     result = scan_symbol(symbol)
-
                     if not result:
                         continue
 
-                    first_seen = watchlist.get(symbol)
-
-                    if first_seen and now - first_seen <= WATCH_CONFIRM_SECONDS:
-                        sent_coins[symbol] = now
-                        watchlist.pop(symbol, None)
-
-                        msg = f"""🔥 MEXC ONAY GELDİ
+                    msg = f"""
+🚨 MEXC PARA GİRİŞİ
 
 Coin: {result['symbol']}
-Fiyat: {result['price']}
-Son 15dk Değişim: %{round(result['change'], 2)}
-Son 5dk Hacim: {round(result['volume']):,} USDT
-Hacim Artışı: {round(result['multiplier'], 2)}x
-Mum Gövde Gücü: %{round(result['body_ratio'] * 100, 1)}
+Fiyat: {result['price']:.6f}
 
-✅ İkinci hacim geldi.
-🚀 Gerçek pump ihtimali güçlendi.
+5dk Değişim: %{result['price_change']:.2f}
+Hacim: {int(result['volume_usdt'])} USDT
+Hacim Artışı: {result['volume_ratio']:.2f}x
+
+Mum Gücü: {result['body_ratio']:.2f}
 
 ⚠️ Kontrol:
-- Direnç kırıldı mı?
-- Fitil uzun mu?
-- Hacim devam ediyor mu?"""
-                        telegram(msg)
+- 5m mum güçlü mü?
+- Direnç yakın mı?
+- Hacim devam ediyor mu?
+"""
 
-                    else:
-                        watchlist[symbol] = now
+                    telegram(msg)
+                    sent_coins[symbol] = now
 
-                        msg = f"""🟡 MEXC İZLEMEYE ALINDI
+                    time.sleep(0.2)
 
-Coin: {result['symbol']}
-Fiyat: {result['price']}
-Son 15dk Değişim: %{round(result['change'], 2)}
-Son 5dk Hacim: {round(result['volume']):,} USDT
-Hacim Artışı: {round(result['multiplier'], 2)}x
-Mum Gövde Gücü: %{round(result['body_ratio'] * 100, 1)}
-
-⚠️ İlk para girişi görüldü.
-İkinci sinyal gelirse ONAY sayacağız."""
-                        telegram(msg)
-
-                    time.sleep(0.25)
-
-                except Exception as e:
-                    print("COIN HATA:", symbol, e)
+                except:
                     continue
 
-            time.sleep(60)
+            print("MEXC tarama bitti")
+            time.sleep(SLEEP_SECONDS)
 
-        except Exception as e:
-            print("GENEL HATA:", e)
+        except:
             time.sleep(10)
 
-@app.route("/")
-def home():
-    return "MEXC double scanner aktif", 200
-
 if __name__ == "__main__":
-    threading.Thread(target=scan, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    run()
