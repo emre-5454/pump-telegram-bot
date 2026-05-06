@@ -8,22 +8,36 @@ import os
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN ="8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 exchange = ccxt.binance({"enableRateLimit": True})
 
 TIMEFRAME = "15m"
 LIMIT = 120
-SLEEP_SECONDS = 60
-COOLDOWN = 6 * 60 * 60
+SLEEP_SECONDS = 75
 
-MIN_VOLUME_RATIO = 4.5
-MIN_BODY_RATIO = 0.65
-MAX_UPPER_WICK = 0.15
-MIN_SCORE = 9
+PREP_COOLDOWN = 4 * 60 * 60
+CONFIRM_COOLDOWN = 6 * 60 * 60
 
-sent_cache = {}
+# 🟡 SIKI ERKEN HAZIRLIK AYARLARI
+PREP_MIN_VOLUME_RATIO = 2.2
+PREP_MAX_VOLUME_RATIO = 4.5
+PREP_MIN_RSI = 54
+PREP_MAX_RSI = 65
+PREP_MAX_BB_WIDTH = 0.030
+PREP_MAX_PRICE_CHANGE = 1.0
+PREP_MIN_BODY_RATIO = 0.35
+PREP_MAX_UPPER_WICK = 0.40
+
+# 🟢 SNIPER ONAY AYARLARI
+CONFIRM_MIN_VOLUME_RATIO = 4.5
+CONFIRM_MIN_BODY_RATIO = 0.65
+CONFIRM_MAX_UPPER_WICK = 0.15
+CONFIRM_MIN_SCORE = 9
+
+prep_cache = {}
+confirm_cache = {}
 
 def send_telegram(message):
     try:
@@ -59,7 +73,8 @@ def detect_structure(df, lookback=20):
 def analyze(symbol):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
-        if not ohlcv or len(ohlcv) < 50:
+
+        if not ohlcv or len(ohlcv) < 60:
             return None
 
         df = pd.DataFrame(
@@ -72,6 +87,7 @@ def analyze(symbol):
 
         ma20 = close.rolling(20).mean()
         std20 = close.rolling(20).std()
+
         upper = ma20 + 2 * std20
         lower = ma20 - 2 * std20
 
@@ -79,7 +95,8 @@ def analyze(symbol):
         rsi = calculate_rsi(close).iloc[-1]
 
         vol_avg = volume.rolling(20).mean().iloc[-1]
-        if vol_avg == 0 or pd.isna(vol_avg) or pd.isna(rsi):
+
+        if vol_avg == 0 or pd.isna(vol_avg) or pd.isna(rsi) or pd.isna(bb_width):
             return None
 
         volume_ratio = volume.iloc[-1] / vol_avg
@@ -96,33 +113,35 @@ def analyze(symbol):
         if candle_range == 0:
             return None
 
-        body = abs(last_close - last_open)
-        upper_wick = last_high - max(last_close, last_open)
-
-        body_ratio = body / candle_range
-        upper_wick_ratio = upper_wick / candle_range
+        body_ratio = abs(last_close - last_open) / candle_range
+        upper_wick_ratio = (last_high - max(last_close, last_open)) / candle_range
 
         upper_break = last_close > upper.iloc[-1]
         above_mid = last_close > ma20.iloc[-1]
 
         bos, msb, prev_high, prev_low = detect_structure(df)
 
+        volume_3_candle_rising = (
+            volume.iloc[-1] > volume.iloc[-2]
+            and volume.iloc[-2] > volume.iloc[-3]
+        )
+
         fake_pump = (
-            upper_wick_ratio > MAX_UPPER_WICK
-            or body_ratio < MIN_BODY_RATIO
+            upper_wick_ratio > CONFIRM_MAX_UPPER_WICK
+            or body_ratio < CONFIRM_MIN_BODY_RATIO
             or rsi > 75
             or price_change <= 0
         )
 
         score = 0
 
-        if volume_ratio >= MIN_VOLUME_RATIO:
+        if volume_ratio >= CONFIRM_MIN_VOLUME_RATIO:
             score += 2
         if volume_ratio >= 5:
             score += 1
-        if body_ratio >= MIN_BODY_RATIO:
+        if body_ratio >= CONFIRM_MIN_BODY_RATIO:
             score += 2
-        if upper_wick_ratio <= MAX_UPPER_WICK:
+        if upper_wick_ratio <= CONFIRM_MAX_UPPER_WICK:
             score += 1
         if 55 <= rsi <= 70:
             score += 1
@@ -135,20 +154,34 @@ def analyze(symbol):
         if msb:
             score += 1
 
-        if score > 10:
-            score = 10
+        score = min(score, 10)
 
-        structure_setup = (
-            score >= MIN_SCORE
-            and volume_ratio >= MIN_VOLUME_RATIO
-            and body_ratio >= MIN_BODY_RATIO
-            and upper_wick_ratio <= MAX_UPPER_WICK
+        # 🟡 ERKEN HAZIRLIK
+        prep_setup = (
+            PREP_MIN_VOLUME_RATIO <= volume_ratio <= PREP_MAX_VOLUME_RATIO
+            and PREP_MIN_RSI <= rsi <= PREP_MAX_RSI
+            and bb_width <= PREP_MAX_BB_WIDTH
+            and price_change <= PREP_MAX_PRICE_CHANGE
+            and price_change > -0.30
+            and body_ratio >= PREP_MIN_BODY_RATIO
+            and upper_wick_ratio <= PREP_MAX_UPPER_WICK
+            and above_mid
+            and volume_3_candle_rising
+            and not upper_break
+        )
+
+        # 🟢 SNIPER ONAY
+        confirm_setup = (
+            score >= CONFIRM_MIN_SCORE
+            and volume_ratio >= CONFIRM_MIN_VOLUME_RATIO
+            and body_ratio >= CONFIRM_MIN_BODY_RATIO
+            and upper_wick_ratio <= CONFIRM_MAX_UPPER_WICK
             and above_mid
             and not fake_pump
             and (bos or upper_break)
         )
 
-        if not structure_setup:
+        if not prep_setup and not confirm_setup:
             return None
 
         return {
@@ -167,7 +200,10 @@ def analyze(symbol):
             "msb": msb,
             "prev_high": prev_high,
             "prev_low": prev_low,
-            "fake_pump": fake_pump
+            "fake_pump": fake_pump,
+            "prep_setup": prep_setup,
+            "confirm_setup": confirm_setup,
+            "volume_3_candle_rising": volume_3_candle_rising
         }
 
     except Exception as e:
@@ -176,30 +212,77 @@ def analyze(symbol):
 
 def get_pairs():
     markets = exchange.load_markets()
-    return [
-        symbol for symbol, info in markets.items()
-        if symbol.endswith("/USDT") and info.get("spot") and info.get("active", True)
-    ]
+
+    blacklist = ["UP/", "DOWN/", "BULL/", "BEAR/"]
+
+    pairs = []
+
+    for symbol, info in markets.items():
+        if not symbol.endswith("/USDT"):
+            continue
+
+        if not info.get("spot"):
+            continue
+
+        if not info.get("active", True):
+            continue
+
+        if any(x in symbol for x in blacklist):
+            continue
+
+        pairs.append(symbol)
+
+    return pairs
 
 def run_bot():
-    send_telegram("✅ BINANCE STRUCTURE SNIPER bot aktif hocam.")
+    send_telegram("✅ BINANCE SIKI ERKEN PUMP + STRUCTURE SNIPER aktif hocam.")
 
     while True:
         try:
             pairs = get_pairs()
+            now = time.time()
 
             for symbol in pairs:
                 try:
-                    now = time.time()
-
-                    if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
-                        continue
-
                     result = analyze(symbol)
+
                     if not result:
                         continue
 
-                    message = f"""
+                    # 🟡 HAZIRLIK SİNYALİ
+                    if result["prep_setup"]:
+                        if symbol not in prep_cache or now - prep_cache[symbol] > PREP_COOLDOWN:
+                            message = f"""
+🟡 BINANCE PUMP HAZIRLIĞI
+
+Coin: {result['symbol']}
+Fiyat: {result['price']:.6f}
+15m Değişim: %{result['price_change']:.2f}
+
+RSI: {result['rsi']:.2f}
+Hacim: {result['volume_ratio']:.2f}x
+BB Genişlik: {result['bb_width']:.4f}
+
+3 Mum Hacim Artışı: {'VAR ✅' if result['volume_3_candle_rising'] else 'YOK ❌'}
+Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
+BB Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
+
+Mum Gücü: {result['body_ratio']:.2f}
+Üst Fitil: {result['upper_wick_ratio']:.2f}
+
+📍 Karar:
+Erken hazırlık var.
+Direkt long değil.
+Direnç kırılımı + retest bekle.
+"""
+                            send_telegram(message)
+                            prep_cache[symbol] = now
+                            time.sleep(0.3)
+
+                    # 🟢 ONAY SİNYALİ
+                    if result["confirm_setup"]:
+                        if symbol not in confirm_cache or now - confirm_cache[symbol] > CONFIRM_COOLDOWN:
+                            message = f"""
 🟢 BINANCE STRUCTURE SETUP
 
 Coin: {result['symbol']}
@@ -227,10 +310,9 @@ Kırılan Seviye: {result['prev_high']:.6f}
 🛑 Stop: Kırılan seviye altı / son dip
 🎯 Hedef: Risk x2
 """
-                    send_telegram(message)
-                    sent_cache[symbol] = now
-
-                    time.sleep(0.3)
+                            send_telegram(message)
+                            confirm_cache[symbol] = now
+                            time.sleep(0.3)
 
                 except Exception as e:
                     print("PAIR HATA:", symbol, e)
@@ -244,7 +326,7 @@ Kırılan Seviye: {result['prev_high']:.6f}
 
 @app.route("/")
 def home():
-    return "Binance Structure Sniper aktif", 200
+    return "Binance sıkı erken pump + structure sniper aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
