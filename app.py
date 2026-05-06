@@ -3,42 +3,38 @@ import time
 import requests
 import math
 
-TELEGRAM_TOKEN =  "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 exchange = ccxt.mexc({"enableRateLimit": True})
 
-# =========================
-# AYARLAR
-# =========================
-SLEEP_SECONDS = 60
-COOLDOWN_PREP = 60 * 60          # hazırlık sinyali 1 saat
-COOLDOWN_CONFIRM = 3 * 60 * 60   # onay sinyali 3 saat
+# =====================
+# SIKI MEXC AYARLAR
+# =====================
+SLEEP_SECONDS = 90
 
-# Likidite filtresi
-MIN_LAST_VOLUME_USDT_PREP = 8000
-MIN_LAST_VOLUME_USDT_CONFIRM = 20000
+COOLDOWN_PREP = 3 * 60 * 60
+COOLDOWN_CONFIRM = 6 * 60 * 60
 
-# Hazırlık modu: pump başlamadan önce
-PREP_MIN_VOL_RATIO = 1.25
-PREP_MAX_PRICE_CHANGE_15M = 2.0
-PREP_MIN_RSI = 48
-PREP_MAX_RSI = 72
-PREP_MAX_BB_WIDTH = 0.060
+# Hazırlık sinyali
+MIN_LAST_VOLUME_USDT_PREP = 20000
+PREP_MIN_VOL_RATIO = 1.8
+PREP_MAX_PRICE_CHANGE_15M = 1.2
+PREP_MIN_RSI = 52
+PREP_MAX_RSI = 68
+PREP_MAX_BB_WIDTH = 0.035
 
-# Onay modu: pump başladıktan sonra
-CONFIRM_MIN_VOL_RATIO = 2.8
-CONFIRM_MIN_PRICE_CHANGE_5M = 0.6
-CONFIRM_MAX_PRICE_CHANGE_5M = 5.0
-CONFIRM_MIN_BODY_RATIO = 0.45
-CONFIRM_MAX_UPPER_WICK = 0.45
+# Onay sinyali
+MIN_LAST_VOLUME_USDT_CONFIRM = 50000
+CONFIRM_MIN_VOL_RATIO = 4.0
+CONFIRM_MIN_PRICE_CHANGE_5M = 1.0
+CONFIRM_MAX_PRICE_CHANGE_5M = 4.0
+CONFIRM_MIN_BODY_RATIO = 0.60
+CONFIRM_MAX_UPPER_WICK = 0.25
 
 sent_prep = {}
 sent_confirm = {}
 
-# =========================
-# TELEGRAM
-# =========================
 def telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -46,24 +42,16 @@ def telegram(msg):
     except Exception as e:
         print("Telegram hata:", e)
 
-# =========================
-# İNDİKATÖRLER
-# =========================
 def rsi(values, period=14):
     if len(values) < period + 1:
         return None
 
-    gains = []
-    losses = []
+    gains, losses = [], []
 
     for i in range(1, period + 1):
         diff = values[-i] - values[-i - 1]
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
 
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
@@ -97,17 +85,15 @@ def bollinger_width(values, period=20):
 
 def candle_power(open_, high, low, close):
     rng = high - low
+
     if rng == 0:
         return 0, 1
 
-    body = abs(close - open_) / rng
+    body_ratio = abs(close - open_) / rng
     upper_wick = (high - max(open_, close)) / rng
 
-    return body, upper_wick
+    return body_ratio, upper_wick
 
-# =========================
-# MARKETLER
-# =========================
 def get_pairs():
     markets = exchange.load_markets()
     return [
@@ -115,9 +101,6 @@ def get_pairs():
         if symbol.endswith("/USDT") and markets[symbol].get("active", True)
     ]
 
-# =========================
-# TARAMA
-# =========================
 def scan_symbol(symbol):
     try:
         candles = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=60)
@@ -141,6 +124,7 @@ def scan_symbol(symbol):
         price_change_15m = ((c - candles[-4][4]) / candles[-4][4]) * 100
 
         avg_volume = sum(volumes[-21:-1]) / 20
+
         if avg_volume == 0:
             return None
 
@@ -157,11 +141,12 @@ def scan_symbol(symbol):
         if rsi_now is None or bb_width is None or ema9 is None or ema21 is None:
             return None
 
-        # =========================
-        # 🟡 ERKEN HAZIRLIK MODU
-        # =========================
         prep = False
+        confirm = False
 
+        # =====================
+        # 🟡 ERKEN HAZIRLIK
+        # =====================
         if (
             volume_usdt >= MIN_LAST_VOLUME_USDT_PREP
             and volume_ratio >= PREP_MIN_VOL_RATIO
@@ -173,11 +158,9 @@ def scan_symbol(symbol):
         ):
             prep = True
 
-        # =========================
-        # 🚨 PUMP ONAY MODU
-        # =========================
-        confirm = False
-
+        # =====================
+        # 🚨 PUMP ONAY
+        # =====================
         if (
             volume_usdt >= MIN_LAST_VOLUME_USDT_CONFIRM
             and volume_ratio >= CONFIRM_MIN_VOL_RATIO
@@ -205,11 +188,8 @@ def scan_symbol(symbol):
     except Exception:
         return None
 
-# =========================
-# ÇALIŞTIR
-# =========================
 def run():
-    telegram("🚀 MEXC ERKEN PUMP SCANNER başladı hocam")
+    telegram("🚀 MEXC SIKI ERKEN PUMP SCANNER başladı hocam")
 
     while True:
         try:
@@ -218,10 +198,10 @@ def run():
 
             for symbol in pairs:
                 result = scan_symbol(symbol)
+
                 if not result:
                     continue
 
-                # 🟡 HAZIRLIK SİNYALİ
                 if result["prep"]:
                     if symbol not in sent_prep or now - sent_prep[symbol] > COOLDOWN_PREP:
                         msg = f"""
@@ -241,14 +221,14 @@ Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
 
 📍 Karar:
-Pump başlamadan önce hazırlık var.
-Direkt long değil, direnç kırılımı + retest bekle.
+Erken hazırlık var.
+Direkt long değil.
+Direnç kırılımı + retest bekle.
 """
                         telegram(msg)
                         sent_prep[symbol] = now
-                        time.sleep(0.2)
+                        time.sleep(0.25)
 
-                # 🚨 ONAY SİNYALİ
                 if result["confirm"]:
                     if symbol not in sent_confirm or now - sent_confirm[symbol] > COOLDOWN_CONFIRM:
                         msg = f"""
@@ -276,7 +256,7 @@ Mum Gücü: {result['body_ratio']:.2f}
 """
                         telegram(msg)
                         sent_confirm[symbol] = now
-                        time.sleep(0.2)
+                        time.sleep(0.25)
 
             print("MEXC tarama bitti")
             time.sleep(SLEEP_SECONDS)
