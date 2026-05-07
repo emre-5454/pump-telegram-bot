@@ -9,58 +9,60 @@ from collections import defaultdict, deque
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN ="8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-CHAT_ID = os.environ.get("CHAT_ID", "6977265844")
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+CHAT_ID = "6977265844"
 
-# =====================
-# AYARLAR
-# =====================
 COOLDOWN = 4 * 60 * 60
 
-MIN_QUOTE_VOLUME_USDT = 15000      # 1 dakikalık minimum hacim
-MIN_VOLUME_RATIO = 4.0             # son 1dk hacim / ortalama hacim
-MAX_PRICE_CHANGE_3M = 1.2          # daha pump uçmadan yakalasın
-MIN_PRICE_CHANGE_1M = 0.10         # hareket başlamış olsun
-MAX_UPPER_WICK = 0.35
-MIN_BODY_RATIO = 0.35
+MIN_QUOTE_VOLUME_USDT = 7000
+MIN_VOLUME_RATIO = 2.5
+MAX_PRICE_CHANGE_3M = 1.8
+MIN_PRICE_CHANGE_1M = 0.03
+MAX_UPPER_WICK = 0.55
+MIN_BODY_RATIO = 0.25
 
-MAX_SYMBOLS = 250                  # çok coin taramasın diye
+MAX_SYMBOLS = 250
 STREAM_CHUNK_SIZE = 80
 
 sent_cache = {}
-data = defaultdict(lambda: {
+
+data_store = defaultdict(lambda: {
     "closes": deque(maxlen=30),
-    "volumes": deque(maxlen=30),
     "quote_volumes": deque(maxlen=30)
 })
 
 def send_telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
     except Exception as e:
-        print("Telegram hata:", e)
+        print("TELEGRAM HATA:", e, flush=True)
 
 def get_binance_usdt_symbols():
-    url = "https://api.binance.com/api/v3/exchangeInfo"
-    r = requests.get(url, timeout=15).json()
+    print("BINANCE SEMBOLLER ALINIYOR...", flush=True)
 
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    r = requests.get(url, timeout=20)
+    print("BINANCE STATUS:", r.status_code, flush=True)
+
+    data = r.json()
     symbols = []
 
-    for s in r["symbols"]:
+    for s in data["symbols"]:
         if (
             s["status"] == "TRADING"
             and s["quoteAsset"] == "USDT"
-            and s["isSpotTradingAllowed"]
+            and s.get("isSpotTradingAllowed", False)
         ):
             base = s["baseAsset"]
-
-            blacklist = ["UP", "DOWN", "BULL", "BEAR"]
-            if any(x in base for x in blacklist):
+            if any(x in base for x in ["UP", "DOWN", "BULL", "BEAR"]):
                 continue
-
             symbols.append(s["symbol"].lower())
 
+    print("SEMBOL SAYISI:", len(symbols), flush=True)
     return symbols[:MAX_SYMBOLS]
 
 def analyze_kline(symbol, k):
@@ -69,30 +71,26 @@ def analyze_kline(symbol, k):
         open_ = float(k["o"])
         high = float(k["h"])
         low = float(k["l"])
-        volume = float(k["v"])
         quote_volume = float(k["q"])
 
-        d = data[symbol]
-
+        d = data_store[symbol]
         d["closes"].append(close)
-        d["volumes"].append(volume)
         d["quote_volumes"].append(quote_volume)
 
         if len(d["closes"]) < 20:
             return
 
-        avg_quote_volume = sum(list(d["quote_volumes"])[:-1]) / (len(d["quote_volumes"]) - 1)
+        vols = list(d["quote_volumes"])
+        closes = list(d["closes"])
 
-        if avg_quote_volume <= 0:
+        avg_volume = sum(vols[:-1]) / (len(vols) - 1)
+        if avg_volume <= 0:
             return
 
-        volume_ratio = quote_volume / avg_quote_volume
+        volume_ratio = quote_volume / avg_volume
 
-        close_1m_ago = list(d["closes"])[-2]
-        close_3m_ago = list(d["closes"])[-4]
-
-        price_change_1m = ((close - close_1m_ago) / close_1m_ago) * 100
-        price_change_3m = ((close - close_3m_ago) / close_3m_ago) * 100
+        price_change_1m = ((close - closes[-2]) / closes[-2]) * 100
+        price_change_3m = ((close - closes[-4]) / closes[-4]) * 100
 
         candle_range = high - low
         if candle_range <= 0:
@@ -101,10 +99,9 @@ def analyze_kline(symbol, k):
         body_ratio = abs(close - open_) / candle_range
         upper_wick = (high - max(open_, close)) / candle_range
 
-        volumes = list(d["quote_volumes"])
         volume_3_rising = (
-            volumes[-1] > volumes[-2]
-            and volumes[-2] > volumes[-3]
+            vols[-1] > vols[-2]
+            and vols[-2] > vols[-3]
         )
 
         now = time.time()
@@ -148,9 +145,10 @@ Direnç kırılımı + retest bekle.
 """
         send_telegram(msg)
         sent_cache[symbol] = now
+        print("SİNYAL GÖNDERİLDİ:", symbol, flush=True)
 
     except Exception as e:
-        print("Analiz hata:", symbol, e)
+        print("ANALIZ HATA:", symbol, e, flush=True)
 
 def on_message(ws, message):
     try:
@@ -166,7 +164,7 @@ def on_message(ws, message):
 
         k = data_msg["k"]
 
-        # Sadece kapanan 1m mum
+        # 1 dakikalık mum kapanınca analiz eder
         if not k["x"]:
             return
 
@@ -174,23 +172,27 @@ def on_message(ws, message):
         analyze_kline(symbol, k)
 
     except Exception as e:
-        print("Mesaj hata:", e)
+        print("MESAJ HATA:", e, flush=True)
 
 def on_error(ws, error):
-    print("Websocket hata:", error)
+    print("WEBSOCKET HATA:", error, flush=True)
 
 def on_close(ws, close_status_code, close_msg):
-    print("Websocket kapandı:", close_status_code, close_msg)
+    print("WEBSOCKET KAPANDI:", close_status_code, close_msg, flush=True)
 
 def on_open(ws):
-    print("Websocket açıldı")
+    print("WEBSOCKET AÇILDI", flush=True)
 
 def start_socket(symbols):
+    print("SOCKET THREAD BAŞLADI:", len(symbols), "sembol", flush=True)
+
     streams = "/".join([f"{s}@kline_1m" for s in symbols])
     url = f"wss://stream.binance.com:9443/stream?streams={streams}"
 
     while True:
         try:
+            print("WEBSOCKET BAĞLANIYOR...", flush=True)
+
             ws = websocket.WebSocketApp(
                 url,
                 on_open=on_open,
@@ -198,22 +200,37 @@ def start_socket(symbols):
                 on_error=on_error,
                 on_close=on_close
             )
-            ws.run_forever(ping_interval=20, ping_timeout=10)
-        except Exception as e:
-            print("Socket genel hata:", e)
 
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+
+        except Exception as e:
+            print("SOCKET GENEL HATA:", e, flush=True)
+
+        print("5 saniye sonra tekrar bağlanacak...", flush=True)
         time.sleep(5)
 
 def run_bot():
+    print("RUN BOT ÇALIŞTI", flush=True)
     send_telegram("🚀 BINANCE WEBSOCKET ERKEN HACİM BOTU başladı hocam")
 
-    symbols = get_binance_usdt_symbols()
-    print("Toplam sembol:", len(symbols))
+    try:
+        symbols = get_binance_usdt_symbols()
+    except Exception as e:
+        print("SEMBOL ALMA HATASI:", e, flush=True)
+        send_telegram(f"❌ Binance sembol alma hatası: {e}")
+        return
+
+    if not symbols:
+        print("SEMBOL LİSTESİ BOŞ", flush=True)
+        send_telegram("❌ Binance sembol listesi boş geldi hocam")
+        return
 
     chunks = [
         symbols[i:i + STREAM_CHUNK_SIZE]
         for i in range(0, len(symbols), STREAM_CHUNK_SIZE)
     ]
+
+    print("CHUNK SAYISI:", len(chunks), flush=True)
 
     for chunk in chunks:
         threading.Thread(target=start_socket, args=(chunk,), daemon=True).start()
@@ -225,5 +242,6 @@ def home():
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
