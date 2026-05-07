@@ -13,19 +13,19 @@ TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 # =====================
-# TEST AYARLARI
+# TEŞHİS / TEST AYARLARI
 # =====================
-COOLDOWN = 2 * 60 * 60
+COOLDOWN = 15 * 60
 
-MIN_QUOTE_VOLUME_USDT = 3000
-MIN_VOLUME_RATIO = 1.8
-MAX_PRICE_CHANGE_3M = 3.0
-MIN_PRICE_CHANGE_1M = 0.01
-MAX_UPPER_WICK = 0.75
-MIN_BODY_RATIO = 0.15
+MIN_QUOTE_VOLUME_USDT = 100
+MIN_VOLUME_RATIO = 1.0
+MAX_PRICE_CHANGE_3M = 5.0
+MIN_PRICE_CHANGE_1M = -5.0
+MAX_UPPER_WICK = 1.0
+MIN_BODY_RATIO = 0.00
 
-MAX_SYMBOLS = 250
-STREAM_CHUNK_SIZE = 80
+MAX_SYMBOLS = 120
+STREAM_CHUNK_SIZE = 40
 
 sent_cache = {}
 
@@ -83,7 +83,8 @@ def analyze_kline(symbol, k):
         d["closes"].append(close)
         d["quote_volumes"].append(quote_volume)
 
-        if len(d["closes"]) < 20:
+        # Test için 5 mum yeterli
+        if len(d["closes"]) < 5:
             return
 
         vols = list(d["quote_volumes"])
@@ -100,10 +101,20 @@ def analyze_kline(symbol, k):
 
         candle_range = high - low
         if candle_range <= 0:
-            return
+            body_ratio = 0
+            upper_wick = 0
+        else:
+            body_ratio = abs(close - open_) / candle_range
+            upper_wick = (high - max(open_, close)) / candle_range
 
-        body_ratio = abs(close - open_) / candle_range
-        upper_wick = (high - max(open_, close)) / candle_range
+        print(
+            symbol,
+            "QV:", round(quote_volume, 2),
+            "VR:", round(volume_ratio, 2),
+            "PC1:", round(price_change_1m, 3),
+            "PC3:", round(price_change_3m, 3),
+            flush=True
+        )
 
         now = time.time()
 
@@ -113,7 +124,7 @@ def analyze_kline(symbol, k):
         setup = (
             quote_volume >= MIN_QUOTE_VOLUME_USDT
             and volume_ratio >= MIN_VOLUME_RATIO
-            and 0 < price_change_3m <= MAX_PRICE_CHANGE_3M
+            and price_change_3m <= MAX_PRICE_CHANGE_3M
             and price_change_1m >= MIN_PRICE_CHANGE_1M
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
@@ -123,7 +134,7 @@ def analyze_kline(symbol, k):
             return
 
         msg = f"""
-🧪 BINANCE WEBSOCKET TEST SİNYALİ
+🧪 BINANCE WEBSOCKET TEŞHİS SİNYALİ
 
 Coin: {symbol.upper().replace('USDT', '/USDT')}
 Fiyat: {close:.6f}
@@ -138,14 +149,13 @@ Mum Gücü: {body_ratio:.2f}
 Üst Fitil: {upper_wick:.2f}
 
 📍 Karar:
-Test sinyali.
-Sistem çalışıyor mu kontrol.
-Direkt işlem değil.
+Bu işlem sinyali değil.
+Websocket veri akışı testidir.
 """
         send_telegram(msg)
         sent_cache[symbol] = now
 
-        print("SİNYAL GÖNDERİLDİ:", symbol, flush=True)
+        print("TELEGRAM TEST SİNYALİ GÖNDERİLDİ:", symbol, flush=True)
 
     except Exception as e:
         print("ANALIZ HATA:", symbol, e, flush=True)
@@ -164,9 +174,9 @@ def on_message(ws, message):
 
         k = data_msg["k"]
 
-        # 1 dakikalık kapanan mum
-        if not k["x"]:
-            return
+        # TESTTE KAPANMIŞ MUM BEKLEMİYORUZ
+        # if not k["x"]:
+        #     return
 
         symbol = k["s"].lower()
         analyze_kline(symbol, k)
@@ -184,7 +194,7 @@ def on_open(ws):
     print("WEBSOCKET AÇILDI", flush=True)
 
 def start_socket(symbols):
-    print("SOKET İPLİĞİ BAŞLADI:", len(symbols), "sembol", flush=True)
+    print("SOKET THREAD BAŞLADI:", len(symbols), "sembol", flush=True)
 
     streams = "/".join([f"{s}@kline_1m" for s in symbols])
     url = f"wss://stream.binance.com:9443/stream?streams={streams}"
@@ -211,7 +221,7 @@ def start_socket(symbols):
 
 def run_bot():
     print("RUN BOT ÇALIŞTI", flush=True)
-    send_telegram("🚀 BINANCE WEBSOCKET TEST BOTU başladı hocam")
+    send_telegram("🚀 BINANCE WEBSOCKET TEŞHİS BOTU başladı hocam")
 
     try:
         symbols = get_binance_usdt_symbols()
@@ -238,7 +248,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance websocket test botu aktif", 200
+    return "Binance websocket teşhis botu aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
