@@ -5,3 +5,4 @@ ccxt
 pandas
 numpy
 openai
+websocket-client
