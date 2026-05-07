@@ -15,25 +15,25 @@ exchange = ccxt.binance({"enableRateLimit": True})
 
 TIMEFRAME = "15m"
 LIMIT = 120
-SLEEP_SECONDS = 75
+SLEEP_SECONDS = 90
 
-PREP_COOLDOWN = 4 * 60 * 60
-CONFIRM_COOLDOWN = 6 * 60 * 60
+PREP_COOLDOWN = 8 * 60 * 60
+CONFIRM_COOLDOWN = 8 * 60 * 60
 
-# 🟡 SIKI ERKEN HAZIRLIK AYARLARI
-PREP_MIN_VOLUME_RATIO = 2.2
-PREP_MAX_VOLUME_RATIO = 4.5
-PREP_MIN_RSI = 54
-PREP_MAX_RSI = 65
-PREP_MAX_BB_WIDTH = 0.030
-PREP_MAX_PRICE_CHANGE = 1.0
-PREP_MIN_BODY_RATIO = 0.35
-PREP_MAX_UPPER_WICK = 0.40
+# 🟡 ÇOK SIKI ERKEN HAZIRLIK
+PREP_MIN_VOLUME_RATIO = 2.8
+PREP_MAX_VOLUME_RATIO = 4.2
+PREP_MIN_RSI = 56
+PREP_MAX_RSI = 63
+PREP_MAX_BB_WIDTH = 0.020
+PREP_MAX_PRICE_CHANGE = 0.60
+PREP_MIN_BODY_RATIO = 0.45
+PREP_MAX_UPPER_WICK = 0.25
 
-# 🟢 SNIPER ONAY AYARLARI
-CONFIRM_MIN_VOLUME_RATIO = 4.5
-CONFIRM_MIN_BODY_RATIO = 0.65
-CONFIRM_MAX_UPPER_WICK = 0.15
+# 🟢 SNIPER ONAY
+CONFIRM_MIN_VOLUME_RATIO = 4.8
+CONFIRM_MIN_BODY_RATIO = 0.68
+CONFIRM_MAX_UPPER_WICK = 0.12
 CONFIRM_MIN_SCORE = 9
 
 prep_cache = {}
@@ -73,7 +73,6 @@ def detect_structure(df, lookback=20):
 def analyze(symbol):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
-
         if not ohlcv or len(ohlcv) < 60:
             return None
 
@@ -87,7 +86,6 @@ def analyze(symbol):
 
         ma20 = close.rolling(20).mean()
         std20 = close.rolling(20).std()
-
         upper = ma20 + 2 * std20
         lower = ma20 - 2 * std20
 
@@ -95,7 +93,6 @@ def analyze(symbol):
         rsi = calculate_rsi(close).iloc[-1]
 
         vol_avg = volume.rolling(20).mean().iloc[-1]
-
         if vol_avg == 0 or pd.isna(vol_avg) or pd.isna(rsi) or pd.isna(bb_width):
             return None
 
@@ -137,13 +134,13 @@ def analyze(symbol):
 
         if volume_ratio >= CONFIRM_MIN_VOLUME_RATIO:
             score += 2
-        if volume_ratio >= 5:
+        if volume_ratio >= 5.5:
             score += 1
         if body_ratio >= CONFIRM_MIN_BODY_RATIO:
             score += 2
         if upper_wick_ratio <= CONFIRM_MAX_UPPER_WICK:
             score += 1
-        if 55 <= rsi <= 70:
+        if 56 <= rsi <= 70:
             score += 1
         if upper_break:
             score += 1
@@ -156,18 +153,18 @@ def analyze(symbol):
 
         score = min(score, 10)
 
-        # 🟡 ERKEN HAZIRLIK
+        # 🟡 ÇOK SIKI ERKEN HAZIRLIK
         prep_setup = (
             PREP_MIN_VOLUME_RATIO <= volume_ratio <= PREP_MAX_VOLUME_RATIO
             and PREP_MIN_RSI <= rsi <= PREP_MAX_RSI
             and bb_width <= PREP_MAX_BB_WIDTH
-            and price_change <= PREP_MAX_PRICE_CHANGE
-            and price_change > -0.30
+            and 0 < price_change <= PREP_MAX_PRICE_CHANGE
             and body_ratio >= PREP_MIN_BODY_RATIO
             and upper_wick_ratio <= PREP_MAX_UPPER_WICK
             and above_mid
             and volume_3_candle_rising
             and not upper_break
+            and msb
         )
 
         # 🟢 SNIPER ONAY
@@ -214,19 +211,15 @@ def get_pairs():
     markets = exchange.load_markets()
 
     blacklist = ["UP/", "DOWN/", "BULL/", "BEAR/"]
-
     pairs = []
 
     for symbol, info in markets.items():
         if not symbol.endswith("/USDT"):
             continue
-
         if not info.get("spot"):
             continue
-
         if not info.get("active", True):
             continue
-
         if any(x in symbol for x in blacklist):
             continue
 
@@ -235,7 +228,7 @@ def get_pairs():
     return pairs
 
 def run_bot():
-    send_telegram("✅ BINANCE SIKI ERKEN PUMP + STRUCTURE SNIPER aktif hocam.")
+    send_telegram("✅ BINANCE ÇOK SIKI ERKEN PUMP + STRUCTURE SNIPER aktif hocam.")
 
     while True:
         try:
@@ -245,11 +238,10 @@ def run_bot():
             for symbol in pairs:
                 try:
                     result = analyze(symbol)
-
                     if not result:
                         continue
 
-                    # 🟡 HAZIRLIK SİNYALİ
+                    # 🟡 HAZIRLIK
                     if result["prep_setup"]:
                         if symbol not in prep_cache or now - prep_cache[symbol] > PREP_COOLDOWN:
                             message = f"""
@@ -264,14 +256,14 @@ Hacim: {result['volume_ratio']:.2f}x
 BB Genişlik: {result['bb_width']:.4f}
 
 3 Mum Hacim Artışı: {'VAR ✅' if result['volume_3_candle_rising'] else 'YOK ❌'}
+MSB: {'VAR ✅' if result['msb'] else 'YOK ❌'}
 Orta Bant Üstü: {'VAR ✅' if result['above_mid'] else 'YOK ❌'}
-BB Üst Bant Kırılım: {'VAR ✅' if result['upper_break'] else 'YOK ❌'}
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick_ratio']:.2f}
 
 📍 Karar:
-Erken hazırlık var.
+Çok sıkı erken hazırlık var.
 Direkt long değil.
 Direnç kırılımı + retest bekle.
 """
@@ -279,7 +271,7 @@ Direnç kırılımı + retest bekle.
                             prep_cache[symbol] = now
                             time.sleep(0.3)
 
-                    # 🟢 ONAY SİNYALİ
+                    # 🟢 ONAY
                     if result["confirm_setup"]:
                         if symbol not in confirm_cache or now - confirm_cache[symbol] > CONFIRM_COOLDOWN:
                             message = f"""
@@ -326,7 +318,7 @@ Kırılan Seviye: {result['prev_high']:.6f}
 
 @app.route("/")
 def home():
-    return "Binance sıkı erken pump + structure sniper aktif", 200
+    return "Binance çok sıkı erken pump + structure sniper aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
