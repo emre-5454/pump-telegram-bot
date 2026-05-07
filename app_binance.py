@@ -12,14 +12,17 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-COOLDOWN = 4 * 60 * 60
+# =====================
+# TEST AYARLARI
+# =====================
+COOLDOWN = 2 * 60 * 60
 
-MIN_QUOTE_VOLUME_USDT = 7000
-MIN_VOLUME_RATIO = 2.5
-MAX_PRICE_CHANGE_3M = 1.8
-MIN_PRICE_CHANGE_1M = 0.03
-MAX_UPPER_WICK = 0.55
-MIN_BODY_RATIO = 0.25
+MIN_QUOTE_VOLUME_USDT = 3000
+MIN_VOLUME_RATIO = 1.8
+MAX_PRICE_CHANGE_3M = 3.0
+MIN_PRICE_CHANGE_1M = 0.01
+MAX_UPPER_WICK = 0.75
+MIN_BODY_RATIO = 0.15
 
 MAX_SYMBOLS = 250
 STREAM_CHUNK_SIZE = 80
@@ -46,7 +49,8 @@ def get_binance_usdt_symbols():
 
     url = "https://api.binance.com/api/v3/exchangeInfo"
     r = requests.get(url, timeout=20)
-    print("BINANCE STATUS:", r.status_code, flush=True)
+
+    print("BINANCE DURUMU:", r.status_code, flush=True)
 
     data = r.json()
     symbols = []
@@ -58,8 +62,10 @@ def get_binance_usdt_symbols():
             and s.get("isSpotTradingAllowed", False)
         ):
             base = s["baseAsset"]
+
             if any(x in base for x in ["UP", "DOWN", "BULL", "BEAR"]):
                 continue
+
             symbols.append(s["symbol"].lower())
 
     print("SEMBOL SAYISI:", len(symbols), flush=True)
@@ -99,11 +105,6 @@ def analyze_kline(symbol, k):
         body_ratio = abs(close - open_) / candle_range
         upper_wick = (high - max(open_, close)) / candle_range
 
-        volume_3_rising = (
-            vols[-1] > vols[-2]
-            and vols[-2] > vols[-3]
-        )
-
         now = time.time()
 
         if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
@@ -116,14 +117,13 @@ def analyze_kline(symbol, k):
             and price_change_1m >= MIN_PRICE_CHANGE_1M
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
-            and volume_3_rising
         )
 
         if not setup:
             return
 
         msg = f"""
-🟡 BINANCE WEBSOCKET ERKEN HACİM
+🧪 BINANCE WEBSOCKET TEST SİNYALİ
 
 Coin: {symbol.upper().replace('USDT', '/USDT')}
 Fiyat: {close:.6f}
@@ -134,17 +134,17 @@ Fiyat: {close:.6f}
 1dk Hacim: {int(quote_volume)} USDT
 Hacim Artışı: {volume_ratio:.2f}x
 
-3 Mum Hacim Artışı: VAR ✅
 Mum Gücü: {body_ratio:.2f}
 Üst Fitil: {upper_wick:.2f}
 
 📍 Karar:
-Erken hacim girişi var.
-Direkt long değil.
-Direnç kırılımı + retest bekle.
+Test sinyali.
+Sistem çalışıyor mu kontrol.
+Direkt işlem değil.
 """
         send_telegram(msg)
         sent_cache[symbol] = now
+
         print("SİNYAL GÖNDERİLDİ:", symbol, flush=True)
 
     except Exception as e:
@@ -164,7 +164,7 @@ def on_message(ws, message):
 
         k = data_msg["k"]
 
-        # 1 dakikalık mum kapanınca analiz eder
+        # 1 dakikalık kapanan mum
         if not k["x"]:
             return
 
@@ -184,7 +184,7 @@ def on_open(ws):
     print("WEBSOCKET AÇILDI", flush=True)
 
 def start_socket(symbols):
-    print("SOCKET THREAD BAŞLADI:", len(symbols), "sembol", flush=True)
+    print("SOKET İPLİĞİ BAŞLADI:", len(symbols), "sembol", flush=True)
 
     streams = "/".join([f"{s}@kline_1m" for s in symbols])
     url = f"wss://stream.binance.com:9443/stream?streams={streams}"
@@ -204,14 +204,14 @@ def start_socket(symbols):
             ws.run_forever(ping_interval=20, ping_timeout=10)
 
         except Exception as e:
-            print("SOCKET GENEL HATA:", e, flush=True)
+            print("SOKET GENEL HATA:", e, flush=True)
 
         print("5 saniye sonra tekrar bağlanacak...", flush=True)
         time.sleep(5)
 
 def run_bot():
     print("RUN BOT ÇALIŞTI", flush=True)
-    send_telegram("🚀 BINANCE WEBSOCKET ERKEN HACİM BOTU başladı hocam")
+    send_telegram("🚀 BINANCE WEBSOCKET TEST BOTU başladı hocam")
 
     try:
         symbols = get_binance_usdt_symbols()
@@ -238,7 +238,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance websocket erken hacim botu aktif", 200
+    return "Binance websocket test botu aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
