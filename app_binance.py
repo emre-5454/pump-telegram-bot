@@ -15,30 +15,30 @@ CHAT_ID = "6977265844"
 MAX_SYMBOLS = 150
 STREAM_CHUNK_SIZE = 50
 
-PREP_COOLDOWN = 4 * 60 * 60
+PREP_COOLDOWN = 8 * 60 * 60
 SNIPER_COOLDOWN = 4 * 60 * 60
-STRUCTURE_COOLDOWN = 6 * 60 * 60
+STRUCTURE_COOLDOWN = 8 * 60 * 60
 
-# 🟡 HAZIRLIK
-PREP_MIN_VOLUME_RATIO = 1.6
+# 🟡 DAHA SIKI HAZIRLIK
+PREP_MIN_VOLUME_RATIO = 2.2
 PREP_MAX_VOLUME_RATIO = 3.5
-PREP_MIN_QUOTE_VOLUME = 4000
-PREP_MAX_PRICE_CHANGE_3M = 0.80
-PREP_MIN_BODY_RATIO = 0.20
-PREP_MAX_UPPER_WICK = 0.55
+PREP_MIN_QUOTE_VOLUME = 10000
+PREP_MAX_PRICE_CHANGE_3M = 0.60
+PREP_MIN_BODY_RATIO = 0.35
+PREP_MAX_UPPER_WICK = 0.35
 
 # 🚨 SNIPER
-SNIPER_MIN_VOLUME_RATIO = 3.0
-SNIPER_MIN_QUOTE_VOLUME = 10000
-SNIPER_MIN_PRICE_CHANGE_1M = 0.08
+SNIPER_MIN_VOLUME_RATIO = 3.5
+SNIPER_MIN_QUOTE_VOLUME = 15000
+SNIPER_MIN_PRICE_CHANGE_1M = 0.10
 SNIPER_MAX_PRICE_CHANGE_3M = 1.50
-SNIPER_MIN_BODY_RATIO = 0.45
-SNIPER_MAX_UPPER_WICK = 0.35
+SNIPER_MIN_BODY_RATIO = 0.50
+SNIPER_MAX_UPPER_WICK = 0.30
 
 # 🟢 STRUCTURE
-STRUCTURE_MIN_VOLUME_RATIO = 4.0
-STRUCTURE_MIN_BODY_RATIO = 0.55
-STRUCTURE_MAX_UPPER_WICK = 0.25
+STRUCTURE_MIN_VOLUME_RATIO = 4.5
+STRUCTURE_MIN_BODY_RATIO = 0.60
+STRUCTURE_MAX_UPPER_WICK = 0.22
 STRUCTURE_LOOKBACK = 20
 
 prep_cache = {}
@@ -125,8 +125,6 @@ def analyze_kline(symbol, k):
             return
 
         closes = list(d["closes"])
-        highs = list(d["highs"])
-        lows = list(d["lows"])
         vols = list(d["quote_volumes"])
 
         avg_volume = sum(vols[:-1]) / (len(vols) - 1)
@@ -153,13 +151,15 @@ def analyze_kline(symbol, k):
 
         now = time.time()
 
-        # 🟡 HAZIRLIK RADAR
+        # 🟡 SIKI HAZIRLIK
         prep_setup = (
             quote_volume >= PREP_MIN_QUOTE_VOLUME
             and PREP_MIN_VOLUME_RATIO <= volume_ratio <= PREP_MAX_VOLUME_RATIO
             and 0 < price_change_3m <= PREP_MAX_PRICE_CHANGE_3M
             and body_ratio >= PREP_MIN_BODY_RATIO
             and upper_wick <= PREP_MAX_UPPER_WICK
+            and volume_3_rising
+            and msb
         )
 
         if prep_setup:
@@ -176,14 +176,15 @@ Fiyat: {close:.6f}
 1dk Hacim: {int(quote_volume)} USDT
 Hacim Artışı: {volume_ratio:.2f}x
 
-Mum Gücü: {body_ratio:.2f}
-Üst Fitil: {upper_wick:.2f}
-
+3 Mum Hacim Artışı: {'VAR ✅' if volume_3_rising else 'YOK ❌'}
 BOS: {'VAR ✅' if bos else 'YOK ❌'}
 MSB: {'VAR ✅' if msb else 'YOK ❌'}
 
+Mum Gücü: {body_ratio:.2f}
+Üst Fitil: {upper_wick:.2f}
+
 📍 Karar:
-Radar sinyali.
+Sıkı radar sinyali.
 Direkt long değil.
 Direnç kırılımı + hacim devamı bekle.
 """
@@ -243,6 +244,8 @@ Retest / direnç kırılımı izle.
 
         if structure_setup:
             if symbol not in structure_cache or now - structure_cache[symbol] > STRUCTURE_COOLDOWN:
+                broken_level = prev_high if prev_high is not None else 0
+
                 msg = f"""
 🟢 BINANCE STRUCTURE ONAY
 
@@ -258,7 +261,7 @@ Mum Gücü: {body_ratio:.2f}
 
 BOS: {'VAR ✅' if bos else 'YOK ❌'}
 MSB: {'VAR ✅' if msb else 'YOK ❌'}
-Kırılan Seviye: {prev_high:.6f if prev_high else 0}
+Kırılan Seviye: {broken_level:.6f}
 
 📍 Karar:
 Yapı onayı geldi.
@@ -275,10 +278,12 @@ Retest başarılı olursa daha temiz setup.
 def on_message(ws, message):
     try:
         msg = json.loads(message)
+
         if "data" not in msg:
             return
 
         data_msg = msg["data"]
+
         if data_msg.get("e") != "kline":
             return
 
@@ -318,6 +323,7 @@ def start_socket(symbols):
                 on_error=on_error,
                 on_close=on_close
             )
+
             ws.run_forever(ping_interval=20, ping_timeout=10)
 
         except Exception as e:
@@ -328,7 +334,7 @@ def start_socket(symbols):
 
 def run_bot():
     print("RUN BOT ÇALIŞTI", flush=True)
-    send_telegram("🚀 BINANCE BİRLEŞİK PUMP RADAR + SNIPER başladı hocam")
+    send_telegram("🚀 BINANCE SIKI BİRLEŞİK PUMP RADAR + SNIPER başladı hocam")
 
     try:
         symbols = get_binance_usdt_symbols()
@@ -350,9 +356,10 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance birleşik pump radar + sniper aktif", 200
+    return "Binance sıkı birleşik pump radar + sniper aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
