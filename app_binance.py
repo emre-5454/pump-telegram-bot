@@ -14,16 +14,16 @@ CHAT_ID = "6977265844"
 
 MAX_SYMBOLS = 150
 STREAM_CHUNK_SIZE = 50
-COOLDOWN = 6 * 60 * 60
+COOLDOWN = 2 * 60 * 60
 
-MIN_SCORE = 7
+MIN_SCORE = 5
 
-MIN_QUOTE_VOLUME = 50000
-MIN_VOLUME_RATIO = 4.0
-MAX_PRICE_CHANGE_3M = 1.8
-MIN_PRICE_CHANGE_1M = 0.08
-MIN_BODY_RATIO = 0.45
-MAX_UPPER_WICK = 0.35
+MIN_QUOTE_VOLUME = 10000
+MIN_VOLUME_RATIO = 2.0
+MAX_PRICE_CHANGE_3M = 3.0
+MIN_PRICE_CHANGE_1M = 0.01
+MIN_BODY_RATIO = 0.20
+MAX_UPPER_WICK = 0.70
 
 sent_cache = {}
 
@@ -65,7 +65,7 @@ def get_futures_symbols():
         timeout=20
     ).json()
 
-    sorted_symbols = []
+    symbols = []
 
     for t in tickers:
         sym = t["symbol"]
@@ -77,14 +77,15 @@ def get_futures_symbols():
             continue
 
         quote_volume = float(t.get("quoteVolume", 0))
-        sorted_symbols.append((sym.lower(), quote_volume))
+        symbols.append((sym.lower(), quote_volume))
 
-    sorted_symbols.sort(key=lambda x: x[1], reverse=True)
+    symbols.sort(key=lambda x: x[1], reverse=True)
 
-    symbols = [x[0] for x in sorted_symbols[:MAX_SYMBOLS]]
+    final_symbols = [x[0] for x in symbols[:MAX_SYMBOLS]]
 
-    print("FUTURES SEMBOL SAYISI:", len(symbols), flush=True)
-    return symbols
+    print("FUTURES SEMBOL SAYISI:", len(final_symbols), flush=True)
+
+    return final_symbols
 
 def analyze_kline(symbol, k):
     try:
@@ -98,7 +99,8 @@ def analyze_kline(symbol, k):
         d["closes"].append(close)
         d["quote_volumes"].append(quote_volume)
 
-        if len(d["closes"]) < 20:
+        # Test için 5 mum yeterli
+        if len(d["closes"]) < 5:
             return
 
         closes = list(d["closes"])
@@ -115,6 +117,7 @@ def analyze_kline(symbol, k):
         price_change_3m = ((close - closes[-4]) / closes[-4]) * 100
 
         candle_range = high - low
+
         if candle_range <= 0:
             return
 
@@ -136,17 +139,17 @@ def analyze_kline(symbol, k):
 
         if quote_volume >= MIN_QUOTE_VOLUME:
             score += 1
-            reasons.append("futures 1dk hacim güçlü")
+            reasons.append("futures 1dk hacim yeterli")
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             score += 2
             reasons.append("futures hacim artışı güçlü")
 
-        if volume_ratio >= 7:
+        if volume_ratio >= 4:
             score += 1
             reasons.append("kaldıraçlı hacim agresif")
 
-        if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
+        if price_change_3m <= MAX_PRICE_CHANGE_3M:
             score += 1
             reasons.append("fiyat henüz çok uçmamış")
 
@@ -156,11 +159,11 @@ def analyze_kline(symbol, k):
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
-            reasons.append("mum gövdesi güçlü")
+            reasons.append("mum gövdesi yeterli")
 
         if upper_wick <= MAX_UPPER_WICK:
             score += 1
-            reasons.append("üst fitil düşük")
+            reasons.append("üst fitil kabul edilebilir")
 
         if volume_3_rising:
             score += 1
@@ -170,7 +173,7 @@ def analyze_kline(symbol, k):
             score >= MIN_SCORE
             and quote_volume >= MIN_QUOTE_VOLUME
             and volume_ratio >= MIN_VOLUME_RATIO
-            and 0 < price_change_3m <= MAX_PRICE_CHANGE_3M
+            and price_change_3m <= MAX_PRICE_CHANGE_3M
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
         )
@@ -179,7 +182,7 @@ def analyze_kline(symbol, k):
             return
 
         msg = f"""
-🔥 BINANCE FUTURES HACİM SETUP
+🧪 BINANCE FUTURES TEST SETUP
 
 Coin: {symbol.upper().replace('USDT', '/USDT')}
 Fiyat: {close:.6f}
@@ -201,14 +204,15 @@ Mum Gücü: {body_ratio:.2f}
 {", ".join(reasons)}
 
 📍 Karar:
-Futures tarafında kaldıraçlı hacim girişi var.
-Tek başına long değil.
-Spot hacim + direnç kırılımı + retest ile teyit et.
+Bu test sinyali.
+Futures para akışı var mı kontrol.
+Direkt işlem değil.
+Spot hacim + direnç kırılımı ile teyit et.
 """
         send_telegram(msg)
         sent_cache[symbol] = now
 
-        print("FUTURES SETUP:", symbol, "PUAN:", score, flush=True)
+        print("FUTURES TEST SETUP:", symbol, "PUAN:", score, flush=True)
 
     except Exception as e:
         print("ANALIZ HATA:", symbol, e, flush=True)
@@ -227,7 +231,7 @@ def on_message(ws, message):
 
         k = data_msg["k"]
 
-        # sadece kapanan 1dk mum
+        # Testte kapanan 1dk mum yeterli
         if not k["x"]:
             return
 
@@ -238,10 +242,10 @@ def on_message(ws, message):
         print("MESAJ HATA:", e, flush=True)
 
 def on_error(ws, error):
-    print("WEBSOCKET HATA:", error, flush=True)
+    print("FUTURES WEBSOCKET HATA:", error, flush=True)
 
 def on_close(ws, close_status_code, close_msg):
-    print("WEBSOCKET KAPANDI:", close_status_code, close_msg, flush=True)
+    print("FUTURES WEBSOCKET KAPANDI:", close_status_code, close_msg, flush=True)
 
 def on_open(ws):
     print("FUTURES WEBSOCKET AÇILDI", flush=True)
@@ -254,6 +258,8 @@ def start_socket(symbols):
 
     while True:
         try:
+            print("FUTURES WEBSOCKET BAĞLANIYOR...", flush=True)
+
             ws = websocket.WebSocketApp(
                 url,
                 on_open=on_open,
@@ -268,20 +274,25 @@ def start_socket(symbols):
             )
 
         except Exception as e:
-            print("SOKET GENEL HATA:", e, flush=True)
+            print("FUTURES SOKET GENEL HATA:", e, flush=True)
 
-        print("5 saniye sonra tekrar bağlanacak...", flush=True)
+        print("5 saniye sonra futures tekrar bağlanacak...", flush=True)
         time.sleep(5)
 
 def run_bot():
     print("FUTURES BOT ÇALIŞTI", flush=True)
-    send_telegram("🚀 BINANCE FUTURES HACİM BOTU başladı hocam")
+    send_telegram("🚀 BINANCE FUTURES TEST HACİM BOTU başladı hocam")
 
     try:
         symbols = get_futures_symbols()
     except Exception as e:
-        print("SEMBOL ALMA HATASI:", e, flush=True)
+        print("FUTURES SEMBOL ALMA HATASI:", e, flush=True)
         send_telegram(f"❌ Futures sembol alma hatası: {e}")
+        return
+
+    if not symbols:
+        print("FUTURES SEMBOL LİSTESİ BOŞ", flush=True)
+        send_telegram("❌ Futures sembol listesi boş geldi hocam")
         return
 
     chunks = [
@@ -289,7 +300,7 @@ def run_bot():
         for i in range(0, len(symbols), STREAM_CHUNK_SIZE)
     ]
 
-    print("CHUNK SAYISI:", len(chunks), flush=True)
+    print("FUTURES CHUNK SAYISI:", len(chunks), flush=True)
 
     for chunk in chunks:
         threading.Thread(
@@ -302,7 +313,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures hacim botu aktif", 200
+    return "Binance Futures test hacim botu aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(
