@@ -12,32 +12,23 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-MAX_SYMBOLS = 80
-STREAM_CHUNK_SIZE = 40
+MAX_SYMBOLS = 150
+STREAM_CHUNK_SIZE = 50
+COOLDOWN = 6 * 60 * 60
 
-COOLDOWN = 8 * 60 * 60
-
-# =====================
-# TEK SKOR SİSTEMİ
-# =====================
 MIN_SCORE = 7
 
-MIN_QUOTE_VOLUME = 20000
-MIN_VOLUME_RATIO = 3.5
-MAX_PRICE_CHANGE_3M = 1.5
+MIN_QUOTE_VOLUME = 50000
+MIN_VOLUME_RATIO = 4.0
+MAX_PRICE_CHANGE_3M = 1.8
 MIN_PRICE_CHANGE_1M = 0.08
 MIN_BODY_RATIO = 0.45
 MAX_UPPER_WICK = 0.35
-
-STRUCTURE_LOOKBACK = 20
 
 sent_cache = {}
 
 data_store = defaultdict(lambda: {
     "closes": deque(maxlen=40),
-    "highs": deque(maxlen=40),
-    "lows": deque(maxlen=40),
-    "opens": deque(maxlen=40),
     "quote_volumes": deque(maxlen=40)
 })
 
@@ -51,56 +42,49 @@ def send_telegram(msg):
     except Exception as e:
         print("TELEGRAM HATA:", e, flush=True)
 
-def get_binance_usdt_symbols():
-    print("BINANCE SEMBOLLER ALINIYOR...", flush=True)
+def get_futures_symbols():
+    print("FUTURES SEMBOLLER ALINIYOR...", flush=True)
 
-    r = requests.get(
-        "https://api.binance.com/api/v3/exchangeInfo",
+    exchange_info = requests.get(
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
         timeout=20
-    )
+    ).json()
 
-    print("BINANCE DURUMU:", r.status_code, flush=True)
+    tradable = set()
 
-    data = r.json()
-    symbols = []
-
-    for s in data["symbols"]:
+    for s in exchange_info["symbols"]:
         if (
             s["status"] == "TRADING"
             and s["quoteAsset"] == "USDT"
-            and s.get("isSpotTradingAllowed", False)
+            and s["contractType"] == "PERPETUAL"
         ):
-            base = s["baseAsset"]
+            tradable.add(s["symbol"])
 
-            if any(x in base for x in ["UP", "DOWN", "BULL", "BEAR"]):
-                continue
+    tickers = requests.get(
+        "https://fapi.binance.com/fapi/v1/ticker/24hr",
+        timeout=20
+    ).json()
 
-            symbols.append(s["symbol"].lower())
+    sorted_symbols = []
 
-    print("SEMBOL SAYISI:", len(symbols), flush=True)
+    for t in tickers:
+        sym = t["symbol"]
 
-    return symbols[:MAX_SYMBOLS]
+        if sym not in tradable:
+            continue
 
-def calc_structure(closes, highs, lows):
-    if len(closes) < STRUCTURE_LOOKBACK + 1:
-        return False, False, None, None
+        if any(x in sym for x in ["UP", "DOWN", "BULL", "BEAR"]):
+            continue
 
-    recent_highs = list(highs)[-STRUCTURE_LOOKBACK:-1]
-    recent_lows = list(lows)[-STRUCTURE_LOOKBACK:-1]
-    recent_closes = list(closes)[-6:]
+        quote_volume = float(t.get("quoteVolume", 0))
+        sorted_symbols.append((sym.lower(), quote_volume))
 
-    prev_high = max(recent_highs)
-    prev_low = min(recent_lows)
+    sorted_symbols.sort(key=lambda x: x[1], reverse=True)
 
-    last_close = closes[-1]
-    last_low = lows[-1]
+    symbols = [x[0] for x in sorted_symbols[:MAX_SYMBOLS]]
 
-    ma5 = sum(recent_closes) / len(recent_closes)
-
-    bos = last_close > prev_high
-    msb = last_low > prev_low and last_close > ma5
-
-    return bos, msb, prev_high, prev_low
+    print("FUTURES SEMBOL SAYISI:", len(symbols), flush=True)
+    return symbols
 
 def analyze_kline(symbol, k):
     try:
@@ -111,11 +95,7 @@ def analyze_kline(symbol, k):
         quote_volume = float(k["q"])
 
         d = data_store[symbol]
-
         d["closes"].append(close)
-        d["opens"].append(open_)
-        d["highs"].append(high)
-        d["lows"].append(low)
         d["quote_volumes"].append(quote_volume)
 
         if len(d["closes"]) < 20:
@@ -135,7 +115,6 @@ def analyze_kline(symbol, k):
         price_change_3m = ((close - closes[-4]) / closes[-4]) * 100
 
         candle_range = high - low
-
         if candle_range <= 0:
             return
 
@@ -145,12 +124,6 @@ def analyze_kline(symbol, k):
         volume_3_rising = (
             vols[-1] > vols[-2]
             and vols[-2] > vols[-3]
-        )
-
-        bos, msb, prev_high, prev_low = calc_structure(
-            d["closes"],
-            d["highs"],
-            d["lows"]
         )
 
         now = time.time()
@@ -163,19 +136,19 @@ def analyze_kline(symbol, k):
 
         if quote_volume >= MIN_QUOTE_VOLUME:
             score += 1
-            reasons.append("1dk hacim güçlü")
+            reasons.append("futures 1dk hacim güçlü")
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             score += 2
-            reasons.append("hacim artışı güçlü")
+            reasons.append("futures hacim artışı güçlü")
 
         if volume_ratio >= 7:
             score += 1
-            reasons.append("hacim çok agresif")
+            reasons.append("kaldıraçlı hacim agresif")
 
         if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
             score += 1
-            reasons.append("fiyat henüz uçmamış")
+            reasons.append("fiyat henüz çok uçmamış")
 
         if price_change_1m >= MIN_PRICE_CHANGE_1M:
             score += 1
@@ -191,17 +164,8 @@ def analyze_kline(symbol, k):
 
         if volume_3_rising:
             score += 1
-            reasons.append("3 mum hacim artıyor")
+            reasons.append("3 mum futures hacim artıyor")
 
-        if msb:
-            score += 1
-            reasons.append("MSB var")
-
-        if bos:
-            score += 1
-            reasons.append("BOS var")
-
-        # Ana güvenlik filtreleri
         valid_setup = (
             score >= MIN_SCORE
             and quote_volume >= MIN_QUOTE_VOLUME
@@ -214,10 +178,8 @@ def analyze_kline(symbol, k):
         if not valid_setup:
             return
 
-        broken_level = prev_high if prev_high is not None else 0
-
         msg = f"""
-🔥 BINANCE GÜÇLÜ SETUP
+🔥 BINANCE FUTURES HACİM SETUP
 
 Coin: {symbol.upper().replace('USDT', '/USDT')}
 Fiyat: {close:.6f}
@@ -227,29 +189,26 @@ Puan: {score}/10
 1dk Değişim: %{price_change_1m:.2f}
 3dk Değişim: %{price_change_3m:.2f}
 
-1dk Hacim: {int(quote_volume)} USDT
-Hacim Artışı: {volume_ratio:.2f}x
+1dk Futures Hacim: {int(quote_volume)} USDT
+Futures Hacim Artışı: {volume_ratio:.2f}x
 
 3 Mum Hacim Artışı: {'VAR ✅' if volume_3_rising else 'YOK ❌'}
-BOS: {'VAR ✅' if bos else 'YOK ❌'}
-MSB: {'VAR ✅' if msb else 'YOK ❌'}
 
 Mum Gücü: {body_ratio:.2f}
 Üst Fitil: {upper_wick:.2f}
-Kırılan Seviye: {broken_level:.6f}
 
 📌 Sebep:
 {", ".join(reasons)}
 
 📍 Karar:
-Tek mesaj güçlü setup.
-Direkt FOMO değil.
-Direnç kırılımı + retest bekle.
+Futures tarafında kaldıraçlı hacim girişi var.
+Tek başına long değil.
+Spot hacim + direnç kırılımı + retest ile teyit et.
 """
         send_telegram(msg)
         sent_cache[symbol] = now
 
-        print("GÜÇLÜ SETUP:", symbol, "PUAN:", score, flush=True)
+        print("FUTURES SETUP:", symbol, "PUAN:", score, flush=True)
 
     except Exception as e:
         print("ANALIZ HATA:", symbol, e, flush=True)
@@ -268,7 +227,7 @@ def on_message(ws, message):
 
         k = data_msg["k"]
 
-        # Sadece kapanan 1 dakikalık mum
+        # sadece kapanan 1dk mum
         if not k["x"]:
             return
 
@@ -285,13 +244,13 @@ def on_close(ws, close_status_code, close_msg):
     print("WEBSOCKET KAPANDI:", close_status_code, close_msg, flush=True)
 
 def on_open(ws):
-    print("WEBSOCKET AÇILDI", flush=True)
+    print("FUTURES WEBSOCKET AÇILDI", flush=True)
 
 def start_socket(symbols):
-    print("SOKET THREAD BAŞLADI:", len(symbols), "sembol", flush=True)
+    print("FUTURES SOKET THREAD:", len(symbols), "sembol", flush=True)
 
     streams = "/".join([f"{s}@kline_1m" for s in symbols])
-    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+    url = f"wss://fstream.binance.com/stream?streams={streams}"
 
     while True:
         try:
@@ -315,16 +274,14 @@ def start_socket(symbols):
         time.sleep(5)
 
 def run_bot():
-    print("RUN BOT ÇALIŞTI", flush=True)
-
-    send_telegram("🚀 BINANCE TEK MESAJ GÜÇLÜ SETUP BOTU başladı hocam")
+    print("FUTURES BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES HACİM BOTU başladı hocam")
 
     try:
-        symbols = get_binance_usdt_symbols()
-
+        symbols = get_futures_symbols()
     except Exception as e:
         print("SEMBOL ALMA HATASI:", e, flush=True)
-        send_telegram(f"❌ Binance sembol alma hatası: {e}")
+        send_telegram(f"❌ Futures sembol alma hatası: {e}")
         return
 
     chunks = [
@@ -345,7 +302,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance tek mesaj güçlü setup botu aktif", 200
+    return "Binance Futures hacim botu aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(
