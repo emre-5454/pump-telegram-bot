@@ -14,16 +14,19 @@ CHAT_ID = "6977265844"
 
 MAX_SYMBOLS = 150
 STREAM_CHUNK_SIZE = 50
-COOLDOWN = 2 * 60 * 60
+COOLDOWN = 15 * 60
 
-MIN_SCORE = 5
+# =====================
+# FUTURES TEST AYARLARI
+# =====================
+MIN_SCORE = 4
 
-MIN_QUOTE_VOLUME = 10000
-MIN_VOLUME_RATIO = 2.0
-MAX_PRICE_CHANGE_3M = 3.0
-MIN_PRICE_CHANGE_1M = 0.01
-MIN_BODY_RATIO = 0.20
-MAX_UPPER_WICK = 0.70
+MIN_QUOTE_VOLUME = 5000
+MIN_VOLUME_RATIO = 1.5
+MAX_PRICE_CHANGE_3M = 5.0
+MIN_PRICE_CHANGE_1M = 0.00
+MIN_BODY_RATIO = 0.10
+MAX_UPPER_WICK = 0.90
 
 sent_cache = {}
 
@@ -84,7 +87,6 @@ def get_futures_symbols():
     final_symbols = [x[0] for x in symbols[:MAX_SYMBOLS]]
 
     print("FUTURES SEMBOL SAYISI:", len(final_symbols), flush=True)
-
     return final_symbols
 
 def analyze_kline(symbol, k):
@@ -99,34 +101,49 @@ def analyze_kline(symbol, k):
         d["closes"].append(close)
         d["quote_volumes"].append(quote_volume)
 
-        # Test için 5 mum yeterli
-        if len(d["closes"]) < 5:
+        # Test için 3 veri yeterli
+        if len(d["closes"]) < 3:
             return
 
         closes = list(d["closes"])
         vols = list(d["quote_volumes"])
 
         avg_volume = sum(vols[:-1]) / (len(vols) - 1)
-
         if avg_volume <= 0:
             return
 
         volume_ratio = quote_volume / avg_volume
 
         price_change_1m = ((close - closes[-2]) / closes[-2]) * 100
-        price_change_3m = ((close - closes[-4]) / closes[-4]) * 100
+
+        if len(closes) >= 4:
+            price_change_3m = ((close - closes[-4]) / closes[-4]) * 100
+        else:
+            price_change_3m = price_change_1m
 
         candle_range = high - low
 
         if candle_range <= 0:
-            return
+            body_ratio = 0
+            upper_wick = 0
+        else:
+            body_ratio = abs(close - open_) / candle_range
+            upper_wick = (high - max(open_, close)) / candle_range
 
-        body_ratio = abs(close - open_) / candle_range
-        upper_wick = (high - max(open_, close)) / candle_range
+        volume_3_rising = False
+        if len(vols) >= 3:
+            volume_3_rising = (
+                vols[-1] > vols[-2]
+                and vols[-2] > vols[-3]
+            )
 
-        volume_3_rising = (
-            vols[-1] > vols[-2]
-            and vols[-2] > vols[-3]
+        print(
+            symbol,
+            "QV:", round(quote_volume, 2),
+            "VR:", round(volume_ratio, 2),
+            "PC1:", round(price_change_1m, 3),
+            "PC3:", round(price_change_3m, 3),
+            flush=True
         )
 
         now = time.time()
@@ -143,19 +160,19 @@ def analyze_kline(symbol, k):
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             score += 2
-            reasons.append("futures hacim artışı güçlü")
+            reasons.append("futures hacim artışı var")
 
-        if volume_ratio >= 4:
+        if volume_ratio >= 3:
             score += 1
             reasons.append("kaldıraçlı hacim agresif")
 
         if price_change_3m <= MAX_PRICE_CHANGE_3M:
             score += 1
-            reasons.append("fiyat henüz çok uçmamış")
+            reasons.append("fiyat çok uçmamış")
 
         if price_change_1m >= MIN_PRICE_CHANGE_1M:
             score += 1
-            reasons.append("1dk momentum var")
+            reasons.append("1dk momentum pozitif")
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
@@ -182,7 +199,7 @@ def analyze_kline(symbol, k):
             return
 
         msg = f"""
-🧪 BINANCE FUTURES TEST SETUP
+🧪 BINANCE FUTURES TEST SİNYALİ
 
 Coin: {symbol.upper().replace('USDT', '/USDT')}
 Fiyat: {close:.6f}
@@ -205,14 +222,14 @@ Mum Gücü: {body_ratio:.2f}
 
 📍 Karar:
 Bu test sinyali.
-Futures para akışı var mı kontrol.
+Futures veri akışı kontrol ediliyor.
 Direkt işlem değil.
 Spot hacim + direnç kırılımı ile teyit et.
 """
         send_telegram(msg)
         sent_cache[symbol] = now
 
-        print("FUTURES TEST SETUP:", symbol, "PUAN:", score, flush=True)
+        print("FUTURES TEST SİNYAL:", symbol, "PUAN:", score, flush=True)
 
     except Exception as e:
         print("ANALIZ HATA:", symbol, e, flush=True)
@@ -231,9 +248,9 @@ def on_message(ws, message):
 
         k = data_msg["k"]
 
-        # Testte kapanan 1dk mum yeterli
-        if not k["x"]:
-            return
+        # TEST MODU: kapanan mum beklemiyoruz
+        # if not k["x"]:
+        #     return
 
         symbol = k["s"].lower()
         analyze_kline(symbol, k)
@@ -281,7 +298,7 @@ def start_socket(symbols):
 
 def run_bot():
     print("FUTURES BOT ÇALIŞTI", flush=True)
-    send_telegram("🚀 BINANCE FUTURES TEST HACİM BOTU başladı hocam")
+    send_telegram("🚀 BINANCE FUTURES TEST BOTU başladı hocam")
 
     try:
         symbols = get_futures_symbols()
@@ -313,7 +330,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures test hacim botu aktif", 200
+    return "Binance Futures test botu aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(
