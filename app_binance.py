@@ -13,21 +13,21 @@ TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 # =====================
-# FUTURES AGGTRADE AYARLARI
+# AYARLAR
 # =====================
-MAX_SYMBOLS = 80
-STREAM_CHUNK_SIZE = 20
 
+MAX_SYMBOLS = 80
 WINDOW_SECONDS = 60
 COOLDOWN = 4 * 60 * 60
 
-MIN_SCORE = 6
-MIN_1M_VOLUME_USDT = 30000
-MIN_VOLUME_RATIO = 3.0
-MIN_PRICE_CHANGE_60S = 0.08
+MIN_SCORE = 5
+MIN_1M_VOLUME_USDT = 15000
+MIN_VOLUME_RATIO = 2.0
+MIN_PRICE_CHANGE_60S = 0.05
 MAX_PRICE_CHANGE_60S = 1.50
-MIN_BUY_RATIO = 0.55
+MIN_BUY_RATIO = 0.52
 
+symbols_global = []
 sent_cache = {}
 
 trade_data = defaultdict(lambda: {
@@ -36,17 +36,29 @@ trade_data = defaultdict(lambda: {
     "prices": deque(maxlen=200)
 })
 
+# =====================
+# TELEGRAM
+# =====================
+
 def send_telegram(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg
+            },
             timeout=10
         )
     except Exception as e:
         print("TELEGRAM HATA:", e, flush=True)
 
+# =====================
+# FUTURES SEMBOLLER
+# =====================
+
 def get_futures_symbols():
+
     print("FUTURES SEMBOLLER ALINIYOR...", flush=True)
 
     exchange_info = requests.get(
@@ -57,6 +69,7 @@ def get_futures_symbols():
     tradable = set()
 
     for s in exchange_info["symbols"]:
+
         if (
             s["status"] == "TRADING"
             and s["quoteAsset"] == "USDT"
@@ -72,12 +85,14 @@ def get_futures_symbols():
     symbols = []
 
     for t in tickers:
+
         sym = t["symbol"]
 
         if sym not in tradable:
             continue
 
         quote_volume = float(t.get("quoteVolume", 0))
+
         symbols.append((sym.lower(), quote_volume))
 
     symbols.sort(key=lambda x: x[1], reverse=True)
@@ -85,27 +100,44 @@ def get_futures_symbols():
     final_symbols = [x[0] for x in symbols[:MAX_SYMBOLS]]
 
     print("FUTURES SEMBOL SAYISI:", len(final_symbols), flush=True)
+
     return final_symbols
 
+# =====================
+# ESKİ TRADE TEMİZLE
+# =====================
+
 def clean_old_trades(symbol, now):
+
     d = trade_data[symbol]
 
     while d["trades"] and now - d["trades"][0]["time"] > WINDOW_SECONDS:
         d["trades"].popleft()
 
+# =====================
+# ANALİZ
+# =====================
+
 def analyze_trade(symbol):
+
     try:
+
         now = time.time()
+
         d = trade_data[symbol]
 
         clean_old_trades(symbol, now)
 
         trades = list(d["trades"])
+
         if len(trades) < 5:
             return
 
         volume_60s = sum(t["quote"] for t in trades)
-        buy_volume_60s = sum(t["quote"] for t in trades if t["is_buy"])
+
+        buy_volume_60s = sum(
+            t["quote"] for t in trades if t["is_buy"]
+        )
 
         if volume_60s <= 0:
             return
@@ -113,27 +145,70 @@ def analyze_trade(symbol):
         buy_ratio = buy_volume_60s / volume_60s
 
         prices = list(d["prices"])
+
         if len(prices) < 2:
             return
 
         first_price = prices[0]
         last_price = prices[-1]
 
-        price_change_60s = ((last_price - first_price) / first_price) * 100
+        price_change_60s = (
+            (last_price - first_price) / first_price
+        ) * 100
 
-        # Her 60 saniyelik hacim penceresini ortalamaya ekle
-        if len(d["minute_volumes"]) == 0 or now - getattr(analyze_trade, f"last_store_{symbol}", 0) > 60:
+        # Ortalama hacim
+
+        if (
+            len(d["minute_volumes"]) == 0
+            or now - getattr(
+                analyze_trade,
+                f"last_store_{symbol}",
+                0
+            ) > 60
+        ):
+
             d["minute_volumes"].append(volume_60s)
-            setattr(analyze_trade, f"last_store_{symbol}", now)
+
+            setattr(
+                analyze_trade,
+                f"last_store_{symbol}",
+                now
+            )
 
         if len(d["minute_volumes"]) < 5:
+
             avg_volume = max(volume_60s / 2, 1)
+
         else:
-            avg_volume = sum(list(d["minute_volumes"])[:-1]) / max(len(d["minute_volumes"]) - 1, 1)
 
-        volume_ratio = volume_60s / avg_volume if avg_volume > 0 else 0
+            avg_volume = sum(
+                list(d["minute_volumes"])[:-1]
+            ) / max(
+                len(d["minute_volumes"]) - 1,
+                1
+            )
 
-        if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
+        volume_ratio = (
+            volume_60s / avg_volume
+            if avg_volume > 0
+            else 0
+        )
+
+        print(
+            symbol,
+            "VOL:",
+            int(volume_60s),
+            "VR:",
+            round(volume_ratio, 2),
+            "BUY:",
+            round(buy_ratio, 2),
+            flush=True
+        )
+
+        if (
+            symbol in sent_cache
+            and now - sent_cache[symbol] < COOLDOWN
+        ):
             return
 
         score = 0
@@ -145,29 +220,32 @@ def analyze_trade(symbol):
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             score += 2
-            reasons.append("hacim ortalamaya göre agresif")
+            reasons.append("hacim agresif")
 
         if volume_ratio >= 5:
             score += 1
-            reasons.append("kaldıraçlı hacim çok agresif")
+            reasons.append("çok agresif hacim")
 
-        if MIN_PRICE_CHANGE_60S <= price_change_60s <= MAX_PRICE_CHANGE_60S:
+        if (
+            MIN_PRICE_CHANGE_60S
+            <= price_change_60s
+            <= MAX_PRICE_CHANGE_60S
+        ):
             score += 1
-            reasons.append("fiyat hareketi kontrollü")
+            reasons.append("fiyat kontrollü gidiyor")
 
         if buy_ratio >= MIN_BUY_RATIO:
             score += 1
-            reasons.append("alıcı oranı baskın")
+            reasons.append("alıcı baskısı var")
 
         if len(trades) >= 20:
             score += 1
-            reasons.append("işlem sayısı yeterli")
+            reasons.append("işlem akışı güçlü")
 
         valid_setup = (
             score >= MIN_SCORE
             and volume_60s >= MIN_1M_VOLUME_USDT
             and volume_ratio >= MIN_VOLUME_RATIO
-            and MIN_PRICE_CHANGE_60S <= price_change_60s <= MAX_PRICE_CHANGE_60S
             and buy_ratio >= MIN_BUY_RATIO
         )
 
@@ -175,7 +253,7 @@ def analyze_trade(symbol):
             return
 
         msg = f"""
-🔥 BINANCE FUTURES AGGTRADE SETUP
+🔥 BINANCE FUTURES AGGTRADE
 
 Coin: {symbol.upper().replace('USDT', '/USDT')}
 Fiyat: {last_price:.6f}
@@ -187,79 +265,170 @@ Puan: {score}/10
 60sn Futures Hacim: {int(volume_60s)} USDT
 Hacim Artışı: {volume_ratio:.2f}x
 Alıcı Oranı: %{buy_ratio * 100:.1f}
+
 İşlem Sayısı: {len(trades)}
 
 📌 Sebep:
 {", ".join(reasons)}
 
 📍 Karar:
-Futures tarafında canlı hacim girişi var.
-Tek başına long değil.
-Spot hacim + direnç kırılımı + retest ile teyit et.
+Futures tarafında agresif para akışı var.
+Direkt long değil.
+Direnç kırılımı + retest bekle.
 """
+
         send_telegram(msg)
+
         sent_cache[symbol] = now
 
-        print("FUTURES AGGTRADE SETUP:", symbol, "PUAN:", score, flush=True)
+        print(
+            "SİNYAL GÖNDERİLDİ:",
+            symbol,
+            flush=True
+        )
 
     except Exception as e:
-        print("ANALIZ HATA:", symbol, e, flush=True)
+
+        print(
+            "ANALİZ HATA:",
+            symbol,
+            e,
+            flush=True
+        )
+
+# =====================
+# MESAJ
+# =====================
 
 def on_message(ws, message):
+
     try:
+
         msg = json.loads(message)
 
-        if "data" in msg:
-            data_msg = msg["data"]
-        else:
-            data_msg = msg
+        print("MESAJ GELDİ", flush=True)
 
-        if data_msg.get("e") != "aggTrade":
+        # Subscribe cevabı
+
+        if "result" in msg:
+
+            print(
+                "SUBSCRIBE OK:",
+                msg,
+                flush=True
+            )
+
             return
 
-        symbol = data_msg["s"].lower()
-        price = float(data_msg["p"])
-        qty = float(data_msg["q"])
+        if msg.get("e") != "aggTrade":
+            return
+
+        symbol = msg["s"].lower()
+
+        price = float(msg["p"])
+        qty = float(msg["q"])
+
         quote = price * qty
 
-        # Binance aggTrade: m=True ise buyer market maker, yani agresif satıcı var
-        is_buyer_maker = data_msg["m"]
-        is_buy = not is_buyer_maker
+        # Buyer market maker FALSE ise alıcı agresif
+
+        is_buy = not msg["m"]
 
         now = time.time()
 
         d = trade_data[symbol]
+
         d["trades"].append({
             "time": now,
             "price": price,
             "quote": quote,
             "is_buy": is_buy
         })
+
         d["prices"].append(price)
 
         analyze_trade(symbol)
 
     except Exception as e:
-        print("MESAJ HATA:", e, flush=True)
+
+        print(
+            "MESAJ HATA:",
+            e,
+            flush=True
+        )
+
+# =====================
+# ERROR
+# =====================
 
 def on_error(ws, error):
-    print("FUTURES AGG WS HATA:", error, flush=True)
+
+    print(
+        "WEBSOCKET HATA:",
+        error,
+        flush=True
+    )
+
+# =====================
+# CLOSE
+# =====================
 
 def on_close(ws, close_status_code, close_msg):
-    print("FUTURES AGG WS KAPANDI:", close_status_code, close_msg, flush=True)
+
+    print(
+        "WEBSOCKET KAPANDI:",
+        close_status_code,
+        close_msg,
+        flush=True
+    )
+
+# =====================
+# OPEN
+# =====================
 
 def on_open(ws):
-    print("FUTURES AGG WS AÇILDI", flush=True)
 
-def start_socket(symbols):
-    print("FUTURES AGG SOCKET:", len(symbols), "sembol", flush=True)
+    print(
+        "WEBSOCKET AÇILDI",
+        flush=True
+    )
 
-    streams = "/".join([f"{s}@aggTrade" for s in symbols])
-    url = f"wss://fstream.binance.com/stream?streams={streams}"
+    params = []
+
+    for s in symbols_global:
+        params.append(f"{s}@aggTrade")
+
+    sub_msg = {
+        "method": "SUBSCRIBE",
+        "params": params,
+        "id": 1
+    }
+
+    ws.send(json.dumps(sub_msg))
+
+    print(
+        "ABONE OLUNDU:",
+        len(params),
+        "stream",
+        flush=True
+    )
+
+# =====================
+# SOCKET
+# =====================
+
+def start_socket():
+
+    url = "wss://fstream.binance.com/ws"
 
     while True:
+
         try:
-            print("FUTURES AGG WS BAĞLANIYOR...", flush=True)
+
+            print(
+                "WEBSOCKET BAĞLANIYOR...",
+                flush=True
+            )
 
             ws = websocket.WebSocketApp(
                 url,
@@ -275,43 +444,81 @@ def start_socket(symbols):
             )
 
         except Exception as e:
-            print("FUTURES AGG SOCKET HATA:", e, flush=True)
 
-        print("5 saniye sonra tekrar bağlanacak...", flush=True)
+            print(
+                "SOCKET GENEL HATA:",
+                e,
+                flush=True
+            )
+
+        print(
+            "5 saniye sonra tekrar bağlanacak...",
+            flush=True
+        )
+
         time.sleep(5)
 
+# =====================
+# BOT
+# =====================
+
 def run_bot():
-    print("FUTURES AGGTRADE BOT ÇALIŞTI", flush=True)
-    send_telegram("🚀 BINANCE FUTURES AGGTRADE HACİM BOTU başladı hocam")
+
+    global symbols_global
+
+    print(
+        "FUTURES AGGTRADE BOT ÇALIŞTI",
+        flush=True
+    )
+
+    send_telegram(
+        "🚀 BINANCE FUTURES AGGTRADE BOT başladı hocam"
+    )
 
     try:
+
         symbols = get_futures_symbols()
+
+        symbols_global = symbols
+
     except Exception as e:
-        print("SEMBOL HATASI:", e, flush=True)
-        send_telegram(f"❌ Futures sembol alma hatası: {e}")
+
+        print(
+            "SEMBOL HATA:",
+            e,
+            flush=True
+        )
+
         return
 
-    chunks = [
-        symbols[i:i + STREAM_CHUNK_SIZE]
-        for i in range(0, len(symbols), STREAM_CHUNK_SIZE)
-    ]
+    threading.Thread(
+        target=start_socket,
+        daemon=True
+    ).start()
 
-    print("CHUNK SAYISI:", len(chunks), flush=True)
-
-    for chunk in chunks:
-        threading.Thread(
-            target=start_socket,
-            args=(chunk,),
-            daemon=True
-        ).start()
-        time.sleep(1)
+# =====================
+# FLASK
+# =====================
 
 @app.route("/")
 def home():
-    return "Binance Futures aggTrade hacim botu aktif", 200
+
+    return "Bot aktif", 200
+
+# =====================
+# MAIN
+# =====================
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
+
+    threading.Thread(
+        target=run_bot,
+        daemon=True
+    ).start()
 
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
