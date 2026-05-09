@@ -324,7 +324,7 @@ def run_bot():
     except Exception as e:
         print("FUTURES SEMBOL ALMA HATASI:", e, flush=True)
         send_telegram(f"❌ Futures sembol alma hatası: {e}")
-        return
+        return ["btcusdt"]
 
     if not symbols:
         print("FUTURES SEMBOL LİSTESİ BOŞ", flush=True)
