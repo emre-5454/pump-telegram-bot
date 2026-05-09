@@ -233,26 +233,45 @@ Spot hacim + direnç kırılımı ile teyit et.
 
     except Exception as e:
         print("ANALIZ HATA:", symbol, e, flush=True)
-
 def on_message(ws, message):
     try:
+        # Test logu
+        print("MESAJ GELDİ", flush=True)
+
+        # JSON parse
         msg = json.loads(message)
 
-        if "data" not in msg:
-            return
+        # Ham veriyi loga bas
+        print(msg, flush=True)
 
-        data_msg = msg["data"]
+        # Combined stream kontrolü
+        if "data" in msg:
+            data_msg = msg["data"]
+        else:
+            data_msg = msg
 
+        # Event tipi kontrol
         if data_msg.get("e") != "kline":
+            print("KLINE DEĞİL", flush=True)
             return
 
+        # Mum verisi
         k = data_msg["k"]
 
-        # TEST MODU: kapanan mum beklemiyoruz
-        # if not k["x"]:
-        #     return
+        # Sembol
+        symbol = data_msg["s"].lower()
 
-        symbol = k["s"].lower()
+        print(
+            "KLINE:",
+            symbol,
+            "Close:",
+            k["c"],
+            "Volume:",
+            k["q"],
+            flush=True
+        )
+
+        # Analize gönder
         analyze_kline(symbol, k)
 
     except Exception as e:
