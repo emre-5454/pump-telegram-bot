@@ -1,4 +1,3 @@
-
 import ccxt
 import time
 import requests
@@ -10,34 +9,39 @@ CHAT_ID = "6977265844"
 exchange = ccxt.mexc({"enableRateLimit": True})
 
 SLEEP_SECONDS = 90
-COOLDOWN = 6 * 60 * 60
+COOLDOWN = 4 * 60 * 60
 
-MIN_SCORE = 8
+# Daha gevşek test ayarı
+MIN_SCORE = 7
 
-MIN_VOLUME_USDT = 30000
-MIN_VOLUME_RATIO = 3.0
-MAX_PRICE_CHANGE_15M = 1.5
-MIN_PRICE_CHANGE_5M = 0.20
-MIN_BODY_RATIO = 0.50
-MAX_UPPER_WICK = 0.30
-MIN_RSI = 52
-MAX_RSI = 70
-MAX_BB_WIDTH = 0.050
+MIN_VOLUME_USDT = 15000
+MIN_VOLUME_RATIO = 2.0
+MAX_PRICE_CHANGE_15M = 2.5
+MIN_PRICE_CHANGE_5M = 0.05
+MIN_BODY_RATIO = 0.35
+MAX_UPPER_WICK = 0.45
+MIN_RSI = 48
+MAX_RSI = 75
+MAX_BB_WIDTH = 0.080
 
 sent_cache = {}
 
 def telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
     except Exception as e:
-        print("Telegram hata:", e)
+        print("Telegram hata:", e, flush=True)
 
 def rsi(values, period=14):
     if len(values) < period + 1:
         return None
 
     gains, losses = [], []
+
     for i in range(1, period + 1):
         diff = values[-i] - values[-i - 1]
         gains.append(max(diff, 0))
@@ -86,18 +90,22 @@ def candle_power(open_, high, low, close):
 def get_pairs():
     markets = exchange.load_markets()
     pairs = []
+
     blacklist = ["UP/", "DOWN/", "BULL/", "BEAR/"]
 
     for symbol in markets:
         if not symbol.endswith("/USDT"):
             continue
+
         if not markets[symbol].get("active", True):
             continue
+
         if any(x in symbol for x in blacklist):
             continue
 
         pairs.append(symbol)
 
+    print("MEXC PARİTE SAYISI:", len(pairs), flush=True)
     return pairs
 
 def scan_symbol(symbol):
@@ -157,9 +165,9 @@ def scan_symbol(symbol):
             score += 2
             reasons.append("hacim artışı güçlü")
 
-        if volume_ratio >= 5:
+        if volume_ratio >= 4:
             score += 1
-            reasons.append("hacim çok agresif")
+            reasons.append("hacim agresif")
 
         if 0 < price_change_15m <= MAX_PRICE_CHANGE_15M:
             score += 1
@@ -175,15 +183,15 @@ def scan_symbol(symbol):
 
         if bb_width <= MAX_BB_WIDTH:
             score += 1
-            reasons.append("BB sıkışık")
+            reasons.append("BB uygun")
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
-            reasons.append("mum gövdesi güçlü")
+            reasons.append("mum gövdesi yeterli")
 
         if upper_wick <= MAX_UPPER_WICK:
             score += 1
-            reasons.append("üst fitil düşük")
+            reasons.append("üst fitil kabul edilebilir")
 
         if volume_3_rising:
             score += 1
@@ -224,11 +232,12 @@ def scan_symbol(symbol):
         }
 
     except Exception as e:
-        print("Analiz hata:", symbol, e)
+        print("Analiz hata:", symbol, e, flush=True)
         return None
 
 def run():
     telegram("🚀 MEXC TEK MESAJ GÜÇLÜ SETUP BOTU başladı hocam")
+    print("MEXC BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -236,10 +245,13 @@ def run():
             now = time.time()
 
             for symbol in pairs:
+                print("Taranıyor:", symbol, flush=True)
+
                 if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
                     continue
 
                 result = scan_symbol(symbol)
+
                 if not result:
                     continue
 
@@ -277,14 +289,14 @@ Direnç kırılımı + retest bekle.
                 telegram(msg)
                 sent_cache[symbol] = now
 
-                print("MEXC GÜÇLÜ SETUP:", symbol, "PUAN:", result["score"])
+                print("MEXC GÜÇLÜ SETUP:", symbol, "PUAN:", result["score"], flush=True)
                 time.sleep(0.25)
 
-            print("MEXC tarama bitti")
+            print("MEXC tarama bitti", flush=True)
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-            print("Genel hata:", e)
+            print("Genel hata:", e, flush=True)
             time.sleep(10)
 
 if __name__ == "__main__":
