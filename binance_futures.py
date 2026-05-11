@@ -238,19 +238,11 @@ def scan_symbol(symbol):
             score += 1
             reasons.append("son dip korunuyor")
 
-        valid_setup = (
-            score >= MIN_SCORE
-            and volume_usdt >= MIN_VOLUME_USDT
-            and volume_ratio >= MIN_VOLUME_RATIO
-            and 0 < price_change_15m <= MAX_PRICE_CHANGE_15M
-            and body_ratio >= MIN_BODY_RATIO
-            and upper_wick <= MAX_UPPER_WICK
-            and MIN_RSI <= rsi_now <= MAX_RSI
-            and ema_trend
-            and ma200_above
-            and breakout
-            and volume_3_rising
-        )
+           valid_setup = (
+    score >= MIN_SCORE
+    and quote_volume >= MIN_1M_VOLUME_USDT
+    and volume_ratio >= MIN_VOLUME_RATIO
+)
 
         if not valid_setup:
             return None
