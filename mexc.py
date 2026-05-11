@@ -11,17 +11,22 @@ exchange = ccxt.mexc({"enableRateLimit": True})
 SLEEP_SECONDS = 90
 COOLDOWN = 4 * 60 * 60
 
-# Daha gevşek test ayarı
-MIN_SCORE = 7
+# =====================
+# MEXC CONTINUATION AYARLARI
+# =====================
+MIN_SCORE = 8
 
-MIN_VOLUME_USDT = 15000
-MIN_VOLUME_RATIO = 2.0
-MAX_PRICE_CHANGE_15M = 2.5
+MIN_VOLUME_USDT = 20000
+MIN_VOLUME_RATIO = 2.5
+
 MIN_PRICE_CHANGE_5M = 0.05
-MIN_BODY_RATIO = 0.35
-MAX_UPPER_WICK = 0.45
-MIN_RSI = 48
-MAX_RSI = 75
+MAX_PRICE_CHANGE_15M = 2.20
+
+MIN_BODY_RATIO = 0.45
+MAX_UPPER_WICK = 0.18
+
+MIN_RSI = 50
+MAX_RSI = 72
 MAX_BB_WIDTH = 0.080
 
 sent_cache = {}
@@ -36,11 +41,17 @@ def telegram(msg):
     except Exception as e:
         print("Telegram hata:", e, flush=True)
 
+def sma(values, period):
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
+
 def rsi(values, period=14):
     if len(values) < period + 1:
         return None
 
-    gains, losses = [], []
+    gains = []
+    losses = []
 
     for i in range(1, period + 1):
         diff = values[-i] - values[-i - 1]
@@ -56,17 +67,12 @@ def rsi(values, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def sma(values, period):
-    if len(values) < period:
-        return None
-    return sum(values[-period:]) / period
-
 def bollinger_width(values, period=20):
     if len(values) < period:
         return None
 
     mid = sma(values, period)
-    if mid == 0:
+    if not mid:
         return None
 
     variance = sum((x - mid) ** 2 for x in values[-period:]) / period
@@ -77,13 +83,13 @@ def bollinger_width(values, period=20):
 
     return (upper - lower) / mid
 
-def candle_power(open_, high, low, close):
-    rng = high - low
+def candle_power(o, h, l, c):
+    rng = h - l
     if rng == 0:
         return 0, 1
 
-    body_ratio = abs(close - open_) / rng
-    upper_wick = (high - max(open_, close)) / rng
+    body_ratio = abs(c - o) / rng
+    upper_wick = (h - max(o, c)) / rng
 
     return body_ratio, upper_wick
 
@@ -110,9 +116,9 @@ def get_pairs():
 
 def scan_symbol(symbol):
     try:
-        candles = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=60)
+        candles = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=240)
 
-        if len(candles) < 30:
+        if len(candles) < 220:
             return None
 
         last = candles[-1]
@@ -125,13 +131,15 @@ def scan_symbol(symbol):
         v = last[5]
 
         closes = [x[4] for x in candles]
+        highs = [x[2] for x in candles]
+        lows = [x[3] for x in candles]
         volumes = [x[5] for x in candles]
 
         price_change_5m = ((c - prev[4]) / prev[4]) * 100
         price_change_15m = ((c - candles[-4][4]) / candles[-4][4]) * 100
 
         avg_volume = sum(volumes[-21:-1]) / 20
-        if avg_volume == 0:
+        if avg_volume <= 0:
             return None
 
         volume_ratio = v / avg_volume
@@ -139,20 +147,37 @@ def scan_symbol(symbol):
 
         rsi_now = rsi(closes, 14)
         bb_width = bollinger_width(closes, 20)
-        body_ratio, upper_wick = candle_power(o, h, l, c)
 
         ema9 = sma(closes, 9)
         ema21 = sma(closes, 21)
+        ema50 = sma(closes, 50)
+        ema200 = sma(closes, 200)
 
-        if rsi_now is None or bb_width is None or ema9 is None or ema21 is None:
+        if None in [rsi_now, bb_width, ema9, ema21, ema50, ema200]:
             return None
 
+        body_ratio, upper_wick = candle_power(o, h, l, c)
+
+        # =====================
+        # GÜÇLÜ CONTINUATION FİLTRELERİ
+        # =====================
+
+        ema_trend = ema9 > ema21 > ema50
+        ma200_above = c > ema200
+
+        # Son 5 mumun tepesini kırmış mı?
+        recent_high = max(highs[-6:-1])
+        breakout = c > recent_high
+
+        # 3 mum hacim artışı
         volume_3_rising = (
             volumes[-1] > volumes[-2]
             and volumes[-2] > volumes[-3]
         )
 
-        ema_trend = c >= ema9 and ema9 >= ema21
+        # Son dip korundu mu?
+        recent_low = min(lows[-6:-1])
+        higher_low = l > recent_low
 
         score = 0
         reasons = []
@@ -165,7 +190,7 @@ def scan_symbol(symbol):
             score += 2
             reasons.append("hacim artışı güçlü")
 
-        if volume_ratio >= 4:
+        if volume_ratio >= 5:
             score += 1
             reasons.append("hacim agresif")
 
@@ -187,11 +212,11 @@ def scan_symbol(symbol):
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
-            reasons.append("mum gövdesi yeterli")
+            reasons.append("mum gövdesi güçlü")
 
         if upper_wick <= MAX_UPPER_WICK:
             score += 1
-            reasons.append("üst fitil kabul edilebilir")
+            reasons.append("üst fitil düşük")
 
         if volume_3_rising:
             score += 1
@@ -199,7 +224,19 @@ def scan_symbol(symbol):
 
         if ema_trend:
             score += 1
-            reasons.append("EMA trend yukarı")
+            reasons.append("EMA trend güçlü")
+
+        if ma200_above:
+            score += 1
+            reasons.append("MA200 üstü")
+
+        if breakout:
+            score += 2
+            reasons.append("son direnç kırıldı")
+
+        if higher_low:
+            score += 1
+            reasons.append("son dip korunuyor")
 
         valid_setup = (
             score >= MIN_SCORE
@@ -209,6 +246,10 @@ def scan_symbol(symbol):
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
             and MIN_RSI <= rsi_now <= MAX_RSI
+            and ema_trend
+            and ma200_above
+            and breakout
+            and volume_3_rising
         )
 
         if not valid_setup:
@@ -217,7 +258,7 @@ def scan_symbol(symbol):
         return {
             "symbol": symbol,
             "price": c,
-            "score": min(score, 10),
+            "score": min(score, 12),
             "price_change_5m": price_change_5m,
             "price_change_15m": price_change_15m,
             "volume_usdt": volume_usdt,
@@ -226,8 +267,14 @@ def scan_symbol(symbol):
             "bb_width": bb_width,
             "body_ratio": body_ratio,
             "upper_wick": upper_wick,
-            "volume_3_rising": volume_3_rising,
             "ema_trend": ema_trend,
+            "ma200_above": ma200_above,
+            "breakout": breakout,
+            "volume_3_rising": volume_3_rising,
+            "higher_low": higher_low,
+            "recent_high": recent_high,
+            "recent_low": recent_low,
+            "ema200": ema200,
             "reasons": reasons
         }
 
@@ -236,8 +283,8 @@ def scan_symbol(symbol):
         return None
 
 def run():
-    telegram("🚀 MEXC TEK MESAJ GÜÇLÜ SETUP BOTU başladı hocam")
-    print("MEXC BOT ÇALIŞTI", flush=True)
+    telegram("🚀 MEXC CONTINUATION SETUP BOTU başladı hocam")
+    print("MEXC CONTINUATION BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -256,12 +303,12 @@ def run():
                     continue
 
                 msg = f"""
-🔥 MEXC GÜÇLÜ SETUP
+🔥 MEXC CONTINUATION SETUP
 
 Coin: {result['symbol']}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/10
+Puan: {result['score']}/12
 
 5dk Değişim: %{result['price_change_5m']:.2f}
 15dk Değişim: %{result['price_change_15m']:.2f}
@@ -272,24 +319,30 @@ Hacim Artışı: {result['volume_ratio']:.2f}x
 RSI: {result['rsi']:.2f}
 BB Genişlik: {result['bb_width']:.4f}
 
+EMA Trend: {'GÜÇLÜ ✅' if result['ema_trend'] else 'ZAYIF ❌'}
+MA200 Üstü: {'EVET ✅' if result['ma200_above'] else 'HAYIR ❌'}
+Breakout: {'VAR ✅' if result['breakout'] else 'YOK ❌'}
 3 Mum Hacim Artışı: {'VAR ✅' if result['volume_3_rising'] else 'YOK ❌'}
-EMA Trend: {'YUKARI ✅' if result['ema_trend'] else 'ZAYIF ❌'}
+Son Dip Korunuyor: {'EVET ✅' if result['higher_low'] else 'HAYIR ❌'}
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
+
+Kırılan Seviye: {result['recent_high']:.6f}
+MA200: {result['ema200']:.6f}
 
 📌 Sebep:
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Tek mesaj güçlü setup.
+Continuation setup.
 Direkt FOMO değil.
-Direnç kırılımı + retest bekle.
+Kırılan seviye üstünde kalıcılık + retest bekle.
 """
                 telegram(msg)
                 sent_cache[symbol] = now
 
-                print("MEXC GÜÇLÜ SETUP:", symbol, "PUAN:", result["score"], flush=True)
+                print("MEXC CONTINUATION:", symbol, "PUAN:", result["score"], flush=True)
                 time.sleep(0.25)
 
             print("MEXC tarama bitti", flush=True)
