@@ -12,29 +12,43 @@ CHAT_ID = "6977265844"
 SLEEP_SECONDS = 60
 COOLDOWN = 8 * 60 * 60
 
-MAX_SYMBOLS = 80
+MAX_SYMBOLS = 40
 
-MIN_SCORE = 8
+MIN_SCORE = 9
+
 MIN_1M_VOLUME_USDT = 75000
 MIN_VOLUME_RATIO = 5.0
+
+MIN_OI_RATIO = 1.03
+
 MIN_PRICE_CHANGE_1M = 0.10
 MAX_PRICE_CHANGE_3M = 1.50
+
 MIN_BODY_RATIO = 0.50
 MAX_UPPER_WICK = 0.25
 
 sent_cache = {}
+oi_cache = {}
 
 def send_telegram(msg):
+
     try:
+
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg
+            },
             timeout=10
         )
+
     except Exception as e:
+
         print("Telegram hata:", e, flush=True)
 
 def get_symbols():
+
     data = requests.get(
         "https://fapi.binance.com/fapi/v1/ticker/24hr",
         timeout=20
@@ -74,6 +88,18 @@ def get_klines(symbol):
     }
 
     return requests.get(url, params=params, timeout=15).json()
+
+def get_open_interest(symbol):
+
+    url = "https://fapi.binance.com/fapi/v1/openInterest"
+
+    params = {
+        "symbol": symbol
+    }
+
+    data = requests.get(url, params=params, timeout=10).json()
+
+    return float(data["openInterest"])
 
 def analyze(symbol):
 
@@ -124,6 +150,21 @@ def analyze(symbol):
             and float(candles[-3][7]) > float(candles[-4][7])
         )
 
+        # =====================
+        # OPEN INTEREST
+        # =====================
+
+        oi_now = get_open_interest(symbol)
+
+        prev_oi = oi_cache.get(symbol)
+
+        oi_cache[symbol] = oi_now
+
+        if prev_oi is None or prev_oi <= 0:
+            return None
+
+        oi_ratio = oi_now / prev_oi
+
         now = time.time()
 
         if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
@@ -143,6 +184,14 @@ def analyze(symbol):
         if volume_ratio >= 7:
             score += 1
             reasons.append("hacim aşırı agresif")
+
+        if oi_ratio >= MIN_OI_RATIO:
+            score += 2
+            reasons.append("open interest artıyor")
+
+        if oi_ratio >= 1.08:
+            score += 1
+            reasons.append("OI agresif yükseliyor")
 
         if price_change_1m >= MIN_PRICE_CHANGE_1M:
             score += 1
@@ -168,6 +217,7 @@ def analyze(symbol):
             score >= MIN_SCORE
             and quote_volume >= MIN_1M_VOLUME_USDT
             and volume_ratio >= MIN_VOLUME_RATIO
+            and oi_ratio >= MIN_OI_RATIO
             and price_change_1m >= MIN_PRICE_CHANGE_1M
             and 0 < price_change_3m <= MAX_PRICE_CHANGE_3M
             and body_ratio >= MIN_BODY_RATIO
@@ -186,6 +236,7 @@ def analyze(symbol):
             "score": score,
             "quote_volume": quote_volume,
             "volume_ratio": volume_ratio,
+            "oi_ratio": oi_ratio,
             "price_change_1m": price_change_1m,
             "price_change_3m": price_change_3m,
             "body_ratio": body_ratio,
@@ -195,14 +246,16 @@ def analyze(symbol):
         }
 
     except Exception as e:
+
         print("Analiz hata:", symbol, e, flush=True)
+
         return None
 
 def run_bot():
 
-    send_telegram("🚀 BINANCE FUTURES GÜÇLÜ SETUP BOTU başladı hocam")
+    send_telegram("🚀 BINANCE FUTURES OI SNIPER başladı hocam")
 
-    print("BINANCE FUTURES BOT ÇALIŞTI", flush=True)
+    print("BINANCE FUTURES OI BOT ÇALIŞTI", flush=True)
 
     while True:
 
@@ -222,18 +275,20 @@ def run_bot():
                     continue
 
                 msg = f"""
-🔥 BINANCE FUTURES GÜÇLÜ SETUP
+🔥 BINANCE FUTURES OI SETUP
 
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/10
+Puan: {result['score']}/12
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
 
 1dk Futures Hacim: {int(result['quote_volume'])} USDT
 Hacim Artışı: {result['volume_ratio']:.2f}x
+
+OI Artışı: {result['oi_ratio']:.2f}x
 
 3 Mum Hacim Artışı: {'VAR ✅' if result['volume_3_rising'] else 'YOK ❌'}
 
@@ -244,14 +299,14 @@ Mum Gücü: {result['body_ratio']:.2f}
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Futures tarafında agresif hacim girişi var.
+Futures tarafında gerçek pozisyon artışı olabilir.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """
 
                 send_telegram(msg)
 
-                print("SETUP BULUNDU:", result["symbol"], flush=True)
+                print("OI SETUP:", result["symbol"], flush=True)
 
                 time.sleep(0.2)
 
@@ -267,7 +322,7 @@ Direnç kırılımı + retest bekle.
 
 @app.route("/")
 def home():
-    return "Binance Futures Güçlü Setup Botu Aktif", 200
+    return "Binance Futures OI Scanner Aktif", 200
 
 if __name__ == "__main__":
 
