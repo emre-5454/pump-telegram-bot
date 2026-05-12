@@ -14,18 +14,20 @@ COOLDOWN = 6 * 60 * 60
 
 MAX_SYMBOLS = 80
 
-MIN_SCORE = 5
+MIN_SCORE = 8
 
-MIN_1M_VOLUME_USDT = 12000
-MIN_VOLUME_RATIO = 1.8
+MIN_1M_VOLUME_USDT = 30000
+MIN_VOLUME_RATIO = 3.5
 
 MIN_OI_RATIO = 1.001
 
 MIN_PRICE_CHANGE_1M = 0.03
 MAX_PRICE_CHANGE_3M = 3.00
+MIN_3M_CHANGE=0.3
+MIN_BODY_RATIO = 0.45
+MAX_UPPER_WICK = 0.35
 
-MIN_BODY_RATIO = 0.20
-MAX_UPPER_WICK = 0.70
+
 
 sent_cache = {}
 oi_cache = {}
@@ -184,13 +186,16 @@ def analyze(symbol):
             score += 1
             reasons.append("OI güçlü artıyor")
 
-        if price_change_1m >= MIN_PRICE_CHANGE_1M:
-            score += 1
-            reasons.append("1dk momentum var")
+     if price_change_1m >= MIN_PRICE_CHANGE_1M:
+    score += 1
+    reasons.append("1dk momentum var")
 
-        if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
-            score += 1
-            reasons.append("fiyat henüz uçmamış")
+if price_change_3m < MIN_3M_CHANGE:
+    return None
+
+if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
+    score += 1
+    reasons.append("fiyat henüz uçmamış")
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
