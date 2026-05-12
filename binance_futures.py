@@ -10,22 +10,22 @@ TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 SLEEP_SECONDS = 60
-COOLDOWN = 8 * 60 * 60
+COOLDOWN = 6 * 60 * 60
 
 MAX_SYMBOLS = 80
 
-MIN_SCORE = 9
+MIN_SCORE = 5
 
-MIN_1M_VOLUME_USDT = 75000
-MIN_VOLUME_RATIO = 5.0
+MIN_1M_VOLUME_USDT = 12000
+MIN_VOLUME_RATIO = 1.8
 
-MIN_OI_RATIO = 1.03
+MIN_OI_RATIO = 1.001
 
-MIN_PRICE_CHANGE_1M = 0.10
-MAX_PRICE_CHANGE_3M = 1.50
+MIN_PRICE_CHANGE_1M = 0.03
+MAX_PRICE_CHANGE_3M = 3.00
 
-MIN_BODY_RATIO = 0.50
-MAX_UPPER_WICK = 0.25
+MIN_BODY_RATIO = 0.20
+MAX_UPPER_WICK = 0.70
 
 sent_cache = {}
 oi_cache = {}
@@ -145,15 +145,6 @@ def analyze(symbol):
 
         upper_wick = (h - max(o, c)) / candle_range
 
-        volume_3_rising = (
-            float(candles[-2][7]) > float(candles[-3][7])
-            and float(candles[-3][7]) > float(candles[-4][7])
-        )
-
-        # =====================
-        # OPEN INTEREST
-        # =====================
-
         oi_now = get_open_interest(symbol)
 
         prev_oi = oi_cache.get(symbol)
@@ -181,17 +172,17 @@ def analyze(symbol):
             score += 2
             reasons.append("hacim artışı güçlü")
 
-        if volume_ratio >= 7:
+        if volume_ratio >= 4:
             score += 1
-            reasons.append("hacim aşırı agresif")
+            reasons.append("hacim agresif")
 
         if oi_ratio >= MIN_OI_RATIO:
             score += 2
             reasons.append("open interest artıyor")
 
-        if oi_ratio >= 1.08:
+        if oi_ratio >= 1.01:
             score += 1
-            reasons.append("OI agresif yükseliyor")
+            reasons.append("OI güçlü artıyor")
 
         if price_change_1m >= MIN_PRICE_CHANGE_1M:
             score += 1
@@ -203,26 +194,18 @@ def analyze(symbol):
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
-            reasons.append("mum gövdesi güçlü")
+            reasons.append("mum gövdesi yeterli")
 
         if upper_wick <= MAX_UPPER_WICK:
             score += 1
-            reasons.append("üst fitil düşük")
-
-        if volume_3_rising:
-            score += 1
-            reasons.append("3 mum futures hacim artıyor")
+            reasons.append("üst fitil kabul edilebilir")
 
         valid_setup = (
             score >= MIN_SCORE
             and quote_volume >= MIN_1M_VOLUME_USDT
             and volume_ratio >= MIN_VOLUME_RATIO
             and oi_ratio >= MIN_OI_RATIO
-            and price_change_1m >= MIN_PRICE_CHANGE_1M
-            and 0 < price_change_3m <= MAX_PRICE_CHANGE_3M
-            and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
-            and volume_3_rising
         )
 
         if not valid_setup:
@@ -241,7 +224,6 @@ def analyze(symbol):
             "price_change_3m": price_change_3m,
             "body_ratio": body_ratio,
             "upper_wick": upper_wick,
-            "volume_3_rising": volume_3_rising,
             "reasons": reasons
         }
 
@@ -253,7 +235,7 @@ def analyze(symbol):
 
 def run_bot():
 
-    send_telegram("🚀 BINANCE FUTURES OI SNIPER başladı hocam")
+    send_telegram("🚀 BINANCE FUTURES OI BOT başladı hocam")
 
     print("BINANCE FUTURES OI BOT ÇALIŞTI", flush=True)
 
@@ -280,7 +262,7 @@ def run_bot():
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/12
+Puan: {result['score']}/10
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
@@ -288,9 +270,7 @@ Puan: {result['score']}/12
 1dk Futures Hacim: {int(result['quote_volume'])} USDT
 Hacim Artışı: {result['volume_ratio']:.2f}x
 
-OI Artışı: {result['oi_ratio']:.2f}x
-
-3 Mum Hacim Artışı: {'VAR ✅' if result['volume_3_rising'] else 'YOK ❌'}
+OI Artışı: {result['oi_ratio']:.3f}x
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
@@ -299,7 +279,7 @@ Mum Gücü: {result['body_ratio']:.2f}
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Futures tarafında gerçek pozisyon artışı olabilir.
+Futures tarafında para girişi olabilir.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """
