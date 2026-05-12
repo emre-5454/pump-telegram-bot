@@ -9,57 +9,50 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-SLEEP_SECONDS = 60
-COOLDOWN = 6 * 60 * 60
+SLEEP_SECONDS = 75
+COOLDOWN = 8 * 60 * 60
 
 MAX_SYMBOLS = 80
 
-MIN_SCORE = 8
+# Günlük yaklaşık 8-10 sinyal hedefleyen orta ayar
+MIN_SCORE = 7
+MIN_1M_VOLUME_USDT = 50000
+MIN_VOLUME_RATIO = 4.0
+MIN_OI_RATIO = 1.002
 
-MIN_1M_VOLUME_USDT = 30000
-MIN_VOLUME_RATIO = 3.5
+MIN_PRICE_CHANGE_1M = 0.05
+MIN_3M_CHANGE = 0.20
+MAX_PRICE_CHANGE_3M = 2.50
 
-MIN_OI_RATIO = 1.001
-
-MIN_PRICE_CHANGE_1M = 0.03
-MAX_PRICE_CHANGE_3M = 3.00
-MIN_3M_CHANGE=0.3
-MIN_BODY_RATIO = 0.45
-MAX_UPPER_WICK = 0.35
-
-
+MIN_BODY_RATIO = 0.35
+MAX_UPPER_WICK = 0.45
 
 sent_cache = {}
 oi_cache = {}
 
 def send_telegram(msg):
-
     try:
-
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={
-                "chat_id": CHAT_ID,
-                "text": msg
-            },
+            data={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
-
     except Exception as e:
-
         print("Telegram hata:", e, flush=True)
 
 def get_symbols():
-
-    data = requests.get(
-        "https://fapi.binance.com/fapi/v1/ticker/24hr",
-        timeout=20
-    ).json()
+    try:
+        data = requests.get(
+            "https://fapi.binance.com/fapi/v1/ticker/24hr",
+            timeout=20
+        ).json()
+    except Exception as e:
+        print("Sembol listeleme hata:", e, flush=True)
+        return []
 
     pairs = []
 
     for item in data:
-
         symbol = item.get("symbol", "")
 
         if not symbol.endswith("USDT"):
@@ -80,7 +73,6 @@ def get_symbols():
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
 def get_klines(symbol):
-
     url = "https://fapi.binance.com/fapi/v1/klines"
 
     params = {
@@ -92,7 +84,6 @@ def get_klines(symbol):
     return requests.get(url, params=params, timeout=15).json()
 
 def get_open_interest(symbol):
-
     url = "https://fapi.binance.com/fapi/v1/openInterest"
 
     params = {
@@ -104,15 +95,13 @@ def get_open_interest(symbol):
     return float(data["openInterest"])
 
 def analyze(symbol):
-
     try:
-
         candles = get_klines(symbol)
 
         if not candles or len(candles) < 25:
             return None
 
-        last = candles[-2]
+        last = candles[-2]      # kapanmış son 1m mum
         prev = candles[-3]
         prev3 = candles[-5]
 
@@ -121,7 +110,7 @@ def analyze(symbol):
         l = float(last[3])
         c = float(last[4])
 
-        quote_volume = float(last[7])
+        quote_volume = float(last[7])  # 1dk futures USDT hacmi
 
         prev_close = float(prev[4])
         prev3_close = float(prev3[4])
@@ -130,7 +119,6 @@ def analyze(symbol):
         price_change_3m = ((c - prev3_close) / prev3_close) * 100
 
         old_volumes = [float(x[7]) for x in candles[-22:-2]]
-
         avg_volume = sum(old_volumes) / len(old_volumes)
 
         if avg_volume <= 0:
@@ -139,20 +127,17 @@ def analyze(symbol):
         volume_ratio = quote_volume / avg_volume
 
         candle_range = h - l
-
         if candle_range <= 0:
             return None
 
         body_ratio = abs(c - o) / candle_range
-
         upper_wick = (h - max(o, c)) / candle_range
 
         oi_now = get_open_interest(symbol)
-
         prev_oi = oi_cache.get(symbol)
-
         oi_cache[symbol] = oi_now
 
+        # İlk turda OI hafızası oluşur, ikinci turdan sonra sinyal arar
         if prev_oi is None or prev_oi <= 0:
             return None
 
@@ -174,7 +159,7 @@ def analyze(symbol):
             score += 2
             reasons.append("hacim artışı güçlü")
 
-        if volume_ratio >= 4:
+        if volume_ratio >= 6:
             score += 1
             reasons.append("hacim agresif")
 
@@ -186,16 +171,13 @@ def analyze(symbol):
             score += 1
             reasons.append("OI güçlü artıyor")
 
-     if price_change_1m >= MIN_PRICE_CHANGE_1M:
-    score += 1
-    reasons.append("1dk momentum var")
+        if price_change_1m >= MIN_PRICE_CHANGE_1M:
+            score += 1
+            reasons.append("1dk momentum var")
 
-if price_change_3m < MIN_3M_CHANGE:
-    return None
-
-if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
-    score += 1
-    reasons.append("fiyat henüz uçmamış")
+        if MIN_3M_CHANGE <= price_change_3m <= MAX_PRICE_CHANGE_3M:
+            score += 1
+            reasons.append("3dk momentum uygun")
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
@@ -210,6 +192,10 @@ if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
             and quote_volume >= MIN_1M_VOLUME_USDT
             and volume_ratio >= MIN_VOLUME_RATIO
             and oi_ratio >= MIN_OI_RATIO
+            and price_change_1m >= MIN_PRICE_CHANGE_1M
+            and price_change_3m >= MIN_3M_CHANGE
+            and price_change_3m <= MAX_PRICE_CHANGE_3M
+            and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
         )
 
@@ -233,27 +219,20 @@ if 0 < price_change_3m <= MAX_PRICE_CHANGE_3M:
         }
 
     except Exception as e:
-
         print("Analiz hata:", symbol, e, flush=True)
-
         return None
 
 def run_bot():
-
-    send_telegram("🚀 BINANCE FUTURES OI BOT başladı hocam")
-
-    print("BINANCE FUTURES OI BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES OI ORTA AYAR BOT başladı hocam")
+    print("BINANCE FUTURES OI ORTA AYAR BOT ÇALIŞTI", flush=True)
 
     while True:
-
         try:
-
             symbols = get_symbols()
 
             print("Taranan futures coin:", len(symbols), flush=True)
 
             for symbol in symbols:
-
                 print("Taranıyor:", symbol, flush=True)
 
                 result = analyze(symbol)
@@ -284,14 +263,13 @@ Mum Gücü: {result['body_ratio']:.2f}
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Futures tarafında para girişi olabilir.
+Futures tarafında hacim + OI uyumlu olabilir.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """
-
                 send_telegram(msg)
 
-                print("OI SETUP:", result["symbol"], flush=True)
+                print("OI SETUP:", result["symbol"], "PUAN:", result["score"], flush=True)
 
                 time.sleep(0.2)
 
@@ -300,19 +278,15 @@ Direnç kırılımı + retest bekle.
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-
             print("Genel hata:", e, flush=True)
-
             time.sleep(10)
 
 @app.route("/")
 def home():
-    return "Binance Futures OI Scanner Aktif", 200
+    return "Binance Futures OI Orta Ayar Scanner Aktif", 200
 
 if __name__ == "__main__":
-
     threading.Thread(target=run_bot, daemon=True).start()
 
     port = int(os.environ.get("PORT", 10000))
-
     app.run(host="0.0.0.0", port=port)
