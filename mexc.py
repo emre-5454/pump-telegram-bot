@@ -5,30 +5,31 @@ import math
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
+
 exchange = ccxt.mexc({"enableRateLimit": True})
 
-SLEEP_SECONDS = 90
+SLEEP_SECONDS = 75
 COOLDOWN = 4 * 60 * 60
 
 # =====================
-# MEXC CONTINUATION AYARLARI
+# MEXC ORTA AGRESİF AYAR
 # =====================
 
-MIN_SCORE = 7
+MIN_SCORE = 6
 
-MIN_VOLUME_USDT = 15000
-MIN_VOLUME_RATIO = 2.0
+MIN_VOLUME_USDT = 10000
+MIN_VOLUME_RATIO = 1.6
 
-MIN_PRICE_CHANGE_5M = 0.05
-MAX_PRICE_CHANGE_15M = 3.50
+MIN_PRICE_CHANGE_5M = 0.03
+MAX_PRICE_CHANGE_15M = 4.50
 
-MIN_BODY_RATIO = 0.35
-MAX_UPPER_WICK = 0.35
+MIN_BODY_RATIO = 0.25
+MAX_UPPER_WICK = 0.55
 
-MIN_RSI = 48
-MAX_RSI = 75
+MIN_RSI = 45
+MAX_RSI = 78
 
-MAX_BB_WIDTH = 0.12
+MAX_BB_WIDTH = 0.18
 
 sent_cache = {}
 
@@ -218,7 +219,7 @@ def scan_symbol(symbol):
             score += 2
             reasons.append("hacim artışı güçlü")
 
-        if volume_ratio >= 4:
+        if volume_ratio >= 3:
             score += 1
             reasons.append("hacim agresif")
 
@@ -244,7 +245,7 @@ def scan_symbol(symbol):
 
         if upper_wick <= MAX_UPPER_WICK:
             score += 1
-            reasons.append("üst fitil düşük")
+            reasons.append("üst fitil kabul edilebilir")
 
         if volume_3_rising:
             score += 1
@@ -270,8 +271,6 @@ def scan_symbol(symbol):
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
             and MIN_RSI <= rsi_now <= MAX_RSI
-            and ema_trend
-            and ma200_above
         )
 
         if not valid_setup:
@@ -305,7 +304,7 @@ def scan_symbol(symbol):
 
 def run():
 
-    telegram("🚀 MEXC CONTINUATION SETUP BOTU başladı hocam")
+    telegram("🚀 MEXC ORTA AGRESİF BOT başladı hocam")
 
     print("MEXC BOT ÇALIŞTI", flush=True)
 
