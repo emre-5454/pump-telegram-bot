@@ -12,7 +12,7 @@ CHAT_ID = "6977265844"
 SLEEP_SECONDS = 75
 COOLDOWN = 8 * 60 * 60
 
-MAX_SYMBOLS = 80
+MAX_SYMBOLS = 120
 
 # Günlük yaklaşık 8-10 sinyal hedefleyen orta ayar
 MIN_SCORE = 7
