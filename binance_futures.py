@@ -12,10 +12,11 @@ CHAT_ID = "6977265844"
 SLEEP_SECONDS = 75
 COOLDOWN = 8 * 60 * 60
 
-MAX_SYMBOLS = 120
+MAX_SYMBOLS = 80
 
-# Günlük yaklaşık 8-10 sinyal hedefleyen orta ayar
-MIN_SCORE = 7
+# Günlük 8-10 civarı daha kaliteli sinyal hedefi
+MIN_SCORE = 8
+
 MIN_1M_VOLUME_USDT = 50000
 MIN_VOLUME_RATIO = 4.0
 MIN_OI_RATIO = 1.002
@@ -39,6 +40,11 @@ def send_telegram(msg):
         )
     except Exception as e:
         print("Telegram hata:", e, flush=True)
+
+def sma(values, period):
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
 
 def get_symbols():
     try:
@@ -72,13 +78,13 @@ def get_symbols():
 
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
-def get_klines(symbol):
+def get_klines(symbol, interval="1m", limit=30):
     url = "https://fapi.binance.com/fapi/v1/klines"
 
     params = {
         "symbol": symbol,
-        "interval": "1m",
-        "limit": 30
+        "interval": interval,
+        "limit": limit
     }
 
     return requests.get(url, params=params, timeout=15).json()
@@ -94,14 +100,47 @@ def get_open_interest(symbol):
 
     return float(data["openInterest"])
 
+def get_1h_trend(symbol):
+    try:
+        candles = get_klines(symbol, interval="1h", limit=220)
+
+        if not candles or len(candles) < 205:
+            return None
+
+        closes = [float(x[4]) for x in candles]
+
+        price = closes[-2]  # kapanmış son 1H mum
+        ema9 = sma(closes[:-1], 9)
+        ema21 = sma(closes[:-1], 21)
+        ma200 = sma(closes[:-1], 200)
+
+        if ema9 is None or ema21 is None or ma200 is None:
+            return None
+
+        trend_up = ema9 > ema21
+        ma200_above = price > ma200
+
+        return {
+            "trend_up": trend_up,
+            "ma200_above": ma200_above,
+            "price_1h": price,
+            "ema9": ema9,
+            "ema21": ema21,
+            "ma200": ma200
+        }
+
+    except Exception as e:
+        print("1H trend hata:", symbol, e, flush=True)
+        return None
+
 def analyze(symbol):
     try:
-        candles = get_klines(symbol)
+        candles = get_klines(symbol, interval="1m", limit=30)
 
         if not candles or len(candles) < 25:
             return None
 
-        last = candles[-2]      # kapanmış son 1m mum
+        last = candles[-2]
         prev = candles[-3]
         prev3 = candles[-5]
 
@@ -110,7 +149,7 @@ def analyze(symbol):
         l = float(last[3])
         c = float(last[4])
 
-        quote_volume = float(last[7])  # 1dk futures USDT hacmi
+        quote_volume = float(last[7])
 
         prev_close = float(prev[4])
         prev3_close = float(prev3[4])
@@ -137,11 +176,15 @@ def analyze(symbol):
         prev_oi = oi_cache.get(symbol)
         oi_cache[symbol] = oi_now
 
-        # İlk turda OI hafızası oluşur, ikinci turdan sonra sinyal arar
         if prev_oi is None or prev_oi <= 0:
             return None
 
         oi_ratio = oi_now / prev_oi
+
+        trend = get_1h_trend(symbol)
+
+        if not trend:
+            return None
 
         now = time.time()
 
@@ -187,6 +230,14 @@ def analyze(symbol):
             score += 1
             reasons.append("üst fitil kabul edilebilir")
 
+        if trend["trend_up"]:
+            score += 1
+            reasons.append("1H EMA trend yukarı")
+
+        if trend["ma200_above"]:
+            score += 1
+            reasons.append("1H MA200 üstü")
+
         valid_setup = (
             score >= MIN_SCORE
             and quote_volume >= MIN_1M_VOLUME_USDT
@@ -197,6 +248,8 @@ def analyze(symbol):
             and price_change_3m <= MAX_PRICE_CHANGE_3M
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
+            and trend["trend_up"]
+            and trend["ma200_above"]
         )
 
         if not valid_setup:
@@ -215,6 +268,11 @@ def analyze(symbol):
             "price_change_3m": price_change_3m,
             "body_ratio": body_ratio,
             "upper_wick": upper_wick,
+            "trend_up": trend["trend_up"],
+            "ma200_above": trend["ma200_above"],
+            "ema9": trend["ema9"],
+            "ema21": trend["ema21"],
+            "ma200": trend["ma200"],
             "reasons": reasons
         }
 
@@ -223,8 +281,8 @@ def analyze(symbol):
         return None
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES OI ORTA AYAR BOT başladı hocam")
-    print("BINANCE FUTURES OI ORTA AYAR BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES OI + 1H TREND BOT başladı hocam")
+    print("BINANCE FUTURES OI + 1H TREND BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -241,12 +299,12 @@ def run_bot():
                     continue
 
                 msg = f"""
-🔥 BINANCE FUTURES OI SETUP
+🔥 BINANCE FUTURES OI + 1H TREND SETUP
 
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/10
+Puan: {result['score']}/12
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
@@ -256,20 +314,27 @@ Hacim Artışı: {result['volume_ratio']:.2f}x
 
 OI Artışı: {result['oi_ratio']:.3f}x
 
+1H EMA Trend: {'YUKARI ✅' if result['trend_up'] else 'ZAYIF ❌'}
+1H MA200 Üstü: {'EVET ✅' if result['ma200_above'] else 'HAYIR ❌'}
+
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
+
+1H EMA9: {result['ema9']:.6f}
+1H EMA21: {result['ema21']:.6f}
+1H MA200: {result['ma200']:.6f}
 
 📌 Sebep:
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Futures tarafında hacim + OI uyumlu olabilir.
+Futures hacim + OI + 1H trend uyumlu.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """
                 send_telegram(msg)
 
-                print("OI SETUP:", result["symbol"], "PUAN:", result["score"], flush=True)
+                print("TREND OI SETUP:", result["symbol"], "PUAN:", result["score"], flush=True)
 
                 time.sleep(0.2)
 
@@ -283,7 +348,7 @@ Direnç kırılımı + retest bekle.
 
 @app.route("/")
 def home():
-    return "Binance Futures OI Orta Ayar Scanner Aktif", 200
+    return "Binance Futures OI + 1H Trend Scanner Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
