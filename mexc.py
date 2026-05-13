@@ -11,23 +11,19 @@ exchange = ccxt.mexc({"enableRateLimit": True})
 SLEEP_SECONDS = 75
 COOLDOWN = 4 * 60 * 60
 
-# =====================
-# MEXC ORTA AGRESİF AYAR
-# =====================
-
-MIN_SCORE = 6
+MIN_SCORE = 7
 
 MIN_VOLUME_USDT = 10000
 MIN_VOLUME_RATIO = 1.6
 
 MIN_PRICE_CHANGE_5M = 0.03
-MAX_PRICE_CHANGE_15M = 4.50
+MAX_PRICE_CHANGE_15M = 2.50
 
 MIN_BODY_RATIO = 0.25
 MAX_UPPER_WICK = 0.55
 
 MIN_RSI = 45
-MAX_RSI = 78
+MAX_RSI = 68
 
 MAX_BB_WIDTH = 0.18
 
@@ -37,10 +33,7 @@ def telegram(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={
-                "chat_id": CHAT_ID,
-                "text": msg
-            },
+            data={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
     except Exception as e:
@@ -52,7 +45,6 @@ def sma(values, period):
     return sum(values[-period:]) / period
 
 def rsi(values, period=14):
-
     if len(values) < period + 1:
         return None
 
@@ -60,9 +52,7 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, period + 1):
-
         diff = values[-i] - values[-i - 1]
-
         gains.append(max(diff, 0))
         losses.append(abs(min(diff, 0)))
 
@@ -73,21 +63,17 @@ def rsi(values, period=14):
         return 100
 
     rs = avg_gain / avg_loss
-
     return 100 - (100 / (1 + rs))
 
 def bollinger_width(values, period=20):
-
     if len(values) < period:
         return None
 
     mid = sma(values, period)
-
     if not mid:
         return None
 
     variance = sum((x - mid) ** 2 for x in values[-period:]) / period
-
     std = math.sqrt(variance)
 
     upper = mid + 2 * std
@@ -96,7 +82,6 @@ def bollinger_width(values, period=20):
     return (upper - lower) / mid
 
 def candle_power(o, h, l, c):
-
     rng = h - l
 
     if rng == 0:
@@ -108,15 +93,12 @@ def candle_power(o, h, l, c):
     return body_ratio, upper_wick
 
 def get_pairs():
-
     markets = exchange.load_markets()
-
     pairs = []
 
     blacklist = ["UP/", "DOWN/", "BULL/", "BEAR/"]
 
     for symbol in markets:
-
         if not symbol.endswith("/USDT"):
             continue
 
@@ -129,13 +111,10 @@ def get_pairs():
         pairs.append(symbol)
 
     print("MEXC PARİTE SAYISI:", len(pairs), flush=True)
-
     return pairs
 
 def scan_symbol(symbol):
-
     try:
-
         candles = exchange.fetch_ohlcv(
             symbol,
             timeframe="5m",
@@ -155,15 +134,11 @@ def scan_symbol(symbol):
         v = last[5]
 
         closes = [x[4] for x in candles]
-        highs = [x[2] for x in candles]
         lows = [x[3] for x in candles]
         volumes = [x[5] for x in candles]
 
         price_change_5m = ((c - prev[4]) / prev[4]) * 100
-
-        price_change_15m = (
-            (c - candles[-4][4]) / candles[-4][4]
-        ) * 100
+        price_change_15m = ((c - candles[-4][4]) / candles[-4][4]) * 100
 
         avg_volume = sum(volumes[-21:-1]) / 20
 
@@ -171,11 +146,9 @@ def scan_symbol(symbol):
             return None
 
         volume_ratio = v / avg_volume
-
         volume_usdt = v * c
 
         rsi_now = rsi(closes, 14)
-
         bb_width = bollinger_width(closes, 20)
 
         ema9 = sma(closes, 9)
@@ -183,20 +156,12 @@ def scan_symbol(symbol):
         ema50 = sma(closes, 50)
         ema200 = sma(closes, 200)
 
-        if None in [
-            rsi_now,
-            bb_width,
-            ema9,
-            ema21,
-            ema50,
-            ema200
-        ]:
+        if None in [rsi_now, bb_width, ema9, ema21, ema50, ema200]:
             return None
 
         body_ratio, upper_wick = candle_power(o, h, l, c)
 
         ema_trend = ema9 > ema21 > ema50
-
         ma200_above = c > ema200
 
         volume_3_rising = (
@@ -205,7 +170,6 @@ def scan_symbol(symbol):
         )
 
         recent_low = min(lows[-6:-1])
-
         higher_low = l > recent_low
 
         score = 0
@@ -271,6 +235,7 @@ def scan_symbol(symbol):
             and body_ratio >= MIN_BODY_RATIO
             and upper_wick <= MAX_UPPER_WICK
             and MIN_RSI <= rsi_now <= MAX_RSI
+            and volume_3_rising
         )
 
         if not valid_setup:
@@ -297,33 +262,22 @@ def scan_symbol(symbol):
         }
 
     except Exception as e:
-
         print("Analiz hata:", symbol, e, flush=True)
-
         return None
 
 def run():
-
-    telegram("🚀 MEXC ORTA AGRESİF BOT başladı hocam")
-
-    print("MEXC BOT ÇALIŞTI", flush=True)
+    telegram("🚀 MEXC FOMO FİLTRELİ CONTINUATION BOT başladı hocam")
+    print("MEXC FOMO FİLTRELİ BOT ÇALIŞTI", flush=True)
 
     while True:
-
         try:
-
             pairs = get_pairs()
-
             now = time.time()
 
             for symbol in pairs:
-
                 print("Taranıyor:", symbol, flush=True)
 
-                if (
-                    symbol in sent_cache
-                    and now - sent_cache[symbol] < COOLDOWN
-                ):
+                if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
                     continue
 
                 result = scan_symbol(symbol)
@@ -367,28 +321,17 @@ Continuation setup.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """
-
                 telegram(msg)
-
                 sent_cache[symbol] = now
 
-                print(
-                    "SETUP BULUNDU:",
-                    symbol,
-                    result["score"],
-                    flush=True
-                )
-
+                print("SETUP BULUNDU:", symbol, result["score"], flush=True)
                 time.sleep(0.25)
 
             print("MEXC tarama bitti", flush=True)
-
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-
             print("Genel hata:", e, flush=True)
-
             time.sleep(10)
 
 if __name__ == "__main__":
