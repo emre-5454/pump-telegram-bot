@@ -100,7 +100,7 @@ def score_signal(df):
         score += 1
         reasons.append("BB sıkışma")
 
-    if last.volume > last.vol_avg * 1.8:
+    if last.volume > last.vol_avg * 1.5:
         score += 2
         reasons.append("Hacim güçlü")
 
