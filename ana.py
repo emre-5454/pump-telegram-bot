@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime
 
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-CHAT_ID = "6977265844"
+TELEGRAM_CHAT_ID = "6977265844"
 
 EXCHANGES = ["binance", "mexc"]
 TIMEFRAME = "15m"
