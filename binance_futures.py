@@ -6,16 +6,14 @@ import os
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-CHAT_ID = "6977265844"
+TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ", "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
+CHAT_ID = os.getenv("6977265844", "6977265844")
 
 SLEEP_SECONDS = 75
 COOLDOWN = 8 * 60 * 60
-
 MAX_SYMBOLS = 80
 
-# Günlük 8-10 civarı daha kaliteli sinyal hedefi
-MIN_SCORE = 8
+MIN_SCORE = 10
 
 MIN_1M_VOLUME_USDT = 50000
 MIN_VOLUME_RATIO = 4.0
@@ -46,6 +44,91 @@ def sma(values, period):
         return None
     return sum(values[-period:]) / period
 
+def ema(values, period):
+    if len(values) < period:
+        return None
+    k = 2 / (period + 1)
+    e = sum(values[:period]) / period
+    for price in values[period:]:
+        e = price * k + e * (1 - k)
+    return e
+
+def rsi(values, period=14):
+    if len(values) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(-period, 0):
+        diff = values[i] - values[i - 1]
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def macd(values):
+    if len(values) < 35:
+        return None, None, None
+    macd_line = ema(values, 12) - ema(values, 26)
+    macd_series = []
+    for i in range(35, len(values) + 1):
+        part = values[:i]
+        macd_series.append(ema(part, 12) - ema(part, 26))
+    signal = ema(macd_series, 9)
+    hist = macd_line - signal
+    return macd_line, signal, hist
+
+def bollinger_width(values, period=20):
+    if len(values) < period:
+        return None
+    recent = values[-period:]
+    mid = sum(recent) / period
+    variance = sum((x - mid) ** 2 for x in recent) / period
+    std = variance ** 0.5
+    if mid == 0:
+        return None
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+    return (upper - lower) / mid
+
+def obv(closes, volumes):
+    if len(closes) < 21:
+        return None, None
+    obv_values = [0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            obv_values.append(obv_values[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            obv_values.append(obv_values[-1] - volumes[i])
+        else:
+            obv_values.append(obv_values[-1])
+    current = obv_values[-1]
+    avg = sum(obv_values[-20:]) / 20
+    return current, avg
+
+def fib_targets(highs, lows, lookback=60):
+    if len(highs) < lookback or len(lows) < lookback:
+        return None
+
+    recent_high = max(highs[-lookback:])
+    recent_low = min(lows[-lookback:])
+    impulse = recent_high - recent_low
+
+    if impulse <= 0:
+        return None
+
+    return {
+        "low": recent_low,
+        "high": recent_high,
+        "tp1": recent_high,
+        "tp2": recent_low + impulse * 1.272,
+        "tp3": recent_low + impulse * 1.618,
+        "tp4": recent_low + impulse * 2.0,
+        "invalid": recent_low
+    }
+
 def get_symbols():
     try:
         data = requests.get(
@@ -57,72 +140,50 @@ def get_symbols():
         return []
 
     pairs = []
-
     for item in data:
         symbol = item.get("symbol", "")
-
         if not symbol.endswith("USDT"):
             continue
-
         if any(x in symbol for x in ["UP", "DOWN", "BULL", "BEAR"]):
             continue
-
         try:
             volume = float(item.get("quoteVolume", 0))
         except:
             continue
-
         pairs.append((symbol, volume))
 
     pairs.sort(key=lambda x: x[1], reverse=True)
-
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
-def get_klines(symbol, interval="1m", limit=30):
+def get_klines(symbol, interval="1m", limit=220):
     url = "https://fapi.binance.com/fapi/v1/klines"
-
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
-
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
     return requests.get(url, params=params, timeout=15).json()
 
 def get_open_interest(symbol):
     url = "https://fapi.binance.com/fapi/v1/openInterest"
-
-    params = {
-        "symbol": symbol
-    }
-
-    data = requests.get(url, params=params, timeout=10).json()
-
+    data = requests.get(url, params={"symbol": symbol}, timeout=10).json()
     return float(data["openInterest"])
 
 def get_1h_trend(symbol):
     try:
-        candles = get_klines(symbol, interval="1h", limit=220)
-
+        candles = get_klines(symbol, "1h", 220)
         if not candles or len(candles) < 205:
             return None
 
         closes = [float(x[4]) for x in candles]
+        price = closes[-2]
 
-        price = closes[-2]  # kapanmış son 1H mum
-        ema9 = sma(closes[:-1], 9)
-        ema21 = sma(closes[:-1], 21)
+        ema9 = ema(closes[:-1], 9)
+        ema21 = ema(closes[:-1], 21)
         ma200 = sma(closes[:-1], 200)
 
         if ema9 is None or ema21 is None or ma200 is None:
             return None
 
-        trend_up = ema9 > ema21
-        ma200_above = price > ma200
-
         return {
-            "trend_up": trend_up,
-            "ma200_above": ma200_above,
+            "trend_up": ema9 > ema21,
+            "ma200_above": price > ma200,
             "price_1h": price,
             "ema9": ema9,
             "ema21": ema21,
@@ -133,9 +194,55 @@ def get_1h_trend(symbol):
         print("1H trend hata:", symbol, e, flush=True)
         return None
 
+def get_15m_indicators(symbol):
+    try:
+        candles = get_klines(symbol, "15m", 120)
+
+        if not candles or len(candles) < 80:
+            return None
+
+        closes = [float(x[4]) for x in candles]
+        highs = [float(x[2]) for x in candles]
+        lows = [float(x[3]) for x in candles]
+        volumes = [float(x[7]) for x in candles]
+
+        rsi_val = rsi(closes, 14)
+        bb_now = bollinger_width(closes, 20)
+
+        bb_values = []
+        for i in range(20, len(closes) + 1):
+            bw = bollinger_width(closes[:i], 20)
+            if bw:
+                bb_values.append(bw)
+
+        bb_avg = sma(bb_values, 50) if len(bb_values) >= 50 else None
+        macd_line, macd_signal, macd_hist = macd(closes)
+
+        obv_now, obv_avg = obv(closes, volumes)
+        fib = fib_targets(highs, lows, 60)
+
+        return {
+            "rsi": rsi_val,
+            "bb_width": bb_now,
+            "bb_avg": bb_avg,
+            "bb_tight": bb_now is not None and bb_avg is not None and bb_now < bb_avg,
+            "macd": macd_line,
+            "macd_signal": macd_signal,
+            "macd_hist": macd_hist,
+            "macd_bull": macd_line is not None and macd_signal is not None and macd_line > macd_signal,
+            "obv": obv_now,
+            "obv_avg": obv_avg,
+            "obv_bull": obv_now is not None and obv_avg is not None and obv_now > obv_avg,
+            "fib": fib
+        }
+
+    except Exception as e:
+        print("15M indikatör hata:", symbol, e, flush=True)
+        return None
+
 def analyze(symbol):
     try:
-        candles = get_klines(symbol, interval="1m", limit=30)
+        candles = get_klines(symbol, "1m", 30)
 
         if not candles or len(candles) < 25:
             return None
@@ -150,7 +257,6 @@ def analyze(symbol):
         c = float(last[4])
 
         quote_volume = float(last[7])
-
         prev_close = float(prev[4])
         prev3_close = float(prev3[4])
 
@@ -182,12 +288,12 @@ def analyze(symbol):
         oi_ratio = oi_now / prev_oi
 
         trend = get_1h_trend(symbol)
+        ind15 = get_15m_indicators(symbol)
 
-        if not trend:
+        if not trend or not ind15:
             return None
 
         now = time.time()
-
         if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
             return None
 
@@ -238,6 +344,22 @@ def analyze(symbol):
             score += 1
             reasons.append("1H MA200 üstü")
 
+        if ind15["rsi"] and 50 < ind15["rsi"] < 75:
+            score += 1
+            reasons.append("15m RSI uygun")
+
+        if ind15["bb_tight"]:
+            score += 1
+            reasons.append("15m BB sıkışma")
+
+        if ind15["obv_bull"]:
+            score += 2
+            reasons.append("15m OBV toplama")
+
+        if ind15["macd_bull"]:
+            score += 1
+            reasons.append("15m MACD yukarı")
+
         valid_setup = (
             score >= MIN_SCORE
             and quote_volume >= MIN_1M_VOLUME_USDT
@@ -273,6 +395,11 @@ def analyze(symbol):
             "ema9": trend["ema9"],
             "ema21": trend["ema21"],
             "ma200": trend["ma200"],
+            "rsi": ind15["rsi"],
+            "bb_width": ind15["bb_width"],
+            "obv_bull": ind15["obv_bull"],
+            "macd_bull": ind15["macd_bull"],
+            "fib": ind15["fib"],
             "reasons": reasons
         }
 
@@ -281,13 +408,12 @@ def analyze(symbol):
         return None
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES OI + 1H TREND BOT başladı hocam")
-    print("BINANCE FUTURES OI + 1H TREND BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES GELİŞMİŞ BOT başladı hocam")
+    print("BINANCE FUTURES GELİŞMİŞ BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
             symbols = get_symbols()
-
             print("Taranan futures coin:", len(symbols), flush=True)
 
             for symbol in symbols:
@@ -298,24 +424,44 @@ def run_bot():
                 if not result:
                     continue
 
+                fib = result["fib"]
+                fib_text = "Fib hesaplanamadı."
+
+                if fib:
+                    fib_text = f"""
+Swing Dip: {fib['low']:.6f}
+Swing Tepe: {fib['high']:.6f}
+
+TP1: {fib['tp1']:.6f}
+TP2 / 1.272: {fib['tp2']:.6f}
+TP3 / 1.618: {fib['tp3']:.6f}
+TP4 / 2.000: {fib['tp4']:.6f}
+
+Geçersiz Bölge: {fib['invalid']:.6f}
+""".strip()
+
                 msg = f"""
-🔥 BINANCE FUTURES OI + 1H TREND SETUP
+🔥 BINANCE FUTURES GELİŞMİŞ SETUP
 
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/12
+Puan: {result['score']}/16
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
 
 1dk Futures Hacim: {int(result['quote_volume'])} USDT
 Hacim Artışı: {result['volume_ratio']:.2f}x
-
 OI Artışı: {result['oi_ratio']:.3f}x
 
 1H EMA Trend: {'YUKARI ✅' if result['trend_up'] else 'ZAYIF ❌'}
 1H MA200 Üstü: {'EVET ✅' if result['ma200_above'] else 'HAYIR ❌'}
+
+15m RSI: {result['rsi']:.2f}
+15m BB Width: {result['bb_width']:.4f}
+15m OBV: {'TOPLAMA ✅' if result['obv_bull'] else 'ZAYIF ❌'}
+15m MACD: {'YUKARI ✅' if result['macd_bull'] else 'ZAYIF ❌'}
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
@@ -324,22 +470,23 @@ Mum Gücü: {result['body_ratio']:.2f}
 1H EMA21: {result['ema21']:.6f}
 1H MA200: {result['ma200']:.6f}
 
+🎯 Fib Hedefleri:
+{fib_text}
+
 📌 Sebep:
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Futures hacim + OI + 1H trend uyumlu.
+Futures hacim + OI + trend uyumlu.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
-"""
+""".strip()
+
                 send_telegram(msg)
-
-                print("TREND OI SETUP:", result["symbol"], "PUAN:", result["score"], flush=True)
-
+                print("GELİŞMİŞ SETUP:", result["symbol"], "PUAN:", result["score"], flush=True)
                 time.sleep(0.2)
 
             print("Futures tarama bitti", flush=True)
-
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
@@ -348,10 +495,9 @@ Direnç kırılımı + retest bekle.
 
 @app.route("/")
 def home():
-    return "Binance Futures OI + 1H Trend Scanner Aktif", 200
+    return "Binance Futures Gelişmiş Scanner Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
