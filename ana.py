@@ -1,13 +1,10 @@
-import os
-import time
-import requests
-import ccxt
+import os, time, requests, ccxt
 import pandas as pd
 import numpy as np
 from datetime import datetime
 
-TELEGRAM_TOKEN =("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
-TELEGRAM_CHAT_ID =("6977265844")
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+TELEGRAM_CHAT_ID = "6977265844"
 
 EXCHANGES = ["mexc"]
 TIMEFRAME = "15m"
@@ -15,6 +12,7 @@ LIMIT = 150
 SLEEP_SECONDS = 90
 COOLDOWN_SECONDS = 3 * 60 * 60
 MIN_SCORE = 8
+MAX_SYMBOLS = 120
 
 last_alert = {}
 
@@ -36,10 +34,7 @@ def rsi(series, length=14):
     return 100 - (100 / (1 + rs))
 
 def indicators(df):
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    volume = df["volume"]
+    close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
 
     df["ema20"] = close.ewm(span=20, adjust=False).mean()
     df["ema50"] = close.ewm(span=50, adjust=False).mean()
@@ -67,69 +62,54 @@ def indicators(df):
             obv.append(obv[-1] - volume.iloc[i])
         else:
             obv.append(obv[-1])
-
     df["obv"] = obv
     df["obv_ma"] = pd.Series(obv).rolling(20).mean().values
 
     ll = low.rolling(9).min()
     hh = high.rolling(9).max()
     rsv = (close - ll) / (hh - ll).replace(0, np.nan) * 100
-
     df["k"] = rsv.rolling(3).mean()
     df["d"] = df["k"].rolling(3).mean()
     df["j"] = 3 * df["k"] - 2 * df["d"]
-
     df["wr"] = -100 * (hh - close) / (hh - ll).replace(0, np.nan)
 
     return df
 
 def score_signal(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
+    last, prev = df.iloc[-1], df.iloc[-2]
     score = 0
     reasons = []
 
     if last.close > last.ema200 and last.ema20 > last.ema50:
-        score += 2
-        reasons.append("EMA trend yukarı")
+        score += 2; reasons.append("EMA trend yukarı")
 
     if last.close > last.ma200:
-        score += 1
-        reasons.append("MA200 üstü")
+        score += 1; reasons.append("MA200 üstü")
 
     bb_avg = df["bb_width"].rolling(50).mean().iloc[-1]
     if last.bb_width < bb_avg:
-        score += 1
-        reasons.append("BB sıkışma")
+        score += 1; reasons.append("BB sıkışma")
 
     if last.volume > last.vol_avg * 1.3:
-        score += 2
-        reasons.append("Hacim güçlü")
+        score += 2; reasons.append("Hacim güçlü")
 
     if 45 < last.rsi < 78:
-        score += 1
-        reasons.append("RSI uygun")
+        score += 1; reasons.append("RSI uygun")
 
     if last.roc > 0:
-        score += 1
-        reasons.append("ROC pozitif")
+        score += 1; reasons.append("ROC pozitif")
 
     if last.obv > last.obv_ma:
-        score += 2
-        reasons.append("OBV toplama")
+        score += 2; reasons.append("OBV toplama")
 
     if last.macd > last.macd_signal and last.macd > prev.macd:
-        score += 1
-        reasons.append("MACD güçleniyor")
+        score += 1; reasons.append("MACD güçleniyor")
 
     if last.k > last.d and last.j > last.k:
-        score += 1
-        reasons.append("KDJ yukarı")
+        score += 1; reasons.append("KDJ yukarı")
 
     if last.wr > -55:
-        score += 1
-        reasons.append("WR güçlü bölge")
+        score += 1; reasons.append("WR güçlü bölge")
 
     return score, reasons
 
@@ -138,7 +118,6 @@ def fib_targets(df, lookback=60):
     swing_low = recent["low"].min()
     swing_high = recent["high"].max()
     impulse = swing_high - swing_low
-
     if impulse <= 0:
         return None
 
@@ -154,19 +133,17 @@ def fib_targets(df, lookback=60):
 
 def elliott_note(df):
     last = df.iloc[-1]
-
     if last.close > last.ema20 and last.ema20 > last.ema50 and last.rsi > 50 and last.obv > last.obv_ma:
         return "Muhtemel 3. dalga hazırlığı olabilir. Teyit: son tepe kırılımı + hacim devamı."
     elif last.close > last.ema50 and last.rsi > 45:
-        return "Muhtemel 2. dalga sonrası toparlanma olabilir. Teyit gelmeden agresif giriş riskli."
+        return "Muhtemel 2. dalga sonrası toparlanma olabilir."
     elif last.close < last.ema50:
         return "Yapı zayıf. Düzeltme dalgası devam ediyor olabilir."
-    else:
-        return "Net Elliott sayımı değil; sadece senaryo notudur."
+    return "Net Elliott sayımı değil; sadece senaryo notudur."
 
 def get_exchange(name):
     ex_class = getattr(ccxt, name)
-    return ex_class({"enableRateLimit": True})
+    return ex_class({"enableRateLimit": True, "timeout": 15000})
 
 def scan_exchange(exchange_name):
     exchange = get_exchange(exchange_name)
@@ -177,29 +154,33 @@ def scan_exchange(exchange_name):
         if s.endswith("/USDT") and markets[s].get("active", True)
     ]
 
-    print(f"{exchange_name.upper()} taranıyor: {len(symbols)} coin", flush=True)
+    print(f"{exchange_name.upper()} toplam coin: {len(symbols)}", flush=True)
+
+    symbols = symbols[:MAX_SYMBOLS]
+    print(f"TEST için taranacak coin: {len(symbols)}", flush=True)
 
     for symbol in symbols:
+        print("DENENİYOR:", symbol, flush=True)
+
         try:
             key = f"{exchange_name}:{symbol}"
             now = time.time()
 
             if key in last_alert and now - last_alert[key] < COOLDOWN_SECONDS:
+                print(symbol, "cooldown geçildi", flush=True)
                 continue
 
             ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=LIMIT)
 
-            if len(ohlcv) < 120:
+            if not ohlcv or len(ohlcv) < 120:
+                print(symbol, "mum eksik:", len(ohlcv) if ohlcv else 0, flush=True)
                 continue
 
-            df = pd.DataFrame(
-                ohlcv,
-                columns=["time", "open", "high", "low", "close", "volume"]
-            )
-
+            df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
             df = indicators(df).dropna()
 
             if len(df) < 40:
+                print(symbol, "indikatör sonrası veri az:", len(df), flush=True)
                 continue
 
             score, reasons = score_signal(df)
@@ -208,7 +189,6 @@ def scan_exchange(exchange_name):
             vol_ratio = last.volume / last.vol_avg if last.vol_avg > 0 else 0
             change_15m = ((last.close - last.open) / last.open) * 100
 
-            # TEST LOGU: Railway Deploy Logs içinde göreceğiz
             print(symbol, "SKOR:", score, "VOL:", round(vol_ratio, 2), "RSI:", round(last.rsi, 2), flush=True)
 
             if score < MIN_SCORE:
@@ -220,6 +200,7 @@ def scan_exchange(exchange_name):
             fib = fib_targets(df)
             elliott = elliott_note(df)
 
+            fib_text = "Fib hedefleri hesaplanamadı."
             if fib:
                 fib_text = f"""
 Swing Dip: {fib['swing_low']:.8f}
@@ -232,8 +213,6 @@ TP4 / Fib 2.000: {fib['tp4']:.8f}
 
 Geçersiz Bölge: {fib['invalidation']:.8f}
 """.strip()
-            else:
-                fib_text = "Fib hedefleri hesaplanamadı."
 
             msg = f"""
 {status}
@@ -268,14 +247,14 @@ Direnç kırılımı + retest bekle.
             print("SİNYAL:", symbol, "SKOR:", score, flush=True)
             send_telegram(msg)
 
-            time.sleep(0.15)
+            time.sleep(0.2)
 
         except Exception as e:
-            print(f"Hata {exchange_name} {symbol}: {e}", flush=True)
+            print(f"HATA {exchange_name} {symbol}: {e}", flush=True)
             time.sleep(0.3)
 
 def main():
-    send_telegram("✅ Railway MEXC skor botu başladı.")
+    send_telegram("✅ Railway MEXC test loglu bot başladı.")
     print("BOT BAŞLADI", flush=True)
 
     while True:
