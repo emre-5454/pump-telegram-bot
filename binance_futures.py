@@ -6,27 +6,39 @@ import os
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ", "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
-CHAT_ID = os.getenv("6977265844", "6977265844")
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+CHAT_ID = "6977265844"
 
-SLEEP_SECONDS = 75
-COOLDOWN = 8 * 60 * 60
-MAX_SYMBOLS = 120
+SLEEP_SECONDS = 60
+COOLDOWN_PREP = 3 * 60 * 60
+COOLDOWN_CONFIRM = 6 * 60 * 60
 
-MIN_SCORE = 10
+MAX_SYMBOLS = 200
 
-MIN_1M_VOLUME_USDT = 50000
-MIN_VOLUME_RATIO = 4.0
-MIN_OI_RATIO = 1.002
+# HAZIRLIK MODU
+PREP_MIN_SCORE = 7
+PREP_MIN_VOLUME_USDT = 30000
+PREP_MIN_VOLUME_RATIO = 2.0
+PREP_MIN_OI_RATIO = 1.001
+PREP_MIN_1M_CHANGE = -0.10
+PREP_MIN_3M_CHANGE = 0.05
+PREP_MAX_3M_CHANGE = 1.80
+PREP_MIN_BODY_RATIO = 0.25
+PREP_MAX_UPPER_WICK = 0.55
 
-MIN_PRICE_CHANGE_1M = 0.05
-MIN_3M_CHANGE = 0.20
-MAX_PRICE_CHANGE_3M = 2.50
+# ONAY MODU
+CONFIRM_MIN_SCORE = 10
+CONFIRM_MIN_VOLUME_USDT = 60000
+CONFIRM_MIN_VOLUME_RATIO = 4.0
+CONFIRM_MIN_OI_RATIO = 1.003
+CONFIRM_MIN_1M_CHANGE = 0.10
+CONFIRM_MIN_3M_CHANGE = 0.30
+CONFIRM_MAX_3M_CHANGE = 3.00
+CONFIRM_MIN_BODY_RATIO = 0.40
+CONFIRM_MAX_UPPER_WICK = 0.35
 
-MIN_BODY_RATIO = 0.35
-MAX_UPPER_WICK = 0.45
-
-sent_cache = {}
+sent_prep = {}
+sent_confirm = {}
 oi_cache = {}
 
 def send_telegram(msg):
@@ -56,77 +68,95 @@ def ema(values, period):
 def rsi(values, period=14):
     if len(values) < period + 1:
         return None
-    gains, losses = [], []
+
+    gains = []
+    losses = []
+
     for i in range(-period, 0):
         diff = values[i] - values[i - 1]
         gains.append(max(diff, 0))
         losses.append(abs(min(diff, 0)))
+
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
+
     if avg_loss == 0:
         return 100
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def macd(values):
     if len(values) < 35:
         return None, None, None
+
     macd_line = ema(values, 12) - ema(values, 26)
+
     macd_series = []
     for i in range(35, len(values) + 1):
         part = values[:i]
         macd_series.append(ema(part, 12) - ema(part, 26))
+
     signal = ema(macd_series, 9)
     hist = macd_line - signal
+
     return macd_line, signal, hist
 
 def bollinger_width(values, period=20):
     if len(values) < period:
         return None
+
     recent = values[-period:]
     mid = sum(recent) / period
     variance = sum((x - mid) ** 2 for x in recent) / period
     std = variance ** 0.5
+
     if mid == 0:
         return None
+
     upper = mid + 2 * std
     lower = mid - 2 * std
+
     return (upper - lower) / mid
 
 def obv(closes, volumes):
     if len(closes) < 21:
         return None, None
-    obv_values = [0]
+
+    values = [0]
+
     for i in range(1, len(closes)):
         if closes[i] > closes[i - 1]:
-            obv_values.append(obv_values[-1] + volumes[i])
+            values.append(values[-1] + volumes[i])
         elif closes[i] < closes[i - 1]:
-            obv_values.append(obv_values[-1] - volumes[i])
+            values.append(values[-1] - volumes[i])
         else:
-            obv_values.append(obv_values[-1])
-    current = obv_values[-1]
-    avg = sum(obv_values[-20:]) / 20
+            values.append(values[-1])
+
+    current = values[-1]
+    avg = sum(values[-20:]) / 20
+
     return current, avg
 
 def fib_targets(highs, lows, lookback=60):
     if len(highs) < lookback or len(lows) < lookback:
         return None
 
-    recent_high = max(highs[-lookback:])
-    recent_low = min(lows[-lookback:])
-    impulse = recent_high - recent_low
+    swing_high = max(highs[-lookback:])
+    swing_low = min(lows[-lookback:])
+    impulse = swing_high - swing_low
 
     if impulse <= 0:
         return None
 
     return {
-        "low": recent_low,
-        "high": recent_high,
-        "tp1": recent_high,
-        "tp2": recent_low + impulse * 1.272,
-        "tp3": recent_low + impulse * 1.618,
-        "tp4": recent_low + impulse * 2.0,
-        "invalid": recent_low
+        "low": swing_low,
+        "high": swing_high,
+        "tp1": swing_high,
+        "tp2": swing_low + impulse * 1.272,
+        "tp3": swing_low + impulse * 1.618,
+        "tp4": swing_low + impulse * 2.0,
+        "invalid": swing_low
     }
 
 def get_symbols():
@@ -140,24 +170,34 @@ def get_symbols():
         return []
 
     pairs = []
+
     for item in data:
         symbol = item.get("symbol", "")
+
         if not symbol.endswith("USDT"):
             continue
+
         if any(x in symbol for x in ["UP", "DOWN", "BULL", "BEAR"]):
             continue
+
         try:
             volume = float(item.get("quoteVolume", 0))
         except:
             continue
+
         pairs.append((symbol, volume))
 
     pairs.sort(key=lambda x: x[1], reverse=True)
+
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
 def get_klines(symbol, interval="1m", limit=220):
     url = "https://fapi.binance.com/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
     return requests.get(url, params=params, timeout=15).json()
 
 def get_open_interest(symbol):
@@ -168,12 +208,13 @@ def get_open_interest(symbol):
 def get_1h_trend(symbol):
     try:
         candles = get_klines(symbol, "1h", 220)
+
         if not candles or len(candles) < 205:
             return None
 
         closes = [float(x[4]) for x in candles]
-        price = closes[-2]
 
+        price = closes[-2]
         ema9 = ema(closes[:-1], 9)
         ema21 = ema(closes[:-1], 21)
         ma200 = sma(closes[:-1], 200)
@@ -212,13 +253,15 @@ def get_15m_indicators(symbol):
         bb_values = []
         for i in range(20, len(closes) + 1):
             bw = bollinger_width(closes[:i], 20)
-            if bw:
+            if bw is not None:
                 bb_values.append(bw)
 
         bb_avg = sma(bb_values, 50) if len(bb_values) >= 50 else None
+
         macd_line, macd_signal, macd_hist = macd(closes)
 
         obv_now, obv_avg = obv(closes, volumes)
+
         fib = fib_targets(highs, lows, 60)
 
         return {
@@ -257,6 +300,7 @@ def analyze(symbol):
         c = float(last[4])
 
         quote_volume = float(last[7])
+
         prev_close = float(prev[4])
         prev3_close = float(prev3[4])
 
@@ -283,6 +327,7 @@ def analyze(symbol):
         oi_cache[symbol] = oi_now
 
         if prev_oi is None or prev_oi <= 0:
+            print(symbol, "OI ilk ölçüm, sonraki turda değerlenecek", flush=True)
             return None
 
         oi_ratio = oi_now / prev_oi
@@ -293,46 +338,42 @@ def analyze(symbol):
         if not trend or not ind15:
             return None
 
-        now = time.time()
-        if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
-            return None
-
         score = 0
         reasons = []
 
-        if quote_volume >= MIN_1M_VOLUME_USDT:
+        if quote_volume >= PREP_MIN_VOLUME_USDT:
             score += 1
-            reasons.append("1dk futures hacim güçlü")
+            reasons.append("1dk futures hacim yeterli")
 
-        if volume_ratio >= MIN_VOLUME_RATIO:
+        if volume_ratio >= PREP_MIN_VOLUME_RATIO:
             score += 2
-            reasons.append("hacim artışı güçlü")
+            reasons.append("hacim hazırlık seviyesinde")
 
-        if volume_ratio >= 6:
-            score += 1
-            reasons.append("hacim agresif")
-
-        if oi_ratio >= MIN_OI_RATIO:
+        if volume_ratio >= CONFIRM_MIN_VOLUME_RATIO:
             score += 2
-            reasons.append("open interest artıyor")
+            reasons.append("hacim patlaması var")
 
-        if oi_ratio >= 1.01:
+        if oi_ratio >= PREP_MIN_OI_RATIO:
             score += 1
+            reasons.append("OI hafif artıyor")
+
+        if oi_ratio >= CONFIRM_MIN_OI_RATIO:
+            score += 2
             reasons.append("OI güçlü artıyor")
 
-        if price_change_1m >= MIN_PRICE_CHANGE_1M:
+        if price_change_1m >= PREP_MIN_1M_CHANGE:
             score += 1
-            reasons.append("1dk momentum var")
+            reasons.append("1dk zayıf değil")
 
-        if MIN_3M_CHANGE <= price_change_3m <= MAX_PRICE_CHANGE_3M:
+        if PREP_MIN_3M_CHANGE <= price_change_3m <= PREP_MAX_3M_CHANGE:
             score += 1
-            reasons.append("3dk momentum uygun")
+            reasons.append("3dk erken momentum")
 
-        if body_ratio >= MIN_BODY_RATIO:
+        if body_ratio >= PREP_MIN_BODY_RATIO:
             score += 1
             reasons.append("mum gövdesi yeterli")
 
-        if upper_wick <= MAX_UPPER_WICK:
+        if upper_wick <= PREP_MAX_UPPER_WICK:
             score += 1
             reasons.append("üst fitil kabul edilebilir")
 
@@ -344,7 +385,7 @@ def analyze(symbol):
             score += 1
             reasons.append("1H MA200 üstü")
 
-        if ind15["rsi"] and 50 < ind15["rsi"] < 75:
+        if ind15["rsi"] is not None and 45 <= ind15["rsi"] <= 68:
             score += 1
             reasons.append("15m RSI uygun")
 
@@ -360,29 +401,55 @@ def analyze(symbol):
             score += 1
             reasons.append("15m MACD yukarı")
 
-        valid_setup = (
-            score >= MIN_SCORE
-            and quote_volume >= MIN_1M_VOLUME_USDT
-            and volume_ratio >= MIN_VOLUME_RATIO
-            and oi_ratio >= MIN_OI_RATIO
-            and price_change_1m >= MIN_PRICE_CHANGE_1M
-            and price_change_3m >= MIN_3M_CHANGE
-            and price_change_3m <= MAX_PRICE_CHANGE_3M
-            and body_ratio >= MIN_BODY_RATIO
-            and upper_wick <= MAX_UPPER_WICK
-            and trend["trend_up"]
-            and trend["ma200_above"]
+        prep_valid = (
+            score >= PREP_MIN_SCORE
+            and quote_volume >= PREP_MIN_VOLUME_USDT
+            and volume_ratio >= PREP_MIN_VOLUME_RATIO
+            and oi_ratio >= PREP_MIN_OI_RATIO
+            and price_change_3m >= PREP_MIN_3M_CHANGE
+            and price_change_3m <= PREP_MAX_3M_CHANGE
+            and body_ratio >= PREP_MIN_BODY_RATIO
+            and upper_wick <= PREP_MAX_UPPER_WICK
         )
 
-        if not valid_setup:
+        confirm_valid = (
+            score >= CONFIRM_MIN_SCORE
+            and quote_volume >= CONFIRM_MIN_VOLUME_USDT
+            and volume_ratio >= CONFIRM_MIN_VOLUME_RATIO
+            and oi_ratio >= CONFIRM_MIN_OI_RATIO
+            and price_change_1m >= CONFIRM_MIN_1M_CHANGE
+            and price_change_3m >= CONFIRM_MIN_3M_CHANGE
+            and price_change_3m <= CONFIRM_MAX_3M_CHANGE
+            and body_ratio >= CONFIRM_MIN_BODY_RATIO
+            and upper_wick <= CONFIRM_MAX_UPPER_WICK
+            and trend["trend_up"]
+        )
+
+        if not prep_valid and not confirm_valid:
+            print(symbol, "SKOR:", score, "VOL:", round(volume_ratio, 2), "OI:", round(oi_ratio, 4), flush=True)
             return None
 
-        sent_cache[symbol] = now
+        now = time.time()
+
+        signal_type = "PREP"
+        cooldown_cache = sent_prep
+        cooldown_time = COOLDOWN_PREP
+
+        if confirm_valid:
+            signal_type = "CONFIRM"
+            cooldown_cache = sent_confirm
+            cooldown_time = COOLDOWN_CONFIRM
+
+        if symbol in cooldown_cache and now - cooldown_cache[symbol] < cooldown_time:
+            return None
+
+        cooldown_cache[symbol] = now
 
         return {
             "symbol": symbol,
             "price": c,
             "score": score,
+            "signal_type": signal_type,
             "quote_volume": quote_volume,
             "volume_ratio": volume_ratio,
             "oi_ratio": oi_ratio,
@@ -407,28 +474,12 @@ def analyze(symbol):
         print("Analiz hata:", symbol, e, flush=True)
         return None
 
-def run_bot():
-    send_telegram("🚀 BINANCE FUTURES GELİŞMİŞ BOT başladı hocam")
-    print("BINANCE FUTURES GELİŞMİŞ BOT ÇALIŞTI", flush=True)
+def format_signal(result):
+    fib = result["fib"]
+    fib_text = "Fib hesaplanamadı."
 
-    while True:
-        try:
-            symbols = get_symbols()
-            print("Taranan futures coin:", len(symbols), flush=True)
-
-            for symbol in symbols:
-                print("Taranıyor:", symbol, flush=True)
-
-                result = analyze(symbol)
-
-                if not result:
-                    continue
-
-                fib = result["fib"]
-                fib_text = "Fib hesaplanamadı."
-
-                if fib:
-                    fib_text = f"""
+    if fib:
+        fib_text = f"""
 Swing Dip: {fib['low']:.6f}
 Swing Tepe: {fib['high']:.6f}
 
@@ -440,20 +491,22 @@ TP4 / 2.000: {fib['tp4']:.6f}
 Geçersiz Bölge: {fib['invalid']:.6f}
 """.strip()
 
-                msg = f"""
-🔥 BINANCE FUTURES GELİŞMİŞ SETUP
+    title = "🔥 BINANCE FUTURES ONAY SETUP" if result["signal_type"] == "CONFIRM" else "🟡 BINANCE FUTURES HAZIRLIK SETUP"
+
+    msg = f"""
+{title}
 
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/16
+Puan: {result['score']}/18
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
 
 1dk Futures Hacim: {int(result['quote_volume'])} USDT
 Hacim Artışı: {result['volume_ratio']:.2f}x
-OI Artışı: {result['oi_ratio']:.3f}x
+OI Artışı: {result['oi_ratio']:.4f}x
 
 1H EMA Trend: {'YUKARI ✅' if result['trend_up'] else 'ZAYIF ❌'}
 1H MA200 Üstü: {'EVET ✅' if result['ma200_above'] else 'HAYIR ❌'}
@@ -477,13 +530,36 @@ Mum Gücü: {result['body_ratio']:.2f}
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Futures hacim + OI + trend uyumlu.
+Hazırlık sinyali erken uyarıdır.
+Onay sinyali daha güçlüdür.
 Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """.strip()
 
+    return msg
+
+def run_bot():
+    send_telegram("🚀 BINANCE FUTURES HAZIRLIK + ONAY BOT başladı hocam")
+    print("BINANCE FUTURES HAZIRLIK + ONAY BOT ÇALIŞTI", flush=True)
+
+    while True:
+        try:
+            symbols = get_symbols()
+            print("Taranan futures coin:", len(symbols), flush=True)
+
+            for symbol in symbols:
+                print("Taranıyor:", symbol, flush=True)
+
+                result = analyze(symbol)
+
+                if not result:
+                    continue
+
+                msg = format_signal(result)
                 send_telegram(msg)
-                print("GELİŞMİŞ SETUP:", result["symbol"], "PUAN:", result["score"], flush=True)
+
+                print(result["signal_type"], "SINYAL:", result["symbol"], "PUAN:", result["score"], flush=True)
+
                 time.sleep(0.2)
 
             print("Futures tarama bitti", flush=True)
@@ -495,9 +571,10 @@ Direnç kırılımı + retest bekle.
 
 @app.route("/")
 def home():
-    return "Binance Futures Gelişmiş Scanner Aktif", 200
+    return "Binance Futures Hazirlik + Onay Scanner Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
