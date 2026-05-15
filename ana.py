@@ -6,24 +6,27 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
-TELEGRAM_CHAT_ID = "6977265844"
+TELEGRAM_TOKEN =("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
+TELEGRAM_CHAT_ID =("6977265844")
 
 EXCHANGES = ["mexc"]
 TIMEFRAME = "15m"
 LIMIT = 150
 SLEEP_SECONDS = 90
 COOLDOWN_SECONDS = 3 * 60 * 60
-MIN_SCORE = 0
+MIN_SCORE = 8
 
 last_alert = {}
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram bilgileri eksik.")
+        print("Telegram bilgileri eksik.", flush=True)
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+    except Exception as e:
+        print("Telegram hata:", e, flush=True)
 
 def rsi(series, length=14):
     delta = series.diff()
@@ -100,11 +103,11 @@ def score_signal(df):
         score += 1
         reasons.append("BB sıkışma")
 
-    if last.volume > last.vol_avg * 1.5:
+    if last.volume > last.vol_avg * 1.3:
         score += 2
         reasons.append("Hacim güçlü")
 
-    if 50 < last.rsi < 75:
+    if 45 < last.rsi < 78:
         score += 1
         reasons.append("RSI uygun")
 
@@ -124,7 +127,7 @@ def score_signal(df):
         score += 1
         reasons.append("KDJ yukarı")
 
-    if last.wr > -50:
+    if last.wr > -55:
         score += 1
         reasons.append("WR güçlü bölge")
 
@@ -132,7 +135,6 @@ def score_signal(df):
 
 def fib_targets(df, lookback=60):
     recent = df.tail(lookback)
-
     swing_low = recent["low"].min()
     swing_high = recent["high"].max()
     impulse = swing_high - swing_low
@@ -175,7 +177,7 @@ def scan_exchange(exchange_name):
         if s.endswith("/USDT") and markets[s].get("active", True)
     ]
 
-    print(f"{exchange_name.upper()} taranıyor: {len(symbols)} coin")
+    print(f"{exchange_name.upper()} taranıyor: {len(symbols)} coin", flush=True)
 
     for symbol in symbols:
         try:
@@ -203,18 +205,23 @@ def scan_exchange(exchange_name):
             score, reasons = score_signal(df)
             last = df.iloc[-1]
 
-            change_15m = ((last.close - last.open) / last.open) * 100
             vol_ratio = last.volume / last.vol_avg if last.vol_avg > 0 else 0
+            change_15m = ((last.close - last.open) / last.open) * 100
 
-            if score >= MIN_SCORE:
-                last_alert[key] = now
+            # TEST LOGU: Railway Deploy Logs içinde göreceğiz
+            print(symbol, "SKOR:", score, "VOL:", round(vol_ratio, 2), "RSI:", round(last.rsi, 2), flush=True)
 
-                status = "🔥 GÜÇLÜ SETUP" if score >= 11 else "🟡 HAZIRLIK"
-                fib = fib_targets(df)
-                elliott = elliott_note(df)
+            if score < MIN_SCORE:
+                continue
 
-                if fib:
-                    fib_text = f"""
+            last_alert[key] = now
+
+            status = "🔥 GÜÇLÜ SETUP" if score >= 11 else "🟡 HAZIRLIK"
+            fib = fib_targets(df)
+            elliott = elliott_note(df)
+
+            if fib:
+                fib_text = f"""
 Swing Dip: {fib['swing_low']:.8f}
 Swing Tepe: {fib['swing_high']:.8f}
 
@@ -225,10 +232,10 @@ TP4 / Fib 2.000: {fib['tp4']:.8f}
 
 Geçersiz Bölge: {fib['invalidation']:.8f}
 """.strip()
-                else:
-                    fib_text = "Fib hedefleri hesaplanamadı."
+            else:
+                fib_text = "Fib hedefleri hesaplanamadı."
 
-                msg = f"""
+            msg = f"""
 {status}
 
 Borsa: {exchange_name.upper()}
@@ -258,30 +265,30 @@ Direkt FOMO değil.
 Direnç kırılımı + retest bekle.
 """.strip()
 
-                print(msg)
-                send_telegram(msg)
+            print("SİNYAL:", symbol, "SKOR:", score, flush=True)
+            send_telegram(msg)
 
             time.sleep(0.15)
 
         except Exception as e:
-            print(f"Hata {exchange_name} {symbol}: {e}")
-            time.sleep(0.5)
+            print(f"Hata {exchange_name} {symbol}: {e}", flush=True)
+            time.sleep(0.3)
 
 def main():
-    send_telegram("✅ Railway Binance + MEXC skor botu başladı.")
+    send_telegram("✅ Railway MEXC skor botu başladı.")
+    print("BOT BAŞLADI", flush=True)
 
     while True:
-        print(f"Tarama başladı: {datetime.now()}")
+        print(f"Tarama başladı: {datetime.now()}", flush=True)
 
         for ex in EXCHANGES:
             try:
                 scan_exchange(ex)
             except Exception as e:
-                print(f"{ex} genel hata: {e}")
+                print(f"{ex} genel hata: {e}", flush=True)
 
-        print(f"Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.")
+        print(f"Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.", flush=True)
         time.sleep(SLEEP_SECONDS)
 
 if __name__ == "__main__":
     main()
-    print("RAILWAY AKTIF")
