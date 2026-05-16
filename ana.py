@@ -22,9 +22,9 @@ MIN_SCORE = 8
 
 MIN_VOLUME_RATIO = 2.2
 
-MIN_15M_VOLUME_USDT = 25000
+MIN_15M_VOLUME_USDT = 30000
 
-MAX_SYMBOLS = 150
+MAX_SYMBOLS = 120
 
 last_alert = {}
 
@@ -180,13 +180,13 @@ def score_signal(df):
 
         reasons.append("Hacim güçlü")
 
-    if 58 <= last.rsi <= 66:
+    if 55 <= last.rsi <= 70:
 
         score += 2
 
         reasons.append("RSI sniper bölge")
 
-    if last.roc > 1:
+    if last.roc > 0.5:
 
         score += 1
 
