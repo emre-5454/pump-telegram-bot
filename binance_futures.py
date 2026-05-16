@@ -9,33 +9,34 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-SLEEP_SECONDS = 60
-COOLDOWN_PREP = 3 * 60 * 60
-COOLDOWN_CONFIRM = 6 * 60 * 60
+SLEEP_SECONDS = 75
 
-MAX_SYMBOLS = 200
+COOLDOWN_PREP = 6 * 60 * 60
+COOLDOWN_CONFIRM = 12 * 60 * 60
 
-# HAZIRLIK MODU
-PREP_MIN_SCORE = 7
-PREP_MIN_VOLUME_USDT = 30000
-PREP_MIN_VOLUME_RATIO = 2.0
-PREP_MIN_OI_RATIO = 1.001
-PREP_MIN_1M_CHANGE = -0.10
-PREP_MIN_3M_CHANGE = 0.05
+MAX_SYMBOLS = 120
+
+# HAZIRLIK — daha sıkı
+PREP_MIN_SCORE = 9
+PREP_MIN_VOLUME_USDT = 80000
+PREP_MIN_VOLUME_RATIO = 3.0
+PREP_MIN_OI_RATIO = 1.0015
+PREP_MIN_1M_CHANGE = 0.00
+PREP_MIN_3M_CHANGE = 0.15
 PREP_MAX_3M_CHANGE = 1.80
-PREP_MIN_BODY_RATIO = 0.25
-PREP_MAX_UPPER_WICK = 0.55
+PREP_MIN_BODY_RATIO = 0.35
+PREP_MAX_UPPER_WICK = 0.40
 
-# ONAY MODU
-CONFIRM_MIN_SCORE = 10
-CONFIRM_MIN_VOLUME_USDT = 60000
-CONFIRM_MIN_VOLUME_RATIO = 4.0
-CONFIRM_MIN_OI_RATIO = 1.003
-CONFIRM_MIN_1M_CHANGE = 0.10
-CONFIRM_MIN_3M_CHANGE = 0.30
+# ONAY — güçlü teyit
+CONFIRM_MIN_SCORE = 12
+CONFIRM_MIN_VOLUME_USDT = 150000
+CONFIRM_MIN_VOLUME_RATIO = 6.0
+CONFIRM_MIN_OI_RATIO = 1.004
+CONFIRM_MIN_1M_CHANGE = 0.15
+CONFIRM_MIN_3M_CHANGE = 0.45
 CONFIRM_MAX_3M_CHANGE = 3.00
-CONFIRM_MIN_BODY_RATIO = 0.40
-CONFIRM_MAX_UPPER_WICK = 0.35
+CONFIRM_MIN_BODY_RATIO = 0.50
+CONFIRM_MAX_UPPER_WICK = 0.30
 
 sent_prep = {}
 sent_confirm = {}
@@ -259,9 +260,7 @@ def get_15m_indicators(symbol):
         bb_avg = sma(bb_values, 50) if len(bb_values) >= 50 else None
 
         macd_line, macd_signal, macd_hist = macd(closes)
-
         obv_now, obv_avg = obv(closes, volumes)
-
         fib = fib_targets(highs, lows, 60)
 
         return {
@@ -385,7 +384,7 @@ def analyze(symbol):
             score += 1
             reasons.append("1H MA200 üstü")
 
-        if ind15["rsi"] is not None and 45 <= ind15["rsi"] <= 68:
+        if ind15["rsi"] is not None and 48 <= ind15["rsi"] <= 68:
             score += 1
             reasons.append("15m RSI uygun")
 
@@ -401,6 +400,12 @@ def analyze(symbol):
             score += 1
             reasons.append("15m MACD yukarı")
 
+        # Spam kesici: hazırlık için OBV veya MACD şart
+        prep_quality_ok = ind15["obv_bull"] or ind15["macd_bull"]
+
+        # Spam kesici: onay için OBV + MACD daha iyi
+        confirm_quality_ok = ind15["obv_bull"] and ind15["macd_bull"]
+
         prep_valid = (
             score >= PREP_MIN_SCORE
             and quote_volume >= PREP_MIN_VOLUME_USDT
@@ -410,6 +415,7 @@ def analyze(symbol):
             and price_change_3m <= PREP_MAX_3M_CHANGE
             and body_ratio >= PREP_MIN_BODY_RATIO
             and upper_wick <= PREP_MAX_UPPER_WICK
+            and prep_quality_ok
         )
 
         confirm_valid = (
@@ -423,10 +429,19 @@ def analyze(symbol):
             and body_ratio >= CONFIRM_MIN_BODY_RATIO
             and upper_wick <= CONFIRM_MAX_UPPER_WICK
             and trend["trend_up"]
+            and confirm_quality_ok
         )
 
         if not prep_valid and not confirm_valid:
-            print(symbol, "SKOR:", score, "VOL:", round(volume_ratio, 2), "OI:", round(oi_ratio, 4), flush=True)
+            print(
+                symbol,
+                "SKOR:", score,
+                "VOL:", round(volume_ratio, 2),
+                "OI:", round(oi_ratio, 4),
+                "OBV:", ind15["obv_bull"],
+                "MACD:", ind15["macd_bull"],
+                flush=True
+            )
             return None
 
         now = time.time()
@@ -491,7 +506,11 @@ TP4 / 2.000: {fib['tp4']:.6f}
 Geçersiz Bölge: {fib['invalid']:.6f}
 """.strip()
 
-    title = "🔥 BINANCE FUTURES ONAY SETUP" if result["signal_type"] == "CONFIRM" else "🟡 BINANCE FUTURES HAZIRLIK SETUP"
+    title = (
+        "🔥 BINANCE FUTURES ONAY SETUP"
+        if result["signal_type"] == "CONFIRM"
+        else "🟡 BINANCE FUTURES HAZIRLIK SETUP"
+    )
 
     msg = f"""
 {title}
@@ -539,8 +558,8 @@ Direnç kırılımı + retest bekle.
     return msg
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES HAZIRLIK + ONAY BOT başladı hocam")
-    print("BINANCE FUTURES HAZIRLIK + ONAY BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES SIKI HAZIRLIK + ONAY BOT başladı hocam")
+    print("BINANCE FUTURES SIKI HAZIRLIK + ONAY BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -558,7 +577,14 @@ def run_bot():
                 msg = format_signal(result)
                 send_telegram(msg)
 
-                print(result["signal_type"], "SINYAL:", result["symbol"], "PUAN:", result["score"], flush=True)
+                print(
+                    result["signal_type"],
+                    "SINYAL:",
+                    result["symbol"],
+                    "PUAN:",
+                    result["score"],
+                    flush=True
+                )
 
                 time.sleep(0.2)
 
@@ -571,7 +597,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures Hazirlik + Onay Scanner Aktif", 200
+    return "Binance Futures Siki Hazirlik + Onay Scanner Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
