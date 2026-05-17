@@ -14,36 +14,29 @@ MAX_SYMBOLS = 800
 SLEEP_SECONDS = 90
 
 LIMIT_15M = 300
-LIMIT_1M = 60
+LIMIT_1M = 80
 
 COOLDOWN_PREP = 4 * 60 * 60
-COOLDOWN_EARLY = 2 * 60 * 60
-COOLDOWN_PUMP = 3 * 60 * 60
+COOLDOWN_CONFIRM = 2 * 60 * 60
 
 PREP_MIN_SCORE = 7
-PUMP_MIN_SCORE = 9
-EARLY_MIN_SCORE = 6
+CONFIRM_MIN_SCORE = 6
 
 PREP_MIN_VOLUME_RATIO = 1.4
-PUMP_MIN_VOLUME_RATIO = 3.0
-EARLY_MIN_VOLUME_RATIO = 4.0
-
 PREP_MIN_15M_VOLUME_USDT = 10000
-PUMP_MIN_15M_VOLUME_USDT = 40000
-EARLY_MIN_1M_VOLUME_USDT = 8000
+
+CONFIRM_MIN_VOLUME_RATIO = 3.0
+CONFIRM_MIN_1M_VOLUME_USDT = 7000
+CONFIRM_MIN_1M_CHANGE = 0.25
+CONFIRM_MIN_3M_CHANGE = 0.50
 
 sent_prep = {}
-sent_early = {}
-sent_pump = {}
+sent_confirm = {}
 
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(
-            url,
-            data={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
-            timeout=10
-        )
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         print("Telegram hata:", e, flush=True)
 
@@ -52,9 +45,7 @@ def get_exchange():
     return ex_class({
         "enableRateLimit": True,
         "timeout": 20000,
-        "options": {
-            "defaultType": "spot"
-        }
+        "options": {"defaultType": "spot"}
     })
 
 def rsi(series, length=14):
@@ -135,25 +126,17 @@ def score_15m(df):
         score += 2
         reasons.append("hacim hazırlık seviyesinde")
 
-    if volume_ratio >= PUMP_MIN_VOLUME_RATIO:
-        score += 2
-        reasons.append("hacim patlaması var")
-
     if 45 <= last.rsi <= 75:
         score += 2
         reasons.append("RSI hazırlık bölgesi")
-
-    if 70 < last.rsi <= 90:
-        score += 2
-        reasons.append("RSI pump bölgesi")
 
     if last.roc > 0.5:
         score += 1
         reasons.append("ROC pozitif")
 
-    if last.roc > 2:
+    if last.roc > 1.5:
         score += 1
-        reasons.append("ROC güçlü")
+        reasons.append("ROC güçleniyor")
 
     if last.obv > last.obv_ma:
         score += 2
@@ -163,17 +146,17 @@ def score_15m(df):
         score += 1
         reasons.append("MACD güçleniyor")
 
-    if last.body_ratio >= 0.40:
+    if last.body_ratio >= 0.35:
         score += 1
         reasons.append("mum gövdesi güçlü")
 
-    if last.upper_wick <= 0.40:
+    if last.upper_wick <= 0.45:
         score += 1
         reasons.append("üst fitil düşük")
 
     return score, reasons, volume_ratio, usdt_volume
 
-def early_1m_score(df):
+def confirm_1m(df):
     if len(df) < 25:
         return None
 
@@ -194,27 +177,27 @@ def early_1m_score(df):
     score = 0
     reasons = []
 
-    if volume_ratio >= EARLY_MIN_VOLUME_RATIO:
+    if volume_ratio >= CONFIRM_MIN_VOLUME_RATIO:
         score += 2
         reasons.append("1m hacim patlaması")
 
-    if usdt_volume >= EARLY_MIN_1M_VOLUME_USDT:
+    if usdt_volume >= CONFIRM_MIN_1M_VOLUME_USDT:
         score += 1
         reasons.append("1m USDT hacim yeterli")
 
-    if change_1m >= 0.40:
+    if change_1m >= CONFIRM_MIN_1M_CHANGE:
         score += 1
         reasons.append("1m fiyat hareketi başladı")
 
-    if change_3m >= 0.80:
+    if change_3m >= CONFIRM_MIN_3M_CHANGE:
         score += 1
         reasons.append("3m momentum var")
 
-    if body_ratio >= 0.50:
+    if body_ratio >= 0.40:
         score += 1
         reasons.append("mum gövdesi güçlü")
 
-    if upper_wick <= 0.35:
+    if upper_wick <= 0.45:
         score += 1
         reasons.append("üst fitil düşük")
 
@@ -222,7 +205,18 @@ def early_1m_score(df):
         score += 1
         reasons.append("yeşil mum")
 
+    valid = (
+        score >= CONFIRM_MIN_SCORE
+        and volume_ratio >= CONFIRM_MIN_VOLUME_RATIO
+        and usdt_volume >= CONFIRM_MIN_1M_VOLUME_USDT
+        and change_1m >= CONFIRM_MIN_1M_CHANGE
+        and change_3m >= CONFIRM_MIN_3M_CHANGE
+        and body_ratio >= 0.35
+        and upper_wick <= 0.50
+    )
+
     return {
+        "valid": valid,
         "score": score,
         "reasons": reasons,
         "volume_ratio": volume_ratio,
@@ -284,61 +278,17 @@ def scan_symbol(exchange, symbol):
     now = time.time()
 
     try:
-        ohlcv_1m = exchange.fetch_ohlcv(symbol, "1m", limit=LIMIT_1M)
-
-        if ohlcv_1m and len(ohlcv_1m) >= 25:
-            df1 = pd.DataFrame(
-                ohlcv_1m,
-                columns=["time", "open", "high", "low", "close", "volume"]
-            )
-
-            early = early_1m_score(df1)
-
-            if early and early["score"] >= EARLY_MIN_SCORE:
-                if early["volume_ratio"] >= EARLY_MIN_VOLUME_RATIO and early["usdt_volume"] >= EARLY_MIN_1M_VOLUME_USDT:
-                    if symbol not in sent_early or now - sent_early[symbol] >= COOLDOWN_EARLY:
-                        sent_early[symbol] = now
-
-                        msg = f"""
-🚨 MEXC ERKEN HACİM RADARI
-
-Coin: {symbol}
-Fiyat: {early['price']:.8f}
-
-Skor: {early['score']}/8
-
-1dk Değişim: %{early['change_1m']:.2f}
-3dk Değişim: %{early['change_3m']:.2f}
-
-1dk USDT Hacim: {int(early['usdt_volume'])}
-Hacim Artışı: {early['volume_ratio']:.2f}x
-
-Mum Gücü: {early['body_ratio']:.2f}
-Üst Fitil: {early['upper_wick']:.2f}
-
-📌 Sebep:
-{", ".join(early['reasons'])}
-
-📍 Karar:
-Bu erken radar sinyalidir.
-Direkt FOMO değil.
-5m direnç kırılımı + retest kontrol et.
-""".strip()
-
-                        print("ERKEN SINYAL:", symbol, early["score"], flush=True)
-                        send_telegram(msg)
-
         ohlcv_15m = exchange.fetch_ohlcv(symbol, "15m", limit=LIMIT_15M)
 
         if not ohlcv_15m or len(ohlcv_15m) < 220:
             return
 
-        df = pd.DataFrame(
+        df15 = pd.DataFrame(
             ohlcv_15m,
             columns=["time", "open", "high", "low", "close", "volume"]
         )
 
-        df = indicators(df)
+        df15 = indicators(df15)
 
         needed_cols = [
             "ema20", "ema50", "ema200", "ma200", "bb_width",
@@ -346,13 +296,13 @@ Direkt FOMO değil.
             "obv", "obv_ma", "body_ratio", "upper_wick"
         ]
 
-        df = df.dropna(subset=needed_cols).copy()
+        df15 = df15.dropna(subset=needed_cols).copy()
 
-        if len(df) < 20:
+        if len(df15) < 20:
             return
 
-        score, reasons, volume_ratio, usdt_volume = score_15m(df)
-        last = df.iloc[-1]
+        score, reasons, volume_ratio, usdt_volume = score_15m(df15)
+        last = df15.iloc[-1]
 
         change_15m = ((last.close - last.open) / last.open) * 100
 
@@ -374,34 +324,63 @@ Direkt FOMO değil.
             and last.obv > last.obv_ma
         )
 
-        pump_valid = (
-            score >= PUMP_MIN_SCORE
-            and volume_ratio >= PUMP_MIN_VOLUME_RATIO
-            and usdt_volume >= PUMP_MIN_15M_VOLUME_USDT
-            and 70 < last.rsi <= 90
-            and last.roc > 2
-            and last.body_ratio >= 0.45
-            and last.upper_wick <= 0.35
-        )
-
-        signal_type = None
-
-        if pump_valid:
-            if symbol in sent_pump and now - sent_pump[symbol] < COOLDOWN_PUMP:
-                return
-            sent_pump[symbol] = now
-            signal_type = "PUMP"
-
-        elif prep_valid:
-            if symbol in sent_prep and now - sent_prep[symbol] < COOLDOWN_PREP:
-                return
-            sent_prep[symbol] = now
-            signal_type = "PREP"
-
-        else:
+        if not prep_valid:
             return
 
-        fib = fib_targets(df)
+        if symbol not in sent_prep or now - sent_prep[symbol] >= COOLDOWN_PREP:
+            sent_prep[symbol] = now
+
+            msg = f"""
+🟡 MEXC HAZIRLIK
+
+Coin: {symbol}
+Fiyat: {last.close:.8f}
+
+Skor: {score}/15
+
+15dk Değişim: %{change_15m:.2f}
+15dk USDT Hacim: {int(usdt_volume)}
+Hacim Artışı: {volume_ratio:.2f}x
+
+RSI: {last.rsi:.2f}
+ROC: {last.roc:.2f}
+BB Width: {last.bb_width:.4f}
+
+Mum Gücü: {last.body_ratio:.2f}
+Üst Fitil: {last.upper_wick:.2f}
+
+📌 Sebep:
+{", ".join(reasons)}
+
+📍 Karar:
+Hazırlık geldi.
+Şimdi aynı coinde 1m/3m hacim onayı beklenir.
+Direkt FOMO değil.
+""".strip()
+
+            send_telegram(msg)
+
+        ohlcv_1m = exchange.fetch_ohlcv(symbol, "1m", limit=LIMIT_1M)
+
+        if not ohlcv_1m or len(ohlcv_1m) < 25:
+            return
+
+        df1 = pd.DataFrame(
+            ohlcv_1m,
+            columns=["time", "open", "high", "low", "close", "volume"]
+        )
+
+        confirm = confirm_1m(df1)
+
+        if not confirm or not confirm["valid"]:
+            return
+
+        if symbol in sent_confirm and now - sent_confirm[symbol] < COOLDOWN_CONFIRM:
+            return
+
+        sent_confirm[symbol] = now
+
+        fib = fib_targets(df15)
 
         if fib:
             fib_text = f"""
@@ -418,47 +397,47 @@ Geçersiz: {fib['invalidation']:.8f}
         else:
             fib_text = "Fib hesaplanamadı."
 
-        title = "🔥 MEXC PUMP BAŞLADI" if signal_type == "PUMP" else "🟡 MEXC HAZIRLIK"
-
         msg = f"""
-{title}
+🔥 MEXC ONAY / PUMP BAŞLADI
 
 Coin: {symbol}
-Fiyat: {last.close:.8f}
+Fiyat: {confirm['price']:.8f}
 
-Skor: {score}/16
+15m Hazırlık Skoru: {score}/15
+1m Onay Skoru: {confirm['score']}/8
 
-15dk Değişim: %{change_15m:.2f}
-15dk USDT Hacim: {int(usdt_volume)}
-Hacim Artışı: {volume_ratio:.2f}x
+1dk Değişim: %{confirm['change_1m']:.2f}
+3dk Değişim: %{confirm['change_3m']:.2f}
 
-RSI: {last.rsi:.2f}
-ROC: {last.roc:.2f}
-BB Width: {last.bb_width:.4f}
+1dk USDT Hacim: {int(confirm['usdt_volume'])}
+1dk Hacim Artışı: {confirm['volume_ratio']:.2f}x
 
-Mum Gücü: {last.body_ratio:.2f}
-Üst Fitil: {last.upper_wick:.2f}
+15m RSI: {last.rsi:.2f}
+15m ROC: {last.roc:.2f}
 
-📌 Sebep:
-{", ".join(reasons)}
+Mum Gücü: {confirm['body_ratio']:.2f}
+Üst Fitil: {confirm['upper_wick']:.2f}
 
-🎯 Fib:
+📌 Onay Sebebi:
+{", ".join(confirm['reasons'])}
+
+🎯 Fib Hedefleri:
 {fib_text}
 
 📍 Karar:
-Hazırlık erken radardır.
-Pump başladı sinyali hareket başlamış olabilir demektir.
-Direkt FOMO değil, kırılım + retest kontrol et.
+Hazırlık + 1m/3m hacim onayı geldi.
+Yine de direkt FOMO değil.
+5m direnç kırılımı + retest kontrol et.
 """.strip()
 
-        print("15M SINYAL:", symbol, signal_type, "SKOR:", score, flush=True)
+        print("ONAY SINYALI:", symbol, confirm["score"], flush=True)
         send_telegram(msg)
 
     except Exception as e:
         print(f"HATA {symbol}: {e}", flush=True)
 
 def main():
-    send_telegram("✅ Railway MEXC erken radar + 15m hazırlık botu başladı.")
+    send_telegram("✅ Railway MEXC hazırlık + onay botu başladı.")
     print("BOT BASLADI", flush=True)
 
     exchange = get_exchange()
