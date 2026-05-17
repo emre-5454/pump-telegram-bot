@@ -8,34 +8,54 @@ from datetime import datetime
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 TELEGRAM_CHAT_ID = "6977265844"
 
-EXCHANGES = ["mexc"]
-TIMEFRAME = "15m"
+EXCHANGE_NAME = "mexc"
 
-LIMIT = 300
+MAX_SYMBOLS = 800
 SLEEP_SECONDS = 90
-MAX_SYMBOLS = 300
 
-COOLDOWN_PREP = 6 * 60 * 60
+LIMIT_15M = 300
+LIMIT_1M = 60
+
+COOLDOWN_PREP = 4 * 60 * 60
+COOLDOWN_EARLY = 2 * 60 * 60
 COOLDOWN_PUMP = 3 * 60 * 60
 
-PREP_MIN_SCORE = 8
+PREP_MIN_SCORE = 7
 PUMP_MIN_SCORE = 9
+EARLY_MIN_SCORE = 6
 
-PREP_MIN_VOLUME_RATIO = 1.7
+PREP_MIN_VOLUME_RATIO = 1.4
 PUMP_MIN_VOLUME_RATIO = 3.0
+EARLY_MIN_VOLUME_RATIO = 4.0
 
-PREP_MIN_15M_VOLUME_USDT = 20000
+PREP_MIN_15M_VOLUME_USDT = 10000
 PUMP_MIN_15M_VOLUME_USDT = 40000
+EARLY_MIN_1M_VOLUME_USDT = 8000
 
 sent_prep = {}
+sent_early = {}
 sent_pump = {}
 
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+        requests.post(
+            url,
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
+            timeout=10
+        )
     except Exception as e:
         print("Telegram hata:", e, flush=True)
+
+def get_exchange():
+    ex_class = getattr(ccxt, EXCHANGE_NAME)
+    return ex_class({
+        "enableRateLimit": True,
+        "timeout": 20000,
+        "options": {
+            "defaultType": "spot"
+        }
+    })
 
 def rsi(series, length=14):
     delta = series.diff()
@@ -82,11 +102,13 @@ def indicators(df):
 
     candle_range = high - low
     df["body_ratio"] = (close - df["open"]).abs() / candle_range.replace(0, np.nan)
-    df["upper_wick"] = (high - pd.concat([df["open"], close], axis=1).max(axis=1)) / candle_range.replace(0, np.nan)
+    df["upper_wick"] = (
+        high - pd.concat([df["open"], close], axis=1).max(axis=1)
+    ) / candle_range.replace(0, np.nan)
 
     return df
 
-def score_signal(df):
+def score_15m(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -94,7 +116,7 @@ def score_signal(df):
     reasons = []
 
     volume_ratio = last.volume / last.vol_avg if last.vol_avg > 0 else 0
-    usdt_volume_15m = last.volume * last.close
+    usdt_volume = last.volume * last.close
 
     if last.close > last.ema200 and last.ema20 > last.ema50:
         score += 2
@@ -117,7 +139,7 @@ def score_signal(df):
         score += 2
         reasons.append("hacim patlaması var")
 
-    if 50 <= last.rsi <= 70:
+    if 45 <= last.rsi <= 75:
         score += 2
         reasons.append("RSI hazırlık bölgesi")
 
@@ -141,15 +163,76 @@ def score_signal(df):
         score += 1
         reasons.append("MACD güçleniyor")
 
-    if last.body_ratio >= 0.45:
+    if last.body_ratio >= 0.40:
         score += 1
         reasons.append("mum gövdesi güçlü")
 
-    if last.upper_wick <= 0.35:
+    if last.upper_wick <= 0.40:
         score += 1
         reasons.append("üst fitil düşük")
 
-    return score, reasons, volume_ratio, usdt_volume_15m
+    return score, reasons, volume_ratio, usdt_volume
+
+def early_1m_score(df):
+    if len(df) < 25:
+        return None
+
+    last = df.iloc[-1]
+    prev3 = df.iloc[-4]
+
+    vol_avg = df["volume"].rolling(20).mean().iloc[-1]
+    volume_ratio = last.volume / vol_avg if vol_avg > 0 else 0
+
+    change_1m = ((last.close - last.open) / last.open) * 100
+    change_3m = ((last.close - prev3.open) / prev3.open) * 100
+    usdt_volume = last.volume * last.close
+
+    candle_range = last.high - last.low
+    body_ratio = abs(last.close - last.open) / candle_range if candle_range > 0 else 0
+    upper_wick = (last.high - max(last.open, last.close)) / candle_range if candle_range > 0 else 0
+
+    score = 0
+    reasons = []
+
+    if volume_ratio >= EARLY_MIN_VOLUME_RATIO:
+        score += 2
+        reasons.append("1m hacim patlaması")
+
+    if usdt_volume >= EARLY_MIN_1M_VOLUME_USDT:
+        score += 1
+        reasons.append("1m USDT hacim yeterli")
+
+    if change_1m >= 0.40:
+        score += 1
+        reasons.append("1m fiyat hareketi başladı")
+
+    if change_3m >= 0.80:
+        score += 1
+        reasons.append("3m momentum var")
+
+    if body_ratio >= 0.50:
+        score += 1
+        reasons.append("mum gövdesi güçlü")
+
+    if upper_wick <= 0.35:
+        score += 1
+        reasons.append("üst fitil düşük")
+
+    if last.close > last.open:
+        score += 1
+        reasons.append("yeşil mum")
+
+    return {
+        "score": score,
+        "reasons": reasons,
+        "volume_ratio": volume_ratio,
+        "usdt_volume": usdt_volume,
+        "change_1m": change_1m,
+        "change_3m": change_3m,
+        "body_ratio": body_ratio,
+        "upper_wick": upper_wick,
+        "price": last.close
+    }
 
 def fib_targets(df, lookback=60):
     recent = df.tail(lookback)
@@ -170,105 +253,158 @@ def fib_targets(df, lookback=60):
         "invalidation": swing_low
     }
 
-def get_exchange(name):
-    ex_class = getattr(ccxt, name)
-    return ex_class({"enableRateLimit": True, "timeout": 20000})
-
-def scan_exchange(exchange_name):
-    exchange = get_exchange(exchange_name)
+def build_symbols(exchange):
     markets = exchange.load_markets()
 
     symbols = [
         s for s in markets
-        if s.endswith("/USDT") and markets[s].get("active", True)
+        if s.endswith("/USDT")
+        and markets[s].get("active", True)
+        and not any(x in s for x in ["UP/", "DOWN/", "3L/", "3S/", "5L/", "5S/"])
     ]
 
-    print(f"{exchange_name.upper()} toplam coin: {len(symbols)}", flush=True)
+    try:
+        tickers = exchange.fetch_tickers(symbols)
+        ranked = []
 
-    symbols = symbols[:MAX_SYMBOLS]
-    print(f"TARANACAK COIN: {len(symbols)}", flush=True)
+        for s in symbols:
+            t = tickers.get(s, {})
+            qv = t.get("quoteVolume") or 0
+            ranked.append((s, qv))
 
-    for symbol in symbols:
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=LIMIT)
+        ranked = sorted(ranked, key=lambda x: x[1], reverse=True)
+        symbols = [x[0] for x in ranked]
 
-            if not ohlcv or len(ohlcv) < 220:
-                continue
+    except Exception as e:
+        print("Ticker sıralama yapılamadı:", e, flush=True)
 
-            df = pd.DataFrame(
-                ohlcv,
+    return symbols[:MAX_SYMBOLS]
+
+def scan_symbol(exchange, symbol):
+    now = time.time()
+
+    try:
+        ohlcv_1m = exchange.fetch_ohlcv(symbol, "1m", limit=LIMIT_1M)
+
+        if ohlcv_1m and len(ohlcv_1m) >= 25:
+            df1 = pd.DataFrame(
+                ohlcv_1m,
                 columns=["time", "open", "high", "low", "close", "volume"]
             )
 
-            df = indicators(df)
+            early = early_1m_score(df1)
 
-            needed_cols = [
-                "ema20", "ema50", "ema200", "ma200", "bb_width",
-                "vol_avg", "rsi", "roc", "macd", "macd_signal",
-                "obv", "obv_ma", "body_ratio", "upper_wick"
-            ]
+            if early and early["score"] >= EARLY_MIN_SCORE:
+                if early["volume_ratio"] >= EARLY_MIN_VOLUME_RATIO and early["usdt_volume"] >= EARLY_MIN_1M_VOLUME_USDT:
+                    if symbol not in sent_early or now - sent_early[symbol] >= COOLDOWN_EARLY:
+                        sent_early[symbol] = now
 
-            df = df.dropna(subset=needed_cols).copy()
+                        msg = f"""
+🚨 MEXC ERKEN HACİM RADARI
 
-            if len(df) < 20:
-                continue
+Coin: {symbol}
+Fiyat: {early['price']:.8f}
 
-            score, reasons, volume_ratio, usdt_volume_15m = score_signal(df)
-            last = df.iloc[-1]
+Skor: {early['score']}/8
 
-            change_15m = ((last.close - last.open) / last.open) * 100
+1dk Değişim: %{early['change_1m']:.2f}
+3dk Değişim: %{early['change_3m']:.2f}
 
-            print(
-                symbol,
-                "SKOR:", score,
-                "VOL:", round(volume_ratio, 2),
-                "USDT_VOL:", int(usdt_volume_15m),
-                "RSI:", round(last.rsi, 2),
-                "ROC:", round(last.roc, 2),
-                flush=True
-            )
+1dk USDT Hacim: {int(early['usdt_volume'])}
+Hacim Artışı: {early['volume_ratio']:.2f}x
 
-            now = time.time()
+Mum Gücü: {early['body_ratio']:.2f}
+Üst Fitil: {early['upper_wick']:.2f}
 
-            prep_valid = (
-                score >= PREP_MIN_SCORE
-                and volume_ratio >= PREP_MIN_VOLUME_RATIO
-                and usdt_volume_15m >= PREP_MIN_15M_VOLUME_USDT
-                and 50 <= last.rsi <= 70
-                and last.obv > last.obv_ma
-            )
+📌 Sebep:
+{", ".join(early['reasons'])}
 
-            pump_valid = (
-                score >= PUMP_MIN_SCORE
-                and volume_ratio >= PUMP_MIN_VOLUME_RATIO
-                and usdt_volume_15m >= PUMP_MIN_15M_VOLUME_USDT
-                and 70 < last.rsi <= 90
-                and last.roc > 2
-                and last.body_ratio >= 0.45
-                and last.upper_wick <= 0.35
-            )
+📍 Karar:
+Bu erken radar sinyalidir.
+Direkt FOMO değil.
+5m direnç kırılımı + retest kontrol et.
+""".strip()
 
-            signal_type = None
+                        print("ERKEN SINYAL:", symbol, early["score"], flush=True)
+                        send_telegram(msg)
 
-            if pump_valid:
-                if symbol in sent_pump and now - sent_pump[symbol] < COOLDOWN_PUMP:
-                    continue
-                sent_pump[symbol] = now
-                signal_type = "PUMP"
+        ohlcv_15m = exchange.fetch_ohlcv(symbol, "15m", limit=LIMIT_15M)
 
-            elif prep_valid:
-                if symbol in sent_prep and now - sent_prep[symbol] < COOLDOWN_PREP:
-                    continue
-                sent_prep[symbol] = now
-                signal_type = "PREP"
+        if not ohlcv_15m or len(ohlcv_15m) < 220:
+            return
 
-            else:
-                continue
+        df = pd.DataFrame(
+            ohlcv_15m,
+            columns=["time", "open", "high", "low", "close", "volume"]
+        )
 
-            fib = fib_targets(df)
+        df = indicators(df)
 
-            if fib:
-                fib_text = f"""
+        needed_cols = [
+            "ema20", "ema50", "ema200", "ma200", "bb_width",
+            "vol_avg", "rsi", "roc", "macd", "macd_signal",
+            "obv", "obv_ma", "body_ratio", "upper_wick"
+        ]
+
+        df = df.dropna(subset=needed_cols).copy()
+
+        if len(df) < 20:
+            return
+
+        score, reasons, volume_ratio, usdt_volume = score_15m(df)
+        last = df.iloc[-1]
+
+        change_15m = ((last.close - last.open) / last.open) * 100
+
+        print(
+            symbol,
+            "SKOR:", score,
+            "VOL:", round(volume_ratio, 2),
+            "USDT_VOL:", int(usdt_volume),
+            "RSI:", round(last.rsi, 2),
+            "ROC:", round(last.roc, 2),
+            flush=True
+        )
+
+        prep_valid = (
+            score >= PREP_MIN_SCORE
+            and volume_ratio >= PREP_MIN_VOLUME_RATIO
+            and usdt_volume >= PREP_MIN_15M_VOLUME_USDT
+            and 45 <= last.rsi <= 75
+            and last.obv > last.obv_ma
+        )
+
+        pump_valid = (
+            score >= PUMP_MIN_SCORE
+            and volume_ratio >= PUMP_MIN_VOLUME_RATIO
+            and usdt_volume >= PUMP_MIN_15M_VOLUME_USDT
+            and 70 < last.rsi <= 90
+            and last.roc > 2
+            and last.body_ratio >= 0.45
+            and last.upper_wick <= 0.35
+        )
+
+        signal_type = None
+
+        if pump_valid:
+            if symbol in sent_pump and now - sent_pump[symbol] < COOLDOWN_PUMP:
+                return
+            sent_pump[symbol] = now
+            signal_type = "PUMP"
+
+        elif prep_valid:
+            if symbol in sent_prep and now - sent_prep[symbol] < COOLDOWN_PREP:
+                return
+            sent_prep[symbol] = now
+            signal_type = "PREP"
+
+        else:
+            return
+
+        fib = fib_targets(df)
+
+        if fib:
+            fib_text = f"""
 Swing Dip: {fib['swing_low']:.8f}
 Swing Tepe: {fib['swing_high']:.8f}
 
@@ -279,12 +415,12 @@ TP4: {fib['tp4']:.8f}
 
 Geçersiz: {fib['invalidation']:.8f}
 """.strip()
-            else:
-                fib_text = "Fib hesaplanamadı."
+        else:
+            fib_text = "Fib hesaplanamadı."
 
-            title = "🔥 MEXC PUMP BAŞLADI" if signal_type == "PUMP" else "🟡 MEXC HAZIRLIK"
+        title = "🔥 MEXC PUMP BAŞLADI" if signal_type == "PUMP" else "🟡 MEXC HAZIRLIK"
 
-            msg = f"""
+        msg = f"""
 {title}
 
 Coin: {symbol}
@@ -293,7 +429,7 @@ Fiyat: {last.close:.8f}
 Skor: {score}/16
 
 15dk Değişim: %{change_15m:.2f}
-15dk USDT Hacim: {int(usdt_volume_15m)}
+15dk USDT Hacim: {int(usdt_volume)}
 Hacim Artışı: {volume_ratio:.2f}x
 
 RSI: {last.rsi:.2f}
@@ -315,30 +451,36 @@ Pump başladı sinyali hareket başlamış olabilir demektir.
 Direkt FOMO değil, kırılım + retest kontrol et.
 """.strip()
 
-            print("SINYAL:", symbol, signal_type, "SKOR:", score, flush=True)
-            send_telegram(msg)
+        print("15M SINYAL:", symbol, signal_type, "SKOR:", score, flush=True)
+        send_telegram(msg)
 
-            time.sleep(0.2)
-
-        except Exception as e:
-            print(f"HATA {exchange_name} {symbol}: {e}", flush=True)
-            time.sleep(0.3)
+    except Exception as e:
+        print(f"HATA {symbol}: {e}", flush=True)
 
 def main():
-    send_telegram("✅ Railway MEXC Hazırlık + Pump Başladı botu başladı.")
+    send_telegram("✅ Railway MEXC erken radar + 15m hazırlık botu başladı.")
     print("BOT BASLADI", flush=True)
 
+    exchange = get_exchange()
+
     while True:
-        print(f"Tarama başladı: {datetime.now()}", flush=True)
+        try:
+            print(f"Tarama başladı: {datetime.now()}", flush=True)
 
-        for ex in EXCHANGES:
-            try:
-                scan_exchange(ex)
-            except Exception as e:
-                print(f"{ex} genel hata: {e}", flush=True)
+            symbols = build_symbols(exchange)
 
-        print(f"Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.", flush=True)
-        time.sleep(SLEEP_SECONDS)
+            print(f"Taranacak coin sayısı: {len(symbols)}", flush=True)
+
+            for symbol in symbols:
+                scan_symbol(exchange, symbol)
+                time.sleep(0.15)
+
+            print(f"Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.", flush=True)
+            time.sleep(SLEEP_SECONDS)
+
+        except Exception as e:
+            print("GENEL HATA:", e, flush=True)
+            time.sleep(30)
 
 if __name__ == "__main__":
     main()
