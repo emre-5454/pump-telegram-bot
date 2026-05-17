@@ -8,6 +8,9 @@ from datetime import datetime
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 TELEGRAM_CHAT_ID = "6977265844"
 
+BOT_SOURCE = "🚄 Railway"
+BOT_NAME = "MEXC Hazırlık + Onay"
+
 EXCHANGE_NAME = "mexc"
 
 MAX_SYMBOLS = 800
@@ -331,7 +334,7 @@ def scan_symbol(exchange, symbol):
             sent_prep[symbol] = now
 
             msg = f"""
-🟡 MEXC HAZIRLIK
+🟡 {BOT_SOURCE} | MEXC HAZIRLIK
 
 Coin: {symbol}
 Fiyat: {last.close:.8f}
@@ -398,7 +401,7 @@ Geçersiz: {fib['invalidation']:.8f}
             fib_text = "Fib hesaplanamadı."
 
         msg = f"""
-🔥 MEXC ONAY / PUMP BAŞLADI
+🔥 {BOT_SOURCE} | MEXC ONAY / PUMP BAŞLADI
 
 Coin: {symbol}
 Fiyat: {confirm['price']:.8f}
@@ -430,35 +433,35 @@ Yine de direkt FOMO değil.
 5m direnç kırılımı + retest kontrol et.
 """.strip()
 
-        print("ONAY SINYALI:", symbol, confirm["score"], flush=True)
+        print(f"{BOT_SOURCE} ONAY SINYALI:", symbol, confirm["score"], flush=True)
         send_telegram(msg)
 
     except Exception as e:
         print(f"HATA {symbol}: {e}", flush=True)
 
 def main():
-    send_telegram("✅ Railway MEXC hazırlık + onay botu başladı.")
-    print("BOT BASLADI", flush=True)
+    send_telegram(f"✅ {BOT_SOURCE} | {BOT_NAME} botu başladı.")
+    print(f"{BOT_SOURCE} BOT BASLADI", flush=True)
 
     exchange = get_exchange()
 
     while True:
         try:
-            print(f"Tarama başladı: {datetime.now()}", flush=True)
+            print(f"{BOT_SOURCE} Tarama başladı: {datetime.now()}", flush=True)
 
             symbols = build_symbols(exchange)
 
-            print(f"Taranacak coin sayısı: {len(symbols)}", flush=True)
+            print(f"{BOT_SOURCE} Taranacak coin sayısı: {len(symbols)}", flush=True)
 
             for symbol in symbols:
                 scan_symbol(exchange, symbol)
                 time.sleep(0.15)
 
-            print(f"Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.", flush=True)
+            print(f"{BOT_SOURCE} Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.", flush=True)
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-            print("GENEL HATA:", e, flush=True)
+            print(f"{BOT_SOURCE} GENEL HATA:", e, flush=True)
             time.sleep(30)
 
 if __name__ == "__main__":
