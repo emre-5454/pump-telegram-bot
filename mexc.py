@@ -4,13 +4,20 @@ import requests
 import math
 
 # =========================================================
+# BOT BİLGİSİ
+# =========================================================
+BOT_NAME = "☁️ RENDER MEXC BOT"
+
+# =========================================================
 # TELEGRAM
 # =========================================================
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
 def telegram(msg):
+
     try:
+
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
         requests.post(
@@ -23,6 +30,7 @@ def telegram(msg):
         )
 
     except Exception as e:
+
         print("Telegram hata:", e)
 
 # =========================================================
@@ -135,7 +143,12 @@ def ema(values, period):
     ema_value = values[0]
 
     for price in values[1:]:
-        ema_value = price * k + ema_value * (1 - k)
+
+        ema_value = (
+            price * k
+            +
+            ema_value * (1 - k)
+        )
 
     return ema_value
 
@@ -153,7 +166,8 @@ def bollinger_width(values, period=20):
         return None
 
     variance = sum(
-        (x - mid) ** 2 for x in values[-period:]
+        (x - mid) ** 2
+        for x in values[-period:]
     ) / period
 
     std = math.sqrt(variance)
@@ -241,7 +255,7 @@ def analyze(symbol):
         volumes = [x[5] for x in candles]
 
         # =====================================================
-        # PRICE CHANGE
+        # FİYAT DEĞİŞİMİ
         # =====================================================
         price_change_5m = (
             (c - prev[4]) / prev[4]
@@ -262,7 +276,6 @@ def analyze(symbol):
             return None
 
         volume_ratio = v / avg_volume
-
         volume_usdt = v * c
 
         # =====================================================
@@ -289,11 +302,13 @@ def analyze(symbol):
         ema21 = ema(closes[-30:], 21)
 
         ema_trend = (
-            c >= ema9 and ema9 >= ema21
+            c >= ema9
+            and
+            ema9 >= ema21
         )
 
         # =====================================================
-        # 3 HACİM YÜKSELİYOR MU
+        # HACİM YÜKSELİYOR MU
         # =====================================================
         volume_3_rising = (
             volumes[-1] > volumes[-2]
@@ -302,7 +317,7 @@ def analyze(symbol):
         )
 
         # =====================================================
-        # SKOR
+        # SCORE
         # =====================================================
         score = 0
         reasons = []
@@ -345,14 +360,14 @@ def analyze(symbol):
 
         if volume_3_rising:
             score += 1
-            reasons.append("hacim yükseliyor")
+            reasons.append("3 mum hacim artıyor")
 
         if ema_trend:
             score += 1
             reasons.append("EMA trend yukarı")
 
         # =====================================================
-        # PREP
+        # HAZIRLIK
         # =====================================================
         prep_valid = (
 
@@ -372,7 +387,7 @@ def analyze(symbol):
         )
 
         # =====================================================
-        # CONFIRM
+        # ONAY
         # =====================================================
         confirm_valid = (
 
@@ -443,7 +458,7 @@ def analyze(symbol):
 def run():
 
     telegram(
-        "🚀 MEXC HAZIRLIK + ONAY BOTU BAŞLADI hocam"
+        f"{BOT_NAME} aktif edildi hocam 🚀"
     )
 
     while True:
@@ -462,7 +477,7 @@ def run():
                     continue
 
                 # =================================================
-                # PREP
+                # HAZIRLIK
                 # =================================================
                 if result["prep_valid"]:
 
@@ -474,17 +489,26 @@ def run():
                     ):
 
                         msg = f"""
+{BOT_NAME}
+
 🟡 MEXC HAZIRLIK
 
-Coin: {result['symbol']}
-Fiyat: {result['price']:.8f}
+Coin:
+{result['symbol']}
 
-Skor: {result['score']}/11
+Fiyat:
+{result['price']:.8f}
 
-5dk Değişim: %{result['price_change_5m']:.2f}
-15dk Değişim: %{result['price_change_15m']:.2f}
+Skor:
+{result['score']}/11
 
-15dk USDT Hacim:
+5dk Değişim:
+%{result['price_change_5m']:.2f}
+
+15dk Değişim:
+%{result['price_change_15m']:.2f}
+
+USDT Hacim:
 {int(result['volume_usdt'])}
 
 Hacim Artışı:
@@ -523,7 +547,7 @@ Takibe al.
                         time.sleep(0.2)
 
                 # =================================================
-                # CONFIRM
+                # ONAY
                 # =================================================
                 if result["confirm_valid"]:
 
@@ -535,15 +559,24 @@ Takibe al.
                     ):
 
                         msg = f"""
+{BOT_NAME}
+
 🔥 MEXC GÜÇLÜ SETUP
 
-Coin: {result['symbol']}
-Fiyat: {result['price']:.8f}
+Coin:
+{result['symbol']}
 
-Skor: {result['score']}/11
+Fiyat:
+{result['price']:.8f}
 
-5dk Değişim: %{result['price_change_5m']:.2f}
-15dk Değişim: %{result['price_change_15m']:.2f}
+Skor:
+{result['score']}/11
+
+5dk Değişim:
+%{result['price_change_5m']:.2f}
+
+15dk Değişim:
+%{result['price_change_15m']:.2f}
 
 USDT Hacim:
 {int(result['volume_usdt'])}
