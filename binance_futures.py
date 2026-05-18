@@ -9,29 +9,26 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-SLEEP_SECONDS = 75
+SLEEP_SECONDS = 90
+MAX_SYMBOLS = 60
 
 COOLDOWN_PREP = 6 * 60 * 60
 COOLDOWN_CONFIRM = 12 * 60 * 60
 
-MAX_SYMBOLS = 120
-
-# HAZIRLIK — daha sıkı
-PREP_MIN_SCORE = 9
-PREP_MIN_VOLUME_USDT = 80000
-PREP_MIN_VOLUME_RATIO = 3.0
-PREP_MIN_OI_RATIO = 1.0015
+PREP_MIN_SCORE = 8
+PREP_MIN_VOLUME_USDT = 50000
+PREP_MIN_VOLUME_RATIO = 2.5
+PREP_MIN_OI_RATIO = 1.001
 PREP_MIN_1M_CHANGE = 0.00
-PREP_MIN_3M_CHANGE = 0.15
-PREP_MAX_3M_CHANGE = 1.80
+PREP_MIN_3M_CHANGE = 0.10
+PREP_MAX_3M_CHANGE = 2.20
 PREP_MIN_BODY_RATIO = 0.35
 PREP_MAX_UPPER_WICK = 0.40
 
-# ONAY — güçlü teyit
 CONFIRM_MIN_SCORE = 12
-CONFIRM_MIN_VOLUME_USDT = 150000
-CONFIRM_MIN_VOLUME_RATIO = 6.0
-CONFIRM_MIN_OI_RATIO = 1.004
+CONFIRM_MIN_VOLUME_USDT = 120000
+CONFIRM_MIN_VOLUME_RATIO = 5.0
+CONFIRM_MIN_OI_RATIO = 1.0035
 CONFIRM_MIN_1M_CHANGE = 0.15
 CONFIRM_MIN_3M_CHANGE = 0.45
 CONFIRM_MAX_3M_CHANGE = 3.00
@@ -42,7 +39,12 @@ sent_prep = {}
 sent_confirm = {}
 oi_cache = {}
 
+
 def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Telegram token veya chat id eksik", flush=True)
+        return
+
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -52,19 +54,25 @@ def send_telegram(msg):
     except Exception as e:
         print("Telegram hata:", e, flush=True)
 
+
 def sma(values, period):
     if len(values) < period:
         return None
     return sum(values[-period:]) / period
 
+
 def ema(values, period):
     if len(values) < period:
         return None
+
     k = 2 / (period + 1)
     e = sum(values[:period]) / period
+
     for price in values[period:]:
         e = price * k + e * (1 - k)
+
     return e
+
 
 def rsi(values, period=14):
     if len(values) < period + 1:
@@ -87,6 +95,7 @@ def rsi(values, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+
 def macd(values):
     if len(values) < 35:
         return None, None, None
@@ -103,22 +112,25 @@ def macd(values):
 
     return macd_line, signal, hist
 
+
 def bollinger_width(values, period=20):
     if len(values) < period:
         return None
 
     recent = values[-period:]
     mid = sum(recent) / period
-    variance = sum((x - mid) ** 2 for x in recent) / period
-    std = variance ** 0.5
 
     if mid == 0:
         return None
+
+    variance = sum((x - mid) ** 2 for x in recent) / period
+    std = variance ** 0.5
 
     upper = mid + 2 * std
     lower = mid - 2 * std
 
     return (upper - lower) / mid
+
 
 def obv(closes, volumes):
     if len(closes) < 21:
@@ -138,6 +150,7 @@ def obv(closes, volumes):
     avg = sum(values[-20:]) / 20
 
     return current, avg
+
 
 def fib_targets(highs, lows, lookback=60):
     if len(highs) < lookback or len(lows) < lookback:
@@ -159,6 +172,7 @@ def fib_targets(highs, lows, lookback=60):
         "tp4": swing_low + impulse * 2.0,
         "invalid": swing_low
     }
+
 
 def get_symbols():
     try:
@@ -192,6 +206,7 @@ def get_symbols():
 
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
+
 def get_klines(symbol, interval="1m", limit=220):
     url = "https://fapi.binance.com/fapi/v1/klines"
     params = {
@@ -201,10 +216,12 @@ def get_klines(symbol, interval="1m", limit=220):
     }
     return requests.get(url, params=params, timeout=15).json()
 
+
 def get_open_interest(symbol):
     url = "https://fapi.binance.com/fapi/v1/openInterest"
     data = requests.get(url, params={"symbol": symbol}, timeout=10).json()
     return float(data["openInterest"])
+
 
 def get_1h_trend(symbol):
     try:
@@ -235,6 +252,7 @@ def get_1h_trend(symbol):
     except Exception as e:
         print("1H trend hata:", symbol, e, flush=True)
         return None
+
 
 def get_15m_indicators(symbol):
     try:
@@ -281,6 +299,54 @@ def get_15m_indicators(symbol):
     except Exception as e:
         print("15M indikatör hata:", symbol, e, flush=True)
         return None
+
+
+def trade_plan(result):
+    fib = result.get("fib")
+    price = result.get("price")
+
+    if not fib or not price:
+        return None
+
+    resistance = fib["high"]
+    support = fib["low"]
+
+    entry_low = resistance * 0.997
+    entry_high = resistance * 1.003
+
+    stop_by_swing = support * 0.995
+    stop_by_price = price * 0.975
+    stop = max(stop_by_swing, stop_by_price)
+
+    tp1 = fib["tp2"]
+    tp2 = fib["tp3"]
+    tp3 = fib["tp4"]
+
+    risk = entry_high - stop
+    reward = tp2 - entry_high
+
+    rr = reward / risk if risk > 0 else 0
+
+    if rr < 1:
+        status = "ZAYIF"
+    elif rr < 2:
+        status = "ORTA"
+    else:
+        status = "GÜÇLÜ"
+
+    return {
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "stop": stop,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "rr": rr,
+        "status": status,
+        "resistance": resistance,
+        "support": support
+    }
+
 
 def analyze(symbol):
     try:
@@ -384,7 +450,7 @@ def analyze(symbol):
             score += 1
             reasons.append("1H MA200 üstü")
 
-        if ind15["rsi"] is not None and 48 <= ind15["rsi"] <= 68:
+        if ind15["rsi"] is not None and 48 <= ind15["rsi"] <= 70:
             score += 1
             reasons.append("15m RSI uygun")
 
@@ -400,10 +466,7 @@ def analyze(symbol):
             score += 1
             reasons.append("15m MACD yukarı")
 
-        # Spam kesici: hazırlık için OBV veya MACD şart
         prep_quality_ok = ind15["obv_bull"] or ind15["macd_bull"]
-
-        # Spam kesici: onay için OBV + MACD daha iyi
         confirm_quality_ok = ind15["obv_bull"] and ind15["macd_bull"]
 
         prep_valid = (
@@ -411,8 +474,7 @@ def analyze(symbol):
             and quote_volume >= PREP_MIN_VOLUME_USDT
             and volume_ratio >= PREP_MIN_VOLUME_RATIO
             and oi_ratio >= PREP_MIN_OI_RATIO
-            and price_change_3m >= PREP_MIN_3M_CHANGE
-            and price_change_3m <= PREP_MAX_3M_CHANGE
+            and PREP_MIN_3M_CHANGE <= price_change_3m <= PREP_MAX_3M_CHANGE
             and body_ratio >= PREP_MIN_BODY_RATIO
             and upper_wick <= PREP_MAX_UPPER_WICK
             and prep_quality_ok
@@ -424,11 +486,11 @@ def analyze(symbol):
             and volume_ratio >= CONFIRM_MIN_VOLUME_RATIO
             and oi_ratio >= CONFIRM_MIN_OI_RATIO
             and price_change_1m >= CONFIRM_MIN_1M_CHANGE
-            and price_change_3m >= CONFIRM_MIN_3M_CHANGE
-            and price_change_3m <= CONFIRM_MAX_3M_CHANGE
+            and CONFIRM_MIN_3M_CHANGE <= price_change_3m <= CONFIRM_MAX_3M_CHANGE
             and body_ratio >= CONFIRM_MIN_BODY_RATIO
             and upper_wick <= CONFIRM_MAX_UPPER_WICK
             and trend["trend_up"]
+            and trend["ma200_above"]
             and confirm_quality_ok
         )
 
@@ -489,9 +551,13 @@ def analyze(symbol):
         print("Analiz hata:", symbol, e, flush=True)
         return None
 
+
 def format_signal(result):
     fib = result["fib"]
+    plan = trade_plan(result)
+
     fib_text = "Fib hesaplanamadı."
+    trade_text = "Trade plan hesaplanamadı."
 
     if fib:
         fib_text = f"""
@@ -506,10 +572,65 @@ TP4 / 2.000: {fib['tp4']:.6f}
 Geçersiz Bölge: {fib['invalid']:.6f}
 """.strip()
 
+    if plan:
+        if result["signal_type"] == "CONFIRM":
+            trade_text = f"""
+📍 LONG Giriş Bölgesi:
+{plan['entry_low']:.6f} - {plan['entry_high']:.6f}
+
+✅ İşlem Şartı:
+{plan['resistance']:.6f} üstü kırılım + retest
+
+🛑 Stop:
+{plan['stop']:.6f}
+
+🎯 TP1:
+{plan['tp1']:.6f}
+
+🎯 TP2:
+{plan['tp2']:.6f}
+
+🎯 TP3:
+{plan['tp3']:.6f}
+
+📊 Risk/Ödül:
+1:{plan['rr']:.2f}
+
+Setup Kalitesi:
+{plan['status']}
+""".strip()
+        else:
+            trade_text = f"""
+⚠️ Henüz işlem aktif değil.
+
+Takip Bölgesi:
+{plan['entry_low']:.6f} - {plan['entry_high']:.6f}
+
+Onay Şartı:
+{plan['resistance']:.6f} üstü kırılım + retest
+
+Muhtemel Stop:
+{plan['stop']:.6f}
+
+Muhtemel TP:
+TP1: {plan['tp1']:.6f}
+TP2: {plan['tp2']:.6f}
+TP3: {plan['tp3']:.6f}
+
+Risk/Ödül:
+1:{plan['rr']:.2f}
+""".strip()
+
     title = (
-        "🔥 BINANCE FUTURES ONAY SETUP"
+        "🔥 BINANCE FUTURES LONG ONAY SETUP"
         if result["signal_type"] == "CONFIRM"
         else "🟡 BINANCE FUTURES HAZIRLIK SETUP"
+    )
+
+    decision = (
+        "ONAY geldi. Retest gelirse işlem planı aktif olur."
+        if result["signal_type"] == "CONFIRM"
+        else "Hazırlık geldi. Direkt işlem yok. Kırılım + retest bekle."
     )
 
     msg = f"""
@@ -542,6 +663,9 @@ Mum Gücü: {result['body_ratio']:.2f}
 1H EMA21: {result['ema21']:.6f}
 1H MA200: {result['ma200']:.6f}
 
+📌 TRADE PLANI:
+{trade_text}
+
 🎯 Fib Hedefleri:
 {fib_text}
 
@@ -549,17 +673,15 @@ Mum Gücü: {result['body_ratio']:.2f}
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Hazırlık sinyali erken uyarıdır.
-Onay sinyali daha güçlüdür.
-Direkt FOMO değil.
-Direnç kırılımı + retest bekle.
+{decision}
 """.strip()
 
     return msg
 
+
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES SIKI HAZIRLIK + ONAY BOT başladı hocam")
-    print("BINANCE FUTURES SIKI HAZIRLIK + ONAY BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES HAZIRLIK + ONAY + TRADE PLAN BOT başladı hocam")
+    print("BINANCE FUTURES BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -586,7 +708,7 @@ def run_bot():
                     flush=True
                 )
 
-                time.sleep(0.2)
+                time.sleep(0.25)
 
             print("Futures tarama bitti", flush=True)
             time.sleep(SLEEP_SECONDS)
@@ -595,9 +717,11 @@ def run_bot():
             print("Genel hata:", e, flush=True)
             time.sleep(10)
 
+
 @app.route("/")
 def home():
-    return "Binance Futures Siki Hazirlik + Onay Scanner Aktif", 200
+    return "Binance Futures Hazirlik + Onay + Trade Plan Scanner Aktif", 200
+
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
