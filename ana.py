@@ -9,7 +9,7 @@ TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 TELEGRAM_CHAT_ID = "6977265844"
 
 BOT_SOURCE = "🚄 Railway"
-BOT_NAME = "MEXC Hazırlık + Onay"
+BOT_NAME = "MEXC Sıkı Hazırlık + Onay"
 
 EXCHANGE_NAME = "mexc"
 
@@ -19,14 +19,14 @@ SLEEP_SECONDS = 90
 LIMIT_15M = 300
 LIMIT_1M = 80
 
-COOLDOWN_PREP = 4 * 60 * 60
+COOLDOWN_PREP = 8 * 60 * 60
 COOLDOWN_CONFIRM = 2 * 60 * 60
 
-PREP_MIN_SCORE = 7
+PREP_MIN_SCORE = 9
 CONFIRM_MIN_SCORE = 6
 
-PREP_MIN_VOLUME_RATIO = 1.4
-PREP_MIN_15M_VOLUME_USDT = 10000
+PREP_MIN_VOLUME_RATIO = 1.8
+PREP_MIN_15M_VOLUME_USDT = 25000
 
 CONFIRM_MIN_VOLUME_RATIO = 3.0
 CONFIRM_MIN_1M_VOLUME_USDT = 7000
@@ -129,17 +129,17 @@ def score_15m(df):
         score += 2
         reasons.append("hacim hazırlık seviyesinde")
 
-    if 45 <= last.rsi <= 75:
+    if 52 <= last.rsi <= 68:
         score += 2
-        reasons.append("RSI hazırlık bölgesi")
+        reasons.append("RSI sağlıklı hazırlık bölgesi")
 
-    if last.roc > 0.5:
+    if last.roc > 0.8:
         score += 1
         reasons.append("ROC pozitif")
 
-    if last.roc > 1.5:
+    if last.roc > 1.8:
         score += 1
-        reasons.append("ROC güçleniyor")
+        reasons.append("ROC güçlü")
 
     if last.obv > last.obv_ma:
         score += 2
@@ -153,7 +153,7 @@ def score_15m(df):
         score += 1
         reasons.append("mum gövdesi güçlü")
 
-    if last.upper_wick <= 0.45:
+    if last.upper_wick <= 0.40:
         score += 1
         reasons.append("üst fitil düşük")
 
@@ -323,8 +323,12 @@ def scan_symbol(exchange, symbol):
             score >= PREP_MIN_SCORE
             and volume_ratio >= PREP_MIN_VOLUME_RATIO
             and usdt_volume >= PREP_MIN_15M_VOLUME_USDT
-            and 45 <= last.rsi <= 75
+            and 52 <= last.rsi <= 68
+            and last.roc > 0.8
             and last.obv > last.obv_ma
+            and last.close > last.ema200
+            and last.body_ratio >= 0.35
+            and last.upper_wick <= 0.40
         )
 
         if not prep_valid:
@@ -334,7 +338,7 @@ def scan_symbol(exchange, symbol):
             sent_prep[symbol] = now
 
             msg = f"""
-🟡 {BOT_SOURCE} | MEXC HAZIRLIK
+🟡 {BOT_SOURCE} | MEXC SIKI HAZIRLIK
 
 Coin: {symbol}
 Fiyat: {last.close:.8f}
@@ -356,7 +360,7 @@ Mum Gücü: {last.body_ratio:.2f}
 {", ".join(reasons)}
 
 📍 Karar:
-Hazırlık geldi.
+Sıkı hazırlık geldi.
 Şimdi aynı coinde 1m/3m hacim onayı beklenir.
 Direkt FOMO değil.
 """.strip()
@@ -428,7 +432,7 @@ Mum Gücü: {confirm['body_ratio']:.2f}
 {fib_text}
 
 📍 Karar:
-Hazırlık + 1m/3m hacim onayı geldi.
+Sıkı hazırlık + 1m/3m hacim onayı geldi.
 Yine de direkt FOMO değil.
 5m direnç kırılımı + retest kontrol et.
 """.strip()
