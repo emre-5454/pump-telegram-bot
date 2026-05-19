@@ -13,30 +13,33 @@ SLEEP_SECONDS = 90
 MAX_SYMBOLS = 60
 
 COOLDOWN_PREP = 6 * 60 * 60
-COOLDOWN_CONFIRM = 12 * 60 * 60
+COOLDOWN_TRADE = 6 * 60 * 60
 
 PREP_MIN_SCORE = 8
 PREP_MIN_VOLUME_USDT = 50000
 PREP_MIN_VOLUME_RATIO = 2.5
 PREP_MIN_OI_RATIO = 1.001
-PREP_MIN_1M_CHANGE = 0.00
 PREP_MIN_3M_CHANGE = 0.10
 PREP_MAX_3M_CHANGE = 2.20
 PREP_MIN_BODY_RATIO = 0.35
 PREP_MAX_UPPER_WICK = 0.40
 
-CONFIRM_MIN_SCORE = 12
-CONFIRM_MIN_VOLUME_USDT = 120000
-CONFIRM_MIN_VOLUME_RATIO = 5.0
-CONFIRM_MIN_OI_RATIO = 1.0035
-CONFIRM_MIN_1M_CHANGE = 0.15
-CONFIRM_MIN_3M_CHANGE = 0.45
-CONFIRM_MAX_3M_CHANGE = 3.00
-CONFIRM_MIN_BODY_RATIO = 0.50
-CONFIRM_MAX_UPPER_WICK = 0.30
+TRADE_MIN_SCORE = 12
+TRADE_MIN_VOLUME_USDT = 120000
+TRADE_MIN_VOLUME_RATIO = 5.0
+TRADE_MIN_OI_RATIO = 1.0035
+TRADE_MIN_1M_CHANGE = 0.15
+TRADE_MIN_3M_CHANGE = 0.45
+TRADE_MAX_3M_CHANGE = 3.00
+TRADE_MIN_BODY_RATIO = 0.50
+TRADE_MAX_UPPER_WICK = 0.30
+
+RETEST_ZONE_PCT = 0.004
+MOMENTUM_MAX_DISTANCE = 0.012
+FOMO_DISTANCE = 0.012
 
 sent_prep = {}
-sent_confirm = {}
+sent_trade = {}
 oi_cache = {}
 
 
@@ -108,9 +111,8 @@ def macd(values):
         macd_series.append(ema(part, 12) - ema(part, 26))
 
     signal = ema(macd_series, 9)
-    hist = macd_line - signal
 
-    return macd_line, signal, hist
+    return macd_line, signal, macd_line - signal
 
 
 def bollinger_width(values, period=20):
@@ -126,10 +128,7 @@ def bollinger_width(values, period=20):
     variance = sum((x - mid) ** 2 for x in recent) / period
     std = variance ** 0.5
 
-    upper = mid + 2 * std
-    lower = mid - 2 * std
-
-    return (upper - lower) / mid
+    return ((mid + 2 * std) - (mid - 2 * std)) / mid
 
 
 def obv(closes, volumes):
@@ -146,10 +145,7 @@ def obv(closes, volumes):
         else:
             values.append(values[-1])
 
-    current = values[-1]
-    avg = sum(values[-20:]) / 20
-
-    return current, avg
+    return values[-1], sum(values[-20:]) / 20
 
 
 def fib_targets(highs, lows, lookback=60):
@@ -203,17 +199,12 @@ def get_symbols():
         pairs.append((symbol, volume))
 
     pairs.sort(key=lambda x: x[1], reverse=True)
-
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
 
 def get_klines(symbol, interval="1m", limit=220):
     url = "https://fapi.binance.com/fapi/v1/klines"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
     return requests.get(url, params=params, timeout=15).json()
 
 
@@ -221,6 +212,30 @@ def get_open_interest(symbol):
     url = "https://fapi.binance.com/fapi/v1/openInterest"
     data = requests.get(url, params={"symbol": symbol}, timeout=10).json()
     return float(data["openInterest"])
+
+
+def candle_stats(candle):
+    o = float(candle[1])
+    h = float(candle[2])
+    l = float(candle[3])
+    c = float(candle[4])
+
+    candle_range = h - l
+
+    if candle_range <= 0:
+        return None
+
+    body_ratio = abs(c - o) / candle_range
+    upper_wick = (h - max(o, c)) / candle_range
+
+    return {
+        "open": o,
+        "high": h,
+        "low": l,
+        "close": c,
+        "body_ratio": body_ratio,
+        "upper_wick": upper_wick
+    }
 
 
 def get_1h_trend(symbol):
@@ -243,7 +258,6 @@ def get_1h_trend(symbol):
         return {
             "trend_up": ema9 > ema21,
             "ma200_above": price > ma200,
-            "price_1h": price,
             "ema9": ema9,
             "ema21": ema21,
             "ma200": ma200
@@ -251,6 +265,38 @@ def get_1h_trend(symbol):
 
     except Exception as e:
         print("1H trend hata:", symbol, e, flush=True)
+        return None
+
+
+def get_5m_confirm(symbol, resistance):
+    try:
+        candles = get_klines(symbol, "5m", 40)
+
+        if not candles or len(candles) < 25:
+            return None
+
+        last = candles[-2]
+        stats = candle_stats(last)
+
+        if not stats:
+            return None
+
+        close_5m = stats["close"]
+
+        return {
+            "close": close_5m,
+            "breakout_close": close_5m > resistance,
+            "body_ratio": stats["body_ratio"],
+            "upper_wick": stats["upper_wick"],
+            "strong": (
+                close_5m > resistance
+                and stats["body_ratio"] >= 0.45
+                and stats["upper_wick"] <= 0.35
+            )
+        }
+
+    except Exception as e:
+        print("5M onay hata:", symbol, e, flush=True)
         return None
 
 
@@ -286,12 +332,7 @@ def get_15m_indicators(symbol):
             "bb_width": bb_now,
             "bb_avg": bb_avg,
             "bb_tight": bb_now is not None and bb_avg is not None and bb_now < bb_avg,
-            "macd": macd_line,
-            "macd_signal": macd_signal,
-            "macd_hist": macd_hist,
             "macd_bull": macd_line is not None and macd_signal is not None and macd_line > macd_signal,
-            "obv": obv_now,
-            "obv_avg": obv_avg,
             "obv_bull": obv_now is not None and obv_avg is not None and obv_now > obv_avg,
             "fib": fib
         }
@@ -301,7 +342,7 @@ def get_15m_indicators(symbol):
         return None
 
 
-def trade_plan(result):
+def make_trade_plan(result, mode):
     fib = result.get("fib")
     price = result.get("price")
 
@@ -311,12 +352,20 @@ def trade_plan(result):
     resistance = fib["high"]
     support = fib["low"]
 
-    entry_low = resistance * 0.997
-    entry_high = resistance * 1.003
+    if mode == "RETEST_LONG":
+        entry_low = resistance * 0.997
+        entry_high = resistance * 1.003
+        stop = resistance * 0.985
 
-    stop_by_swing = support * 0.995
-    stop_by_price = price * 0.975
-    stop = max(stop_by_swing, stop_by_price)
+    elif mode == "MOMENTUM_LONG":
+        entry_low = price * 0.998
+        entry_high = price * 1.002
+        stop = resistance * 0.990
+
+    else:
+        entry_low = resistance * 0.997
+        entry_high = resistance * 1.003
+        stop = max(support * 0.995, price * 0.975)
 
     tp1 = fib["tp2"]
     tp2 = fib["tp3"]
@@ -348,6 +397,31 @@ def trade_plan(result):
     }
 
 
+def classify_signal(price, resistance, volume_ratio, oi_ratio, upper_wick, body_ratio, five):
+    distance = (price - resistance) / resistance
+
+    if distance > FOMO_DISTANCE:
+        return "FOMO"
+
+    if abs(distance) <= RETEST_ZONE_PCT and five and five["strong"]:
+        return "RETEST_LONG"
+
+    if 0.003 < distance <= MOMENTUM_MAX_DISTANCE:
+        if (
+            five and five["breakout_close"]
+            and volume_ratio >= TRADE_MIN_VOLUME_RATIO
+            and oi_ratio >= TRADE_MIN_OI_RATIO
+            and upper_wick <= 0.25
+            and body_ratio >= 0.55
+        ):
+            return "MOMENTUM_LONG"
+
+    if price > resistance and five and five["breakout_close"]:
+        return "BREAKOUT_WAIT_RETEST"
+
+    return "PREP"
+
+
 def analyze(symbol):
     try:
         candles = get_klines(symbol, "1m", 30)
@@ -359,11 +433,12 @@ def analyze(symbol):
         prev = candles[-3]
         prev3 = candles[-5]
 
-        o = float(last[1])
-        h = float(last[2])
-        l = float(last[3])
-        c = float(last[4])
+        stats = candle_stats(last)
 
+        if not stats:
+            return None
+
+        c = stats["close"]
         quote_volume = float(last[7])
 
         prev_close = float(prev[4])
@@ -379,13 +454,8 @@ def analyze(symbol):
             return None
 
         volume_ratio = quote_volume / avg_volume
-
-        candle_range = h - l
-        if candle_range <= 0:
-            return None
-
-        body_ratio = abs(c - o) / candle_range
-        upper_wick = (h - max(o, c)) / candle_range
+        body_ratio = stats["body_ratio"]
+        upper_wick = stats["upper_wick"]
 
         oi_now = get_open_interest(symbol)
         prev_oi = oi_cache.get(symbol)
@@ -400,8 +470,12 @@ def analyze(symbol):
         trend = get_1h_trend(symbol)
         ind15 = get_15m_indicators(symbol)
 
-        if not trend or not ind15:
+        if not trend or not ind15 or not ind15["fib"]:
             return None
+
+        fib = ind15["fib"]
+        resistance = fib["high"]
+        five = get_5m_confirm(symbol, resistance)
 
         score = 0
         reasons = []
@@ -414,7 +488,7 @@ def analyze(symbol):
             score += 2
             reasons.append("hacim hazırlık seviyesinde")
 
-        if volume_ratio >= CONFIRM_MIN_VOLUME_RATIO:
+        if volume_ratio >= TRADE_MIN_VOLUME_RATIO:
             score += 2
             reasons.append("hacim patlaması var")
 
@@ -422,11 +496,11 @@ def analyze(symbol):
             score += 1
             reasons.append("OI hafif artıyor")
 
-        if oi_ratio >= CONFIRM_MIN_OI_RATIO:
+        if oi_ratio >= TRADE_MIN_OI_RATIO:
             score += 2
             reasons.append("OI güçlü artıyor")
 
-        if price_change_1m >= PREP_MIN_1M_CHANGE:
+        if price_change_1m >= 0:
             score += 1
             reasons.append("1dk zayıf değil")
 
@@ -450,7 +524,7 @@ def analyze(symbol):
             score += 1
             reasons.append("1H MA200 üstü")
 
-        if ind15["rsi"] is not None and 48 <= ind15["rsi"] <= 70:
+        if ind15["rsi"] is not None and 48 <= ind15["rsi"] <= 72:
             score += 1
             reasons.append("15m RSI uygun")
 
@@ -467,7 +541,7 @@ def analyze(symbol):
             reasons.append("15m MACD yukarı")
 
         prep_quality_ok = ind15["obv_bull"] or ind15["macd_bull"]
-        confirm_quality_ok = ind15["obv_bull"] and ind15["macd_bull"]
+        trade_quality_ok = ind15["obv_bull"] and ind15["macd_bull"]
 
         prep_valid = (
             score >= PREP_MIN_SCORE
@@ -480,21 +554,21 @@ def analyze(symbol):
             and prep_quality_ok
         )
 
-        confirm_valid = (
-            score >= CONFIRM_MIN_SCORE
-            and quote_volume >= CONFIRM_MIN_VOLUME_USDT
-            and volume_ratio >= CONFIRM_MIN_VOLUME_RATIO
-            and oi_ratio >= CONFIRM_MIN_OI_RATIO
-            and price_change_1m >= CONFIRM_MIN_1M_CHANGE
-            and CONFIRM_MIN_3M_CHANGE <= price_change_3m <= CONFIRM_MAX_3M_CHANGE
-            and body_ratio >= CONFIRM_MIN_BODY_RATIO
-            and upper_wick <= CONFIRM_MAX_UPPER_WICK
+        trade_valid = (
+            score >= TRADE_MIN_SCORE
+            and quote_volume >= TRADE_MIN_VOLUME_USDT
+            and volume_ratio >= TRADE_MIN_VOLUME_RATIO
+            and oi_ratio >= TRADE_MIN_OI_RATIO
+            and price_change_1m >= TRADE_MIN_1M_CHANGE
+            and TRADE_MIN_3M_CHANGE <= price_change_3m <= TRADE_MAX_3M_CHANGE
+            and body_ratio >= TRADE_MIN_BODY_RATIO
+            and upper_wick <= TRADE_MAX_UPPER_WICK
             and trend["trend_up"]
             and trend["ma200_above"]
-            and confirm_quality_ok
+            and trade_quality_ok
         )
 
-        if not prep_valid and not confirm_valid:
+        if not prep_valid and not trade_valid:
             print(
                 symbol,
                 "SKOR:", score,
@@ -506,27 +580,40 @@ def analyze(symbol):
             )
             return None
 
+        mode = "PREP"
+
+        if trade_valid:
+            mode = classify_signal(
+                c,
+                resistance,
+                volume_ratio,
+                oi_ratio,
+                upper_wick,
+                body_ratio,
+                five
+            )
+
         now = time.time()
 
-        signal_type = "PREP"
-        cooldown_cache = sent_prep
-        cooldown_time = COOLDOWN_PREP
+        if mode == "PREP":
+            cache = sent_prep
+            cooldown = COOLDOWN_PREP
+        else:
+            cache = sent_trade
+            cooldown = COOLDOWN_TRADE
 
-        if confirm_valid:
-            signal_type = "CONFIRM"
-            cooldown_cache = sent_confirm
-            cooldown_time = COOLDOWN_CONFIRM
+        key = symbol + "_" + mode
 
-        if symbol in cooldown_cache and now - cooldown_cache[symbol] < cooldown_time:
+        if key in cache and now - cache[key] < cooldown:
             return None
 
-        cooldown_cache[symbol] = now
+        cache[key] = now
 
         return {
             "symbol": symbol,
             "price": c,
             "score": score,
-            "signal_type": signal_type,
+            "mode": mode,
             "quote_volume": quote_volume,
             "volume_ratio": volume_ratio,
             "oi_ratio": oi_ratio,
@@ -543,7 +630,8 @@ def analyze(symbol):
             "bb_width": ind15["bb_width"],
             "obv_bull": ind15["obv_bull"],
             "macd_bull": ind15["macd_bull"],
-            "fib": ind15["fib"],
+            "fib": fib,
+            "five": five,
             "reasons": reasons
         }
 
@@ -553,11 +641,19 @@ def analyze(symbol):
 
 
 def format_signal(result):
+    mode = result["mode"]
     fib = result["fib"]
-    plan = trade_plan(result)
+    plan = make_trade_plan(result, mode)
 
-    fib_text = "Fib hesaplanamadı."
-    trade_text = "Trade plan hesaplanamadı."
+    titles = {
+        "PREP": "🟡 BINANCE FUTURES HAZIRLIK",
+        "BREAKOUT_WAIT_RETEST": "🟠 BINANCE FUTURES BREAKOUT — RETEST BEKLE",
+        "RETEST_LONG": "🟢 BINANCE FUTURES RETEST LONG",
+        "MOMENTUM_LONG": "🚀 BINANCE FUTURES MOMENTUM LONG",
+        "FOMO": "🔴 BINANCE FUTURES FOMO — GEÇ GİRİŞ"
+    }
+
+    title = titles.get(mode, "BINANCE FUTURES SETUP")
 
     if fib:
         fib_text = f"""
@@ -571,15 +667,16 @@ TP4 / 2.000: {fib['tp4']:.6f}
 
 Geçersiz Bölge: {fib['invalid']:.6f}
 """.strip()
+    else:
+        fib_text = "Fib hesaplanamadı."
 
     if plan:
-        if result["signal_type"] == "CONFIRM":
+        if mode == "RETEST_LONG":
             trade_text = f"""
-📍 LONG Giriş Bölgesi:
-{plan['entry_low']:.6f} - {plan['entry_high']:.6f}
+✅ RETEST LONG AKTİF
 
-✅ İşlem Şartı:
-{plan['resistance']:.6f} üstü kırılım + retest
+📍 Giriş:
+{plan['entry_low']:.6f} - {plan['entry_high']:.6f}
 
 🛑 Stop:
 {plan['stop']:.6f}
@@ -596,42 +693,105 @@ Geçersiz Bölge: {fib['invalid']:.6f}
 📊 Risk/Ödül:
 1:{plan['rr']:.2f}
 
-Setup Kalitesi:
+Setup:
 {plan['status']}
 """.strip()
-        else:
-            trade_text = f"""
-⚠️ Henüz işlem aktif değil.
 
-Takip Bölgesi:
+        elif mode == "MOMENTUM_LONG":
+            trade_text = f"""
+🚀 MOMENTUM LONG
+
+📍 Giriş:
 {plan['entry_low']:.6f} - {plan['entry_high']:.6f}
 
-Onay Şartı:
-{plan['resistance']:.6f} üstü kırılım + retest
+🛑 Stop:
+{plan['stop']:.6f}
+
+🎯 TP1:
+{plan['tp1']:.6f}
+
+🎯 TP2:
+{plan['tp2']:.6f}
+
+🎯 TP3:
+{plan['tp3']:.6f}
+
+📊 Risk/Ödül:
+1:{plan['rr']:.2f}
+
+⚠️ Not:
+Retest vermeden gidiyor.
+Küçük pozisyon daha mantıklı.
+""".strip()
+
+        elif mode == "BREAKOUT_WAIT_RETEST":
+            trade_text = f"""
+🟠 Kırılım var ama giriş aktif değil.
+
+Retest Bölgesi:
+{plan['entry_low']:.6f} - {plan['entry_high']:.6f}
+
+Şart:
+Bu bölgeye geri gelip yeşil tepki vermeli.
 
 Muhtemel Stop:
 {plan['stop']:.6f}
 
 Muhtemel TP:
-TP1: {plan['tp1']:.6f}
-TP2: {plan['tp2']:.6f}
-TP3: {plan['tp3']:.6f}
-
-Risk/Ödül:
-1:{plan['rr']:.2f}
+{plan['tp1']:.6f} / {plan['tp2']:.6f} / {plan['tp3']:.6f}
 """.strip()
 
-    title = (
-        "🔥 BINANCE FUTURES LONG ONAY SETUP"
-        if result["signal_type"] == "CONFIRM"
-        else "🟡 BINANCE FUTURES HAZIRLIK SETUP"
-    )
+        elif mode == "FOMO":
+            trade_text = f"""
+🔴 FOMO RİSKİ
 
-    decision = (
-        "ONAY geldi. Retest gelirse işlem planı aktif olur."
-        if result["signal_type"] == "CONFIRM"
-        else "Hazırlık geldi. Direkt işlem yok. Kırılım + retest bekle."
-    )
+Fiyat dirençten fazla uzaklaşmış.
+
+Direnç:
+{plan['resistance']:.6f}
+
+Şu an:
+{result['price']:.6f}
+
+Karar:
+Buradan market giriş riskli.
+Retest veya yeni setup bekle.
+""".strip()
+
+        else:
+            trade_text = f"""
+⚠️ Hazırlık var, işlem aktif değil.
+
+Takip Bölgesi:
+{plan['entry_low']:.6f} - {plan['entry_high']:.6f}
+
+Onay Şartı:
+{plan['resistance']:.6f} üstü 5m kapanış + retest veya momentum devamı
+
+Muhtemel TP:
+{plan['tp1']:.6f} / {plan['tp2']:.6f} / {plan['tp3']:.6f}
+""".strip()
+    else:
+        trade_text = "Trade plan hesaplanamadı."
+
+    decision_map = {
+        "PREP": "Hazırlık geldi. İşlem yok, takip.",
+        "BREAKOUT_WAIT_RETEST": "Kırılım var. Retest bekle.",
+        "RETEST_LONG": "Retest tuttu. Long plan aktif.",
+        "MOMENTUM_LONG": "Retest vermeden gidiyor. Küçük pozisyon mantığı.",
+        "FOMO": "Geç giriş. İşlem kovalanmaz."
+    }
+
+    five = result.get("five")
+    if five:
+        five_text = f"""
+5m Kapanış: {five['close']:.6f}
+5m Breakout: {'EVET ✅' if five['breakout_close'] else 'HAYIR ❌'}
+5m Mum Gücü: {five['body_ratio']:.2f}
+5m Üst Fitil: {five['upper_wick']:.2f}
+""".strip()
+    else:
+        five_text = "5m veri yok."
 
     msg = f"""
 {title}
@@ -663,6 +823,9 @@ Mum Gücü: {result['body_ratio']:.2f}
 1H EMA21: {result['ema21']:.6f}
 1H MA200: {result['ma200']:.6f}
 
+📌 5M ONAY:
+{five_text}
+
 📌 TRADE PLANI:
 {trade_text}
 
@@ -673,15 +836,15 @@ Mum Gücü: {result['body_ratio']:.2f}
 {", ".join(result['reasons'])}
 
 📍 Karar:
-{decision}
+{decision_map.get(mode, 'Takip et.')}
 """.strip()
 
     return msg
 
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES HAZIRLIK + ONAY + TRADE PLAN BOT başladı hocam")
-    print("BINANCE FUTURES BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES RETEST + MOMENTUM BOT başladı hocam")
+    print("BINANCE FUTURES RETEST + MOMENTUM BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -700,7 +863,7 @@ def run_bot():
                 send_telegram(msg)
 
                 print(
-                    result["signal_type"],
+                    result["mode"],
                     "SINYAL:",
                     result["symbol"],
                     "PUAN:",
@@ -720,7 +883,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures Hazirlik + Onay + Trade Plan Scanner Aktif", 200
+    return "Binance Futures Retest + Momentum Scanner Aktif", 200
 
 
 if __name__ == "__main__":
