@@ -14,6 +14,7 @@ MAX_SYMBOLS = 60
 
 COOLDOWN_PREP = 6 * 60 * 60
 COOLDOWN_TRADE = 6 * 60 * 60
+COOLDOWN_SWEEP = 3 * 60 * 60
 
 PREP_MIN_SCORE = 8
 PREP_MIN_VOLUME_USDT = 50000
@@ -34,12 +35,21 @@ TRADE_MAX_3M_CHANGE = 3.00
 TRADE_MIN_BODY_RATIO = 0.50
 TRADE_MAX_UPPER_WICK = 0.30
 
+SWEEP_MIN_SCORE = 8
+SWEEP_MIN_VOLUME_USDT = 50000
+SWEEP_MIN_VOLUME_RATIO = 4.0
+SWEEP_MIN_LOWER_WICK = 0.45
+SWEEP_MAX_BODY_RATIO = 0.55
+SWEEP_RECOVERY_LEVEL = 0.35
+SWEEP_MAX_OI_RATIO = 1.0015
+
 RETEST_ZONE_PCT = 0.004
 MOMENTUM_MAX_DISTANCE = 0.012
 FOMO_DISTANCE = 0.012
 
 sent_prep = {}
 sent_trade = {}
+sent_sweep = {}
 oi_cache = {}
 
 
@@ -227,6 +237,7 @@ def candle_stats(candle):
 
     body_ratio = abs(c - o) / candle_range
     upper_wick = (h - max(o, c)) / candle_range
+    lower_wick = (min(o, c) - l) / candle_range
 
     return {
         "open": o,
@@ -234,7 +245,8 @@ def candle_stats(candle):
         "low": l,
         "close": c,
         "body_ratio": body_ratio,
-        "upper_wick": upper_wick
+        "upper_wick": upper_wick,
+        "lower_wick": lower_wick
     }
 
 
@@ -339,6 +351,90 @@ def get_15m_indicators(symbol):
 
     except Exception as e:
         print("15M indikatör hata:", symbol, e, flush=True)
+        return None
+
+
+def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, oi_ratio):
+    try:
+        o = stats["open"]
+        h = stats["high"]
+        l = stats["low"]
+        c = stats["close"]
+
+        candle_range = h - l
+        if candle_range <= 0:
+            return None
+
+        lower_wick = stats["lower_wick"]
+        body_ratio = stats["body_ratio"]
+        recovery = (c - l) / candle_range
+
+        old_lows = [float(x[3]) for x in candles[-22:-2]]
+        local_support = min(old_lows)
+
+        swept_support = l < local_support
+        reclaimed = c > local_support
+
+        sweep_score = 0
+        reasons = []
+
+        if quote_volume >= SWEEP_MIN_VOLUME_USDT:
+            sweep_score += 1
+            reasons.append("1dk futures hacim yeterli")
+
+        if volume_ratio >= SWEEP_MIN_VOLUME_RATIO:
+            sweep_score += 2
+            reasons.append("hacim patlaması var")
+
+        if lower_wick >= SWEEP_MIN_LOWER_WICK:
+            sweep_score += 2
+            reasons.append("alt fitil güçlü")
+
+        if body_ratio <= SWEEP_MAX_BODY_RATIO:
+            sweep_score += 1
+            reasons.append("gövde küçük, iğne baskın")
+
+        if recovery >= SWEEP_RECOVERY_LEVEL:
+            sweep_score += 2
+            reasons.append("iğne sonrası recovery var")
+
+        if swept_support:
+            sweep_score += 2
+            reasons.append("lokal destek altı süpürülmüş")
+
+        if reclaimed:
+            sweep_score += 2
+            reasons.append("destek tekrar geri alınmış")
+
+        if oi_ratio <= SWEEP_MAX_OI_RATIO:
+            sweep_score += 1
+            reasons.append("OI şişmemiş / reset ihtimali")
+
+        valid = (
+            sweep_score >= SWEEP_MIN_SCORE
+            and quote_volume >= SWEEP_MIN_VOLUME_USDT
+            and volume_ratio >= SWEEP_MIN_VOLUME_RATIO
+            and lower_wick >= SWEEP_MIN_LOWER_WICK
+            and swept_support
+            and reclaimed
+        )
+
+        if not valid:
+            return None
+
+        return {
+            "mode": "LIQUIDITY_SWEEP",
+            "sweep_score": sweep_score,
+            "sweep_low": l,
+            "support": local_support,
+            "recovery": recovery,
+            "lower_wick": lower_wick,
+            "body_ratio": body_ratio,
+            "reasons": reasons
+        }
+
+    except Exception as e:
+        print("Sweep hata:", symbol, e, flush=True)
         return None
 
 
@@ -456,6 +552,7 @@ def analyze(symbol):
         volume_ratio = quote_volume / avg_volume
         body_ratio = stats["body_ratio"]
         upper_wick = stats["upper_wick"]
+        lower_wick = stats["lower_wick"]
 
         oi_now = get_open_interest(symbol)
         prev_oi = oi_cache.get(symbol)
@@ -466,6 +563,40 @@ def analyze(symbol):
             return None
 
         oi_ratio = oi_now / prev_oi
+
+        sweep = detect_liquidity_sweep(
+            symbol,
+            candles,
+            stats,
+            quote_volume,
+            volume_ratio,
+            oi_ratio
+        )
+
+        if sweep:
+            now = time.time()
+            key = symbol + "_LIQUIDITY_SWEEP"
+
+            if key in sent_sweep and now - sent_sweep[key] < COOLDOWN_SWEEP:
+                return None
+
+            sent_sweep[key] = now
+
+            return {
+                "symbol": symbol,
+                "price": c,
+                "score": sweep["sweep_score"],
+                "mode": "LIQUIDITY_SWEEP",
+                "quote_volume": quote_volume,
+                "volume_ratio": volume_ratio,
+                "oi_ratio": oi_ratio,
+                "price_change_1m": price_change_1m,
+                "price_change_3m": price_change_3m,
+                "body_ratio": body_ratio,
+                "upper_wick": upper_wick,
+                "lower_wick": lower_wick,
+                "sweep": sweep
+            }
 
         trend = get_1h_trend(symbol)
         ind15 = get_15m_indicators(symbol)
@@ -574,6 +705,7 @@ def analyze(symbol):
                 "SKOR:", score,
                 "VOL:", round(volume_ratio, 2),
                 "OI:", round(oi_ratio, 4),
+                "LW:", round(lower_wick, 2),
                 "OBV:", ind15["obv_bull"],
                 "MACD:", ind15["macd_bull"],
                 flush=True
@@ -621,6 +753,7 @@ def analyze(symbol):
             "price_change_3m": price_change_3m,
             "body_ratio": body_ratio,
             "upper_wick": upper_wick,
+            "lower_wick": lower_wick,
             "trend_up": trend["trend_up"],
             "ma200_above": trend["ma200_above"],
             "ema9": trend["ema9"],
@@ -642,6 +775,64 @@ def analyze(symbol):
 
 def format_signal(result):
     mode = result["mode"]
+
+    if mode == "LIQUIDITY_SWEEP":
+        sweep = result["sweep"]
+
+        entry_low = sweep["support"] * 0.995
+        entry_high = result["price"] * 1.003
+        emergency_stop = sweep["sweep_low"] * 0.985
+
+        tp1 = sweep["support"] * 1.04
+        tp2 = sweep["support"] * 1.08
+        tp3 = sweep["support"] * 1.13
+
+        return f"""
+🟣 BINANCE FUTURES LIQUIDITY SWEEP
+
+Coin: {result['symbol'].replace('USDT', '/USDT')}
+Fiyat: {result['price']:.6f}
+
+Sweep Skoru: {sweep['sweep_score']}/13
+
+Sweep Dibi: {sweep['sweep_low']:.6f}
+Geri Alınan Destek: {sweep['support']:.6f}
+
+1dk Değişim: %{result['price_change_1m']:.2f}
+3dk Değişim: %{result['price_change_3m']:.2f}
+
+1dk Futures Hacim: {int(result['quote_volume'])} USDT
+Hacim Artışı: {result['volume_ratio']:.2f}x
+OI Oranı: {result['oi_ratio']:.4f}x
+
+Alt Fitil: {sweep['lower_wick']:.2f}
+Recovery: {sweep['recovery']:.2f}
+Mum Gücü: {result['body_ratio']:.2f}
+Üst Fitil: {result['upper_wick']:.2f}
+
+📌 ERKEN GİRİŞ BÖLGESİ:
+{entry_low:.6f} - {entry_high:.6f}
+
+🛑 Stop:
+{sweep['sweep_low']:.6f} altı 5m kapanış
+
+Acil Stop:
+{emergency_stop:.6f}
+
+🎯 TP:
+TP1: {tp1:.6f}
+TP2: {tp2:.6f}
+TP3: {tp3:.6f}
+
+📌 Sebep:
+{", ".join(sweep['reasons'])}
+
+📍 Karar:
+Likidite süpürmesi algılandı.
+Bu erken giriş modudur.
+Küçük pozisyon + 5m güçlü kapanış daha güvenlidir.
+""".strip()
+
     fib = result["fib"]
     plan = make_trade_plan(result, mode)
 
@@ -818,6 +1009,7 @@ OI Artışı: {result['oi_ratio']:.4f}x
 
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
+Alt Fitil: {result['lower_wick']:.2f}
 
 1H EMA9: {result['ema9']:.6f}
 1H EMA21: {result['ema21']:.6f}
@@ -843,8 +1035,8 @@ Mum Gücü: {result['body_ratio']:.2f}
 
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES RETEST + MOMENTUM BOT başladı hocam")
-    print("BINANCE FUTURES RETEST + MOMENTUM BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES HYBRID BOT başladı hocam: BREAKOUT + RETEST + MOMENTUM + LIQUIDITY SWEEP")
+    print("BINANCE FUTURES HYBRID BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -883,7 +1075,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures Retest + Momentum Scanner Aktif", 200
+    return "Binance Futures Hybrid Scanner Aktif: Breakout + Retest + Momentum + Liquidity Sweep", 200
 
 
 if __name__ == "__main__":
