@@ -43,6 +43,12 @@ SWEEP_MAX_BODY_RATIO = 0.55
 SWEEP_RECOVERY_LEVEL = 0.35
 SWEEP_MAX_OI_RATIO = 1.0015
 
+ORDER_BOOK_LIMIT = 50
+ORDER_BOOK_RANGE_PCT = 0.006
+ORDER_BOOK_MIN_BID_ASK_RATIO = 1.25
+ORDER_BOOK_STRONG_BID_RATIO = 1.60
+ORDER_BOOK_MAX_SPREAD_PCT = 0.10
+
 RETEST_ZONE_PCT = 0.004
 MOMENTUM_MAX_DISTANCE = 0.012
 FOMO_DISTANCE = 0.012
@@ -224,6 +230,112 @@ def get_open_interest(symbol):
     return float(data["openInterest"])
 
 
+def get_order_book_signal(symbol, price):
+    try:
+        url = "https://fapi.binance.com/fapi/v1/depth"
+        params = {"symbol": symbol, "limit": ORDER_BOOK_LIMIT}
+        data = requests.get(url, params=params, timeout=10).json()
+
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+
+        if not bids or not asks:
+            return None
+
+        best_bid = float(bids[0][0])
+        best_ask = float(asks[0][0])
+
+        spread_pct = ((best_ask - best_bid) / price) * 100 if price > 0 else 999
+
+        low_range = price * (1 - ORDER_BOOK_RANGE_PCT)
+        high_range = price * (1 + ORDER_BOOK_RANGE_PCT)
+
+        bid_liq = 0
+        ask_liq = 0
+
+        biggest_bid_price = 0
+        biggest_bid_usdt = 0
+        biggest_ask_price = 0
+        biggest_ask_usdt = 0
+
+        for bid in bids:
+            p = float(bid[0])
+            q = float(bid[1])
+            usdt = p * q
+
+            if low_range <= p <= price:
+                bid_liq += usdt
+
+            if usdt > biggest_bid_usdt:
+                biggest_bid_usdt = usdt
+                biggest_bid_price = p
+
+        for ask in asks:
+            p = float(ask[0])
+            q = float(ask[1])
+            usdt = p * q
+
+            if price <= p <= high_range:
+                ask_liq += usdt
+
+            if usdt > biggest_ask_usdt:
+                biggest_ask_usdt = usdt
+                biggest_ask_price = p
+
+        bid_ask_ratio = bid_liq / ask_liq if ask_liq > 0 else 99
+
+        bid_wall = bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
+        strong_bid_wall = bid_ask_ratio >= ORDER_BOOK_STRONG_BID_RATIO
+        ask_pressure = ask_liq > bid_liq * 1.25
+        spread_ok = spread_pct <= ORDER_BOOK_MAX_SPREAD_PCT
+
+        score = 0
+        reasons = []
+
+        if bid_wall:
+            score += 2
+            reasons.append("alış tarafı güçlü")
+
+        if strong_bid_wall:
+            score += 2
+            reasons.append("güçlü bid wall var")
+
+        if not ask_pressure:
+            score += 1
+            reasons.append("satış duvarı baskısı zayıf")
+
+        if spread_ok:
+            score += 1
+            reasons.append("spread uygun")
+
+        if biggest_bid_usdt > biggest_ask_usdt:
+            score += 1
+            reasons.append("en büyük duvar alış tarafında")
+
+        confirm = score >= 4 and bid_wall and spread_ok
+
+        return {
+            "score": score,
+            "confirm": confirm,
+            "bid_liq": bid_liq,
+            "ask_liq": ask_liq,
+            "bid_ask_ratio": bid_ask_ratio,
+            "spread_pct": spread_pct,
+            "bid_wall": bid_wall,
+            "strong_bid_wall": strong_bid_wall,
+            "ask_pressure": ask_pressure,
+            "biggest_bid_price": biggest_bid_price,
+            "biggest_bid_usdt": biggest_bid_usdt,
+            "biggest_ask_price": biggest_ask_price,
+            "biggest_ask_usdt": biggest_ask_usdt,
+            "reasons": reasons
+        }
+
+    except Exception as e:
+        print("Order book hata:", symbol, e, flush=True)
+        return None
+
+
 def candle_stats(candle):
     o = float(candle[1])
     h = float(candle[2])
@@ -354,9 +466,8 @@ def get_15m_indicators(symbol):
         return None
 
 
-def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, oi_ratio):
+def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, oi_ratio, orderbook):
     try:
-        o = stats["open"]
         h = stats["high"]
         l = stats["low"]
         c = stats["close"]
@@ -410,6 +521,10 @@ def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, o
             sweep_score += 1
             reasons.append("OI şişmemiş / reset ihtimali")
 
+        if orderbook and orderbook["confirm"]:
+            sweep_score += 3
+            reasons.append("order book alış tarafı destekli")
+
         valid = (
             sweep_score >= SWEEP_MIN_SCORE
             and quote_volume >= SWEEP_MIN_VOLUME_USDT
@@ -430,6 +545,7 @@ def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, o
             "recovery": recovery,
             "lower_wick": lower_wick,
             "body_ratio": body_ratio,
+            "bookmap_confirm": bool(orderbook and orderbook["confirm"]),
             "reasons": reasons
         }
 
@@ -493,14 +609,16 @@ def make_trade_plan(result, mode):
     }
 
 
-def classify_signal(price, resistance, volume_ratio, oi_ratio, upper_wick, body_ratio, five):
+def classify_signal(price, resistance, volume_ratio, oi_ratio, upper_wick, body_ratio, five, orderbook):
     distance = (price - resistance) / resistance
+
+    ob_confirm = orderbook and orderbook.get("confirm")
 
     if distance > FOMO_DISTANCE:
         return "FOMO"
 
     if abs(distance) <= RETEST_ZONE_PCT and five and five["strong"]:
-        return "RETEST_LONG"
+        return "RETEST_LONG_BOOKMAP" if ob_confirm else "RETEST_LONG"
 
     if 0.003 < distance <= MOMENTUM_MAX_DISTANCE:
         if (
@@ -510,7 +628,7 @@ def classify_signal(price, resistance, volume_ratio, oi_ratio, upper_wick, body_
             and upper_wick <= 0.25
             and body_ratio >= 0.55
         ):
-            return "MOMENTUM_LONG"
+            return "MOMENTUM_LONG_BOOKMAP" if ob_confirm else "MOMENTUM_LONG"
 
     if price > resistance and five and five["breakout_close"]:
         return "BREAKOUT_WAIT_RETEST"
@@ -564,13 +682,16 @@ def analyze(symbol):
 
         oi_ratio = oi_now / prev_oi
 
+        orderbook = get_order_book_signal(symbol, c)
+
         sweep = detect_liquidity_sweep(
             symbol,
             candles,
             stats,
             quote_volume,
             volume_ratio,
-            oi_ratio
+            oi_ratio,
+            orderbook
         )
 
         if sweep:
@@ -586,7 +707,7 @@ def analyze(symbol):
                 "symbol": symbol,
                 "price": c,
                 "score": sweep["sweep_score"],
-                "mode": "LIQUIDITY_SWEEP",
+                "mode": "LIQUIDITY_SWEEP_BOOKMAP" if sweep["bookmap_confirm"] else "LIQUIDITY_SWEEP",
                 "quote_volume": quote_volume,
                 "volume_ratio": volume_ratio,
                 "oi_ratio": oi_ratio,
@@ -595,7 +716,8 @@ def analyze(symbol):
                 "body_ratio": body_ratio,
                 "upper_wick": upper_wick,
                 "lower_wick": lower_wick,
-                "sweep": sweep
+                "sweep": sweep,
+                "orderbook": orderbook
             }
 
         trend = get_1h_trend(symbol)
@@ -671,6 +793,10 @@ def analyze(symbol):
             score += 1
             reasons.append("15m MACD yukarı")
 
+        if orderbook and orderbook["confirm"]:
+            score += 2
+            reasons.append("order book alış tarafı destekli")
+
         prep_quality_ok = ind15["obv_bull"] or ind15["macd_bull"]
         trade_quality_ok = ind15["obv_bull"] and ind15["macd_bull"]
 
@@ -706,6 +832,7 @@ def analyze(symbol):
                 "VOL:", round(volume_ratio, 2),
                 "OI:", round(oi_ratio, 4),
                 "LW:", round(lower_wick, 2),
+                "OB:", orderbook["score"] if orderbook else "YOK",
                 "OBV:", ind15["obv_bull"],
                 "MACD:", ind15["macd_bull"],
                 flush=True
@@ -722,7 +849,8 @@ def analyze(symbol):
                 oi_ratio,
                 upper_wick,
                 body_ratio,
-                five
+                five,
+                orderbook
             )
 
         now = time.time()
@@ -765,6 +893,7 @@ def analyze(symbol):
             "macd_bull": ind15["macd_bull"],
             "fib": fib,
             "five": five,
+            "orderbook": orderbook,
             "reasons": reasons
         }
 
@@ -773,11 +902,36 @@ def analyze(symbol):
         return None
 
 
+def format_orderbook(orderbook):
+    if not orderbook:
+        return "Order book verisi alınamadı."
+
+    return f"""
+Bid/Ask Oranı: {orderbook['bid_ask_ratio']:.2f}x
+Bid Likidite: {int(orderbook['bid_liq'])} USDT
+Ask Likidite: {int(orderbook['ask_liq'])} USDT
+Spread: %{orderbook['spread_pct']:.4f}
+
+Alış Duvarı: {'GÜÇLÜ ✅' if orderbook['strong_bid_wall'] else 'VAR ✅' if orderbook['bid_wall'] else 'ZAYIF ❌'}
+Satış Baskısı: {'VAR ⚠️' if orderbook['ask_pressure'] else 'ZAYIF ✅'}
+
+En Büyük Bid:
+{orderbook['biggest_bid_price']:.6f} / {int(orderbook['biggest_bid_usdt'])} USDT
+
+En Büyük Ask:
+{orderbook['biggest_ask_price']:.6f} / {int(orderbook['biggest_ask_usdt'])} USDT
+
+Bookmap Onay: {'VAR ✅' if orderbook['confirm'] else 'YOK ❌'}
+Sebep: {", ".join(orderbook['reasons']) if orderbook['reasons'] else 'Nötr'}
+""".strip()
+
+
 def format_signal(result):
     mode = result["mode"]
 
-    if mode == "LIQUIDITY_SWEEP":
+    if mode in ["LIQUIDITY_SWEEP", "LIQUIDITY_SWEEP_BOOKMAP"]:
         sweep = result["sweep"]
+        orderbook = result.get("orderbook")
 
         entry_low = sweep["support"] * 0.995
         entry_high = result["price"] * 1.003
@@ -787,13 +941,15 @@ def format_signal(result):
         tp2 = sweep["support"] * 1.08
         tp3 = sweep["support"] * 1.13
 
+        title = "🟣 BINANCE FUTURES LIQUIDITY SWEEP + BOOKMAP ONAY" if mode == "LIQUIDITY_SWEEP_BOOKMAP" else "🟣 BINANCE FUTURES LIQUIDITY SWEEP"
+
         return f"""
-🟣 BINANCE FUTURES LIQUIDITY SWEEP
+{title}
 
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Sweep Skoru: {sweep['sweep_score']}/13
+Sweep Skoru: {sweep['sweep_score']}/16
 
 Sweep Dibi: {sweep['sweep_low']:.6f}
 Geri Alınan Destek: {sweep['support']:.6f}
@@ -809,6 +965,9 @@ Alt Fitil: {sweep['lower_wick']:.2f}
 Recovery: {sweep['recovery']:.2f}
 Mum Gücü: {result['body_ratio']:.2f}
 Üst Fitil: {result['upper_wick']:.2f}
+
+📘 ORDER BOOK / BOOKMAP:
+{format_orderbook(orderbook)}
 
 📌 ERKEN GİRİŞ BÖLGESİ:
 {entry_low:.6f} - {entry_high:.6f}
@@ -829,25 +988,27 @@ TP3: {tp3:.6f}
 
 📍 Karar:
 Likidite süpürmesi algılandı.
-Bu erken giriş modudur.
-Küçük pozisyon + 5m güçlü kapanış daha güvenlidir.
+Bookmap onayı varsa küçük pozisyon daha mantıklı.
+Bookmap onayı yoksa sadece takip.
 """.strip()
 
     fib = result["fib"]
     plan = make_trade_plan(result, mode)
+    orderbook = result.get("orderbook")
 
     titles = {
         "PREP": "🟡 BINANCE FUTURES HAZIRLIK",
         "BREAKOUT_WAIT_RETEST": "🟠 BINANCE FUTURES BREAKOUT — RETEST BEKLE",
         "RETEST_LONG": "🟢 BINANCE FUTURES RETEST LONG",
+        "RETEST_LONG_BOOKMAP": "🟢 BINANCE FUTURES RETEST LONG + BOOKMAP ONAY",
         "MOMENTUM_LONG": "🚀 BINANCE FUTURES MOMENTUM LONG",
+        "MOMENTUM_LONG_BOOKMAP": "🚀 BINANCE FUTURES MOMENTUM LONG + BOOKMAP ONAY",
         "FOMO": "🔴 BINANCE FUTURES FOMO — GEÇ GİRİŞ"
     }
 
     title = titles.get(mode, "BINANCE FUTURES SETUP")
 
-    if fib:
-        fib_text = f"""
+    fib_text = f"""
 Swing Dip: {fib['low']:.6f}
 Swing Tepe: {fib['high']:.6f}
 
@@ -858,11 +1019,9 @@ TP4 / 2.000: {fib['tp4']:.6f}
 
 Geçersiz Bölge: {fib['invalid']:.6f}
 """.strip()
-    else:
-        fib_text = "Fib hesaplanamadı."
 
     if plan:
-        if mode == "RETEST_LONG":
+        if mode in ["RETEST_LONG", "RETEST_LONG_BOOKMAP"]:
             trade_text = f"""
 ✅ RETEST LONG AKTİF
 
@@ -888,7 +1047,7 @@ Setup:
 {plan['status']}
 """.strip()
 
-        elif mode == "MOMENTUM_LONG":
+        elif mode in ["MOMENTUM_LONG", "MOMENTUM_LONG_BOOKMAP"]:
             trade_text = f"""
 🚀 MOMENTUM LONG
 
@@ -969,7 +1128,9 @@ Muhtemel TP:
         "PREP": "Hazırlık geldi. İşlem yok, takip.",
         "BREAKOUT_WAIT_RETEST": "Kırılım var. Retest bekle.",
         "RETEST_LONG": "Retest tuttu. Long plan aktif.",
+        "RETEST_LONG_BOOKMAP": "Retest tuttu + order book destekli. Long plan daha güçlü.",
         "MOMENTUM_LONG": "Retest vermeden gidiyor. Küçük pozisyon mantığı.",
+        "MOMENTUM_LONG_BOOKMAP": "Momentum + order book destekli. Küçük pozisyon mantığı.",
         "FOMO": "Geç giriş. İşlem kovalanmaz."
     }
 
@@ -990,7 +1151,7 @@ Muhtemel TP:
 Coin: {result['symbol'].replace('USDT', '/USDT')}
 Fiyat: {result['price']:.6f}
 
-Puan: {result['score']}/18
+Puan: {result['score']}/20
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
@@ -1018,6 +1179,9 @@ Alt Fitil: {result['lower_wick']:.2f}
 📌 5M ONAY:
 {five_text}
 
+📘 ORDER BOOK / BOOKMAP:
+{format_orderbook(orderbook)}
+
 📌 TRADE PLANI:
 {trade_text}
 
@@ -1035,8 +1199,8 @@ Alt Fitil: {result['lower_wick']:.2f}
 
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES HYBRID BOT başladı hocam: BREAKOUT + RETEST + MOMENTUM + LIQUIDITY SWEEP")
-    print("BINANCE FUTURES HYBRID BOT ÇALIŞTI", flush=True)
+    send_telegram("🚀 BINANCE FUTURES HYBRID SMART MONEY BOT başladı: BREAKOUT + RETEST + MOMENTUM + SWEEP + ORDER BOOK")
+    print("BINANCE FUTURES HYBRID SMART MONEY BOT ÇALIŞTI", flush=True)
 
     while True:
         try:
@@ -1075,7 +1239,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures Hybrid Scanner Aktif: Breakout + Retest + Momentum + Liquidity Sweep", 200
+    return "Binance Futures Hybrid Smart Money Scanner Aktif", 200
 
 
 if __name__ == "__main__":
