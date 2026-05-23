@@ -3,142 +3,80 @@ import time
 import requests
 import math
 
-# =========================================================
-# BOT ADI
-# =========================================================
-BOT_NAME = "☁️ RENDER LİKİDASYON BOTU"
+BOT_NAME = "☁️ RENDER LİKİDASYON + BOOKMAP BOTU"
 
-# =========================================================
-# TELEGRAM
-# =========================================================
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-def telegram(msg):
-
-    try:
-
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-        requests.post(
-            url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": msg
-            },
-            timeout=10
-        )
-
-    except Exception as e:
-
-        print("Telegram hata:", e)
-
-# =========================================================
-# MEXC
-# =========================================================
 exchange = ccxt.mexc({
     "enableRateLimit": True
 })
 
-# =========================================================
-# AYARLAR
-# =========================================================
 TIMEFRAME = "5m"
-
 SLEEP_SECONDS = 60
-
 COOLDOWN = 3 * 60 * 60
-
 MAX_SIGNALS_PER_SCAN = 5
 
-# =========================================================
-# LİKİDASYON AYARLARI
-# =========================================================
 MIN_VOLUME_USDT = 25000
-
 MIN_VOLUME_RATIO = 2.5
 
 MIN_LOWER_WICK = 0.35
-
 MIN_BODY_RATIO = 0.20
 
 MIN_PRICE_CHANGE_15M = -5.0
 MAX_PRICE_CHANGE_15M = 2.5
 
-MAX_BB_WIDTH = 0.070
+MAX_BB_WIDTH = 0.080
 
-# =========================================================
-# CACHE
-# =========================================================
+ORDERBOOK_LIMIT = 20
+MIN_BID_ASK_RATIO = 1.20
+MAX_SPREAD_PERCENT = 0.25
+
 sent_cache = {}
 
-# =========================================================
-# SMA
-# =========================================================
-def sma(values, period):
+def telegram(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    except Exception as e:
+        print("Telegram hata:", e)
 
+def sma(values, period):
     if len(values) < period:
         return None
-
     return sum(values[-period:]) / period
 
-# =========================================================
-# BOLLINGER
-# =========================================================
 def bollinger(values, period=20):
-
     if len(values) < period:
         return None, None, None, None
 
     mid = sma(values, period)
+    if mid == 0:
+        return None, None, None, None
 
-    variance = sum(
-        (x - mid) ** 2
-        for x in values[-period:]
-    ) / period
-
+    variance = sum((x - mid) ** 2 for x in values[-period:]) / period
     std = math.sqrt(variance)
 
     upper = mid + 2 * std
     lower = mid - 2 * std
-
     width = (upper - lower) / mid
 
     return upper, mid, lower, width
 
-# =========================================================
-# MUM ANALİZİ
-# =========================================================
 def candle_stats(open_, high, low, close):
-
     rng = high - low
 
     if rng == 0:
         return 0, 0, 0
 
     body_ratio = abs(close - open_) / rng
+    upper_wick = (high - max(open_, close)) / rng
+    lower_wick = (min(open_, close) - low) / rng
 
-    upper_wick = (
-        high - max(open_, close)
-    ) / rng
+    return body_ratio, upper_wick, lower_wick
 
-    lower_wick = (
-        min(open_, close) - low
-    ) / rng
-
-    return (
-        body_ratio,
-        upper_wick,
-        lower_wick
-    )
-
-# =========================================================
-# PAIRS
-# =========================================================
 def get_pairs():
-
     markets = exchange.load_markets()
-
     pairs = []
 
     blacklist = [
@@ -149,7 +87,6 @@ def get_pairs():
     ]
 
     for symbol in markets:
-
         if not symbol.endswith("/USDT"):
             continue
 
@@ -163,13 +100,66 @@ def get_pairs():
 
     return pairs
 
-# =========================================================
-# ANALİZ
-# =========================================================
-def analyze(symbol):
-
+def mini_bookmap(symbol):
     try:
+        orderbook = exchange.fetch_order_book(symbol, limit=ORDERBOOK_LIMIT)
 
+        bids = orderbook.get("bids", [])
+        asks = orderbook.get("asks", [])
+
+        if not bids or not asks:
+            return None
+
+        best_bid = bids[0][0]
+        best_ask = asks[0][0]
+
+        if best_bid <= 0 or best_ask <= 0:
+            return None
+
+        spread_percent = ((best_ask - best_bid) / best_bid) * 100
+
+        bid_usdt = sum(price * amount for price, amount in bids[:ORDERBOOK_LIMIT])
+        ask_usdt = sum(price * amount for price, amount in asks[:ORDERBOOK_LIMIT])
+
+        if ask_usdt == 0:
+            return None
+
+        bid_ask_ratio = bid_usdt / ask_usdt
+
+        strongest_bid = max(bids[:ORDERBOOK_LIMIT], key=lambda x: x[0] * x[1])
+        strongest_ask = max(asks[:ORDERBOOK_LIMIT], key=lambda x: x[0] * x[1])
+
+        strongest_bid_price = strongest_bid[0]
+        strongest_bid_usdt = strongest_bid[0] * strongest_bid[1]
+
+        strongest_ask_price = strongest_ask[0]
+        strongest_ask_usdt = strongest_ask[0] * strongest_ask[1]
+
+        book_support = (
+            bid_ask_ratio >= MIN_BID_ASK_RATIO
+            and spread_percent <= MAX_SPREAD_PERCENT
+        )
+
+        return {
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "spread_percent": spread_percent,
+            "bid_usdt": bid_usdt,
+            "ask_usdt": ask_usdt,
+            "bid_ask_ratio": bid_ask_ratio,
+            "strongest_bid_price": strongest_bid_price,
+            "strongest_bid_usdt": strongest_bid_usdt,
+            "strongest_ask_price": strongest_ask_price,
+            "strongest_ask_usdt": strongest_ask_usdt,
+            "book_support": book_support
+        }
+
+    except Exception as e:
+        print("Bookmap hata:", symbol, e)
+        return None
+
+def analyze(symbol):
+    try:
         candles = exchange.fetch_ohlcv(
             symbol,
             timeframe=TIMEFRAME,
@@ -191,54 +181,32 @@ def analyze(symbol):
         closes = [x[4] for x in candles]
         volumes = [x[5] for x in candles]
 
-        # =====================================================
-        # PRICE CHANGE
-        # =====================================================
-        price_change_5m = (
-            (c - prev[4]) / prev[4]
-        ) * 100
+        price_change_5m = ((c - prev[4]) / prev[4]) * 100
+        price_change_15m = ((c - candles[-4][4]) / candles[-4][4]) * 100
 
-        price_change_15m = (
-            (c - candles[-4][4]) / candles[-4][4]
-        ) * 100
-
-        # =====================================================
-        # HACİM
-        # =====================================================
-        avg_volume = sum(
-            volumes[-21:-1]
-        ) / 20
+        avg_volume = sum(volumes[-21:-1]) / 20
 
         if avg_volume == 0:
             return None
 
         volume_ratio = v / avg_volume
-
         volume_usdt = v * c
 
-        # =====================================================
-        # BOLLINGER
-        # =====================================================
-        bb_upper, bb_mid, bb_lower, bb_width = bollinger(
-            closes,
-            20
-        )
+        bb_upper, bb_mid, bb_lower, bb_width = bollinger(closes, 20)
 
         if bb_lower is None:
             return None
 
         bb_touch = l <= bb_lower
+        bb_squeeze = bb_width <= MAX_BB_WIDTH
 
-        # =====================================================
-        # MUM
-        # =====================================================
-        body_ratio, upper_wick, lower_wick = candle_stats(
-            o, h, l, c
-        )
+        body_ratio, upper_wick, lower_wick = candle_stats(o, h, l, c)
 
-        # =====================================================
-        # SCORE
-        # =====================================================
+        book = mini_bookmap(symbol)
+
+        if not book:
+            return None
+
         score = 0
         reasons = []
 
@@ -248,140 +216,82 @@ def analyze(symbol):
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             score += 2
-            reasons.append("hacim spike var")
+            reasons.append("para girişi / hacim spike")
 
         if lower_wick >= MIN_LOWER_WICK:
             score += 3
-            reasons.append("likidasyon iğnesi var")
+            reasons.append("alt likidasyon iğnesi")
 
         if body_ratio >= MIN_BODY_RATIO:
             score += 1
-            reasons.append("mum toparlamış")
+            reasons.append("dönüş mumu toparlamış")
 
         if bb_touch:
             score += 2
-            reasons.append("BB alt bant dönüşü")
+            reasons.append("BB alt banttan dönüş")
 
-        if bb_width <= MAX_BB_WIDTH:
+        if bb_squeeze:
             score += 1
-            reasons.append("BB sıkışık")
+            reasons.append("BB sıkışma var")
 
-        if (
-            MIN_PRICE_CHANGE_15M
-            <=
-            price_change_15m
-            <=
-            MAX_PRICE_CHANGE_15M
-        ):
+        if book["book_support"]:
+            score += 2
+            reasons.append("Mini Bookmap alım destekli")
+
+        if MIN_PRICE_CHANGE_15M <= price_change_15m <= MAX_PRICE_CHANGE_15M:
             score += 1
-            reasons.append("fiyat henüz uçmamış")
+            reasons.append("fiyat pump sonrası değil")
 
-        # =====================================================
-        # VALID
-        # =====================================================
         valid = (
-
-            score >= 7
-
-            and
-
-            volume_usdt >= MIN_VOLUME_USDT
-
-            and
-
-            volume_ratio >= MIN_VOLUME_RATIO
-
-            and
-
-            lower_wick >= MIN_LOWER_WICK
-
-            and
-
-            body_ratio >= MIN_BODY_RATIO
-
-            and
-
-            bb_touch
-
-            and
-
-            MIN_PRICE_CHANGE_15M
-            <=
-            price_change_15m
-            <=
-            MAX_PRICE_CHANGE_15M
+            score >= 8
+            and volume_usdt >= MIN_VOLUME_USDT
+            and volume_ratio >= MIN_VOLUME_RATIO
+            and lower_wick >= MIN_LOWER_WICK
+            and body_ratio >= MIN_BODY_RATIO
+            and bb_touch
+            and MIN_PRICE_CHANGE_15M <= price_change_15m <= MAX_PRICE_CHANGE_15M
+            and book["spread_percent"] <= MAX_SPREAD_PERCENT
         )
 
         if not valid:
             return None
 
         return {
-
             "symbol": symbol,
-
             "price": c,
-
             "score": score,
-
             "price_change_5m": price_change_5m,
-
             "price_change_15m": price_change_15m,
-
             "volume_usdt": volume_usdt,
-
             "volume_ratio": volume_ratio,
-
             "body_ratio": body_ratio,
-
             "upper_wick": upper_wick,
-
             "lower_wick": lower_wick,
-
             "bb_width": bb_width,
-
             "bb_touch": bb_touch,
-
+            "bb_squeeze": bb_squeeze,
+            "book": book,
             "reasons": reasons
         }
 
     except Exception as e:
-
         print("Analiz hata:", symbol, e)
-
         return None
 
-# =========================================================
-# RUN
-# =========================================================
 def run():
-
-    telegram(
-        f"{BOT_NAME} aktif edildi hocam 🚀"
-    )
+    telegram(f"{BOT_NAME} aktif edildi hocam 🚀")
 
     while True:
-
         try:
-
             pairs = get_pairs()
-
             now = time.time()
-
             signal_count = 0
 
             for symbol in pairs:
-
                 if signal_count >= MAX_SIGNALS_PER_SCAN:
                     break
 
-                # =================================================
-                # COOLDOWN
-                # =================================================
-                if (
-                    symbol in sent_cache
-                    and
-                    now - sent_cache[symbol] < COOLDOWN
-                ):
+                if symbol in sent_cache and now - sent_cache[symbol] < COOLDOWN:
                     continue
 
                 result = analyze(symbol)
@@ -389,9 +299,8 @@ def run():
                 if not result:
                     continue
 
-                # =================================================
-                # MESAJ
-                # =================================================
+                book = result["book"]
+
                 msg = f"""
 {BOT_NAME}
 
@@ -404,7 +313,7 @@ Fiyat:
 {result['price']:.8f}
 
 Skor:
-{result['score']}/11
+{result['score']}/13
 
 5dk Değişim:
 %{result['price_change_5m']:.2f}
@@ -433,39 +342,57 @@ BB Width:
 BB Alt Bant:
 {'TEMAS ✅' if result['bb_touch'] else 'YOK ❌'}
 
+BB Sıkışma:
+{'VAR ✅' if result['bb_squeeze'] else 'YOK ❌'}
+
+📊 MINI BOOKMAP:
+Bid / Ask Gücü:
+{book['bid_ask_ratio']:.2f}x
+
+Spread:
+%{book['spread_percent']:.4f}
+
+Bid Toplam:
+{int(book['bid_usdt'])} USDT
+
+Ask Toplam:
+{int(book['ask_usdt'])} USDT
+
+En Güçlü Bid:
+{book['strongest_bid_price']:.8f}
+({int(book['strongest_bid_usdt'])} USDT)
+
+En Güçlü Ask:
+{book['strongest_ask_price']:.8f}
+({int(book['strongest_ask_usdt'])} USDT)
+
+Order Book:
+{'ALIM DESTEKLİ ✅' if book['book_support'] else 'ZAYIF ❌'}
+
 📌 Sebep:
 {", ".join(result['reasons'])}
 
 📍 Karar:
-Likidasyon iğnesi sonrası
-balina toplama ihtimali olabilir.
+Likidasyon iğnesi + para girişi + BB dönüşü var.
+Mini Bookmap alım tarafını kontrol etti.
 
-1m/3m dönüş onayı beklenir.
 Direkt FOMO yapılmaz.
+1m/3m dönüş onayı beklenir.
 """
 
                 telegram(msg)
-
                 sent_cache[symbol] = now
-
                 signal_count += 1
 
-                print("LİKİDASYON:", symbol)
-
-                time.sleep(0.2)
+                print("LİKİDASYON + BOOKMAP:", symbol)
+                time.sleep(0.25)
 
             print("Tarama tamamlandı")
-
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-
             print("Genel hata:", e)
-
             time.sleep(10)
 
-# =========================================================
-# START
-# =========================================================
 if __name__ == "__main__":
     run()
