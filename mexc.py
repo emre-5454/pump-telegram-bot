@@ -3,22 +3,61 @@ import time
 import requests
 import math
 
+# =========================================================
+# BOT
+# =========================================================
 BOT_NAME = "☁️ RENDER LONG/SHORT LİKİDASYON BOTU"
 
+# =========================================================
+# TELEGRAM
+# =========================================================
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-exchange = ccxt.mexc({"enableRateLimit": True})
+def telegram(msg):
 
+    try:
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+        requests.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg
+            },
+            timeout=10
+        )
+
+    except Exception as e:
+
+        print("Telegram hata:", e)
+
+# =========================================================
+# MEXC
+# =========================================================
+exchange = ccxt.mexc({
+    "enableRateLimit": True
+})
+
+# =========================================================
+# AYARLAR
+# =========================================================
 TIMEFRAME = "5m"
+
 SLEEP_SECONDS = 60
+
 COOLDOWN = 3 * 60 * 60
+
 MAX_SIGNALS_PER_SCAN = 5
 
+# =========================================================
+# ORTAK AYARLAR
+# =========================================================
 MIN_VOLUME_USDT = 25000
+
 MIN_VOLUME_RATIO = 2.5
 
-MIN_WICK_RATIO = 0.35
 MIN_BODY_RATIO = 0.20
 
 MIN_PRICE_CHANGE_15M = -6.0
@@ -26,72 +65,143 @@ MAX_PRICE_CHANGE_15M = 6.0
 
 MAX_BB_WIDTH = 0.090
 
-ORDERBOOK_LIMIT = 20
+# =========================================================
+# LONG AYARLARI
+# =========================================================
+MIN_LOWER_WICK_LONG = 0.35
+
 MIN_BID_ASK_RATIO_LONG = 1.20
-MAX_BID_ASK_RATIO_SHORT = 0.80
+
+LONG_MIN_SCORE = 8
+
+# =========================================================
+# SHORT AYARLARI
+# =========================================================
+MIN_UPPER_WICK_SHORT = 0.40
+
+MIN_BODY_RATIO_SHORT = 0.25
+
+MAX_CLOSE_POSITION_SHORT = 0.45
+
+MAX_BID_ASK_RATIO_SHORT = 0.70
+
+MAX_SPREAD_PERCENT_SHORT = 0.18
+
+SHORT_MIN_SCORE = 9
+
+# =========================================================
+# ORDER BOOK
+# =========================================================
+ORDERBOOK_LIMIT = 20
+
 MAX_SPREAD_PERCENT = 0.25
 
+# =========================================================
+# BLACKLIST
+# =========================================================
 STABLE_BLACKLIST = [
-    "USDC/", "FDUSD/", "TUSD/", "USDE/", "DAI/",
-    "USDP/", "EUR/", "EURT/", "TRY/"
+    "USDC/",
+    "FDUSD/",
+    "TUSD/",
+    "USDE/",
+    "DAI/",
+    "USDP/",
+    "EUR/",
+    "EURT/",
+    "TRY/"
 ]
 
 LEVERAGE_BLACKLIST = [
-    "UP/", "DOWN/", "BULL/", "BEAR/"
+    "UP/",
+    "DOWN/",
+    "BULL/",
+    "BEAR/"
 ]
 
+# =========================================================
+# CACHE
+# =========================================================
 sent_cache = {}
 
-def telegram(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-    except Exception as e:
-        print("Telegram hata:", e)
-
+# =========================================================
+# SMA
+# =========================================================
 def sma(values, period):
+
     if len(values) < period:
         return None
+
     return sum(values[-period:]) / period
 
+# =========================================================
+# BOLLINGER
+# =========================================================
 def bollinger(values, period=20):
+
     if len(values) < period:
         return None, None, None, None
 
     mid = sma(values, period)
+
     if not mid:
         return None, None, None, None
 
-    variance = sum((x - mid) ** 2 for x in values[-period:]) / period
+    variance = sum(
+        (x - mid) ** 2
+        for x in values[-period:]
+    ) / period
+
     std = math.sqrt(variance)
 
     upper = mid + 2 * std
     lower = mid - 2 * std
+
     width = (upper - lower) / mid
 
     return upper, mid, lower, width
 
+# =========================================================
+# MUM ANALİZİ
+# =========================================================
 def candle_stats(o, h, l, c):
+
     rng = h - l
 
     if rng == 0:
-        return 0, 0, 0, 0, 0
+        return 0, 0, 0, 0
 
     body_ratio = abs(c - o) / rng
-    upper_wick = (h - max(o, c)) / rng
-    lower_wick = (min(o, c) - l) / rng
 
-    close_position = (c - l) / rng
-    red_candle = c < o
-    green_candle = c > o
+    upper_wick = (
+        h - max(o, c)
+    ) / rng
 
-    return body_ratio, upper_wick, lower_wick, close_position, green_candle if green_candle else red_candle
+    lower_wick = (
+        min(o, c) - l
+    ) / rng
 
+    close_position = (
+        c - l
+    ) / rng
+
+    return (
+        body_ratio,
+        upper_wick,
+        lower_wick,
+        close_position
+    )
+
+# =========================================================
+# PAIRS
+# =========================================================
 def get_pairs():
+
     markets = exchange.load_markets()
+
     pairs = []
 
     for symbol in markets:
+
         if not symbol.endswith("/USDT"):
             continue
 
@@ -108,9 +218,17 @@ def get_pairs():
 
     return pairs
 
+# =========================================================
+# MINI BOOKMAP
+# =========================================================
 def mini_bookmap(symbol):
+
     try:
-        ob = exchange.fetch_order_book(symbol, limit=ORDERBOOK_LIMIT)
+
+        ob = exchange.fetch_order_book(
+            symbol,
+            limit=ORDERBOOK_LIMIT
+        )
 
         bids = ob.get("bids", [])
         asks = ob.get("asks", [])
@@ -124,39 +242,82 @@ def mini_bookmap(symbol):
         if best_bid <= 0 or best_ask <= 0:
             return None
 
-        spread_percent = ((best_ask - best_bid) / best_bid) * 100
+        spread_percent = (
+            (best_ask - best_bid)
+            /
+            best_bid
+        ) * 100
 
-        bid_usdt = sum(price * amount for price, amount in bids[:ORDERBOOK_LIMIT])
-        ask_usdt = sum(price * amount for price, amount in asks[:ORDERBOOK_LIMIT])
+        bid_usdt = sum(
+            price * amount
+            for price, amount in bids[:ORDERBOOK_LIMIT]
+        )
+
+        ask_usdt = sum(
+            price * amount
+            for price, amount in asks[:ORDERBOOK_LIMIT]
+        )
 
         if ask_usdt == 0:
             return None
 
         bid_ask_ratio = bid_usdt / ask_usdt
 
-        strongest_bid = max(bids[:ORDERBOOK_LIMIT], key=lambda x: x[0] * x[1])
-        strongest_ask = max(asks[:ORDERBOOK_LIMIT], key=lambda x: x[0] * x[1])
+        strongest_bid = max(
+            bids[:ORDERBOOK_LIMIT],
+            key=lambda x: x[0] * x[1]
+        )
+
+        strongest_ask = max(
+            asks[:ORDERBOOK_LIMIT],
+            key=lambda x: x[0] * x[1]
+        )
 
         return {
+
             "spread_percent": spread_percent,
+
             "bid_usdt": bid_usdt,
+
             "ask_usdt": ask_usdt,
+
             "bid_ask_ratio": bid_ask_ratio,
+
             "strongest_bid_price": strongest_bid[0],
-            "strongest_bid_usdt": strongest_bid[0] * strongest_bid[1],
+
+            "strongest_bid_usdt":
+            strongest_bid[0] * strongest_bid[1],
+
             "strongest_ask_price": strongest_ask[0],
-            "strongest_ask_usdt": strongest_ask[0] * strongest_ask[1],
-            "long_book": bid_ask_ratio >= MIN_BID_ASK_RATIO_LONG,
-            "short_book": bid_ask_ratio <= MAX_BID_ASK_RATIO_SHORT
+
+            "strongest_ask_usdt":
+            strongest_ask[0] * strongest_ask[1],
+
+            "long_book":
+            bid_ask_ratio >= MIN_BID_ASK_RATIO_LONG,
+
+            "short_book":
+            bid_ask_ratio <= MAX_BID_ASK_RATIO_SHORT
         }
 
     except Exception as e:
+
         print("Bookmap hata:", symbol, e)
+
         return None
 
+# =========================================================
+# ANALİZ
+# =========================================================
 def analyze(symbol):
+
     try:
-        candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=40)
+
+        candles = exchange.fetch_ohlcv(
+            symbol,
+            timeframe=TIMEFRAME,
+            limit=40
+        )
 
         if len(candles) < 25:
             return None
@@ -164,44 +325,110 @@ def analyze(symbol):
         last = candles[-1]
         prev = candles[-2]
 
-        o, h, l, c, v = last[1], last[2], last[3], last[4], last[5]
+        o = last[1]
+        h = last[2]
+        l = last[3]
+        c = last[4]
+        v = last[5]
 
         closes = [x[4] for x in candles]
         volumes = [x[5] for x in candles]
 
-        price_change_5m = ((c - prev[4]) / prev[4]) * 100
-        price_change_15m = ((c - candles[-4][4]) / candles[-4][4]) * 100
+        # =====================================================
+        # PRICE CHANGE
+        # =====================================================
+        price_change_5m = (
+            (c - prev[4]) / prev[4]
+        ) * 100
 
-        avg_volume = sum(volumes[-21:-1]) / 20
+        price_change_15m = (
+            (c - candles[-4][4]) / candles[-4][4]
+        ) * 100
+
+        # =====================================================
+        # HACİM
+        # =====================================================
+        avg_volume = sum(
+            volumes[-21:-1]
+        ) / 20
+
         if avg_volume == 0:
             return None
 
         volume_ratio = v / avg_volume
+
         volume_usdt = v * c
 
-        bb_upper, bb_mid, bb_lower, bb_width = bollinger(closes, 20)
+        # =====================================================
+        # BOLLINGER
+        # =====================================================
+        bb_upper, bb_mid, bb_lower, bb_width = bollinger(
+            closes,
+            20
+        )
+
         if bb_upper is None:
             return None
 
-        body_ratio, upper_wick, lower_wick, close_position, candle_dir = candle_stats(o, h, l, c)
-
         bb_lower_touch = l <= bb_lower
+
         bb_upper_touch = h >= bb_upper
+
         bb_squeeze = bb_width <= MAX_BB_WIDTH
 
+        # =====================================================
+        # MUM
+        # =====================================================
+        (
+            body_ratio,
+            upper_wick,
+            lower_wick,
+            close_position
+        ) = candle_stats(o, h, l, c)
+
+        # =====================================================
+        # BOOKMAP
+        # =====================================================
         book = mini_bookmap(symbol)
+
         if not book:
             return None
 
+        # =====================================================
+        # ORTAK ŞARTLAR
+        # =====================================================
         common_valid = (
+
             volume_usdt >= MIN_VOLUME_USDT
-            and volume_ratio >= MIN_VOLUME_RATIO
-            and body_ratio >= MIN_BODY_RATIO
-            and MIN_PRICE_CHANGE_15M <= price_change_15m <= MAX_PRICE_CHANGE_15M
-            and book["spread_percent"] <= MAX_SPREAD_PERCENT
+
+            and
+
+            volume_ratio >= MIN_VOLUME_RATIO
+
+            and
+
+            body_ratio >= MIN_BODY_RATIO
+
+            and
+
+            MIN_PRICE_CHANGE_15M
+            <=
+            price_change_15m
+            <=
+            MAX_PRICE_CHANGE_15M
+
+            and
+
+            book["spread_percent"]
+            <=
+            MAX_SPREAD_PERCENT
         )
 
+        # =====================================================
+        # LONG SCORE
+        # =====================================================
         long_score = 0
+
         long_reasons = []
 
         if volume_usdt >= MIN_VOLUME_USDT:
@@ -210,19 +437,19 @@ def analyze(symbol):
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             long_score += 2
-            long_reasons.append("para girişi / hacim spike")
+            long_reasons.append("para girişi var")
 
-        if lower_wick >= MIN_WICK_RATIO:
+        if lower_wick >= MIN_LOWER_WICK_LONG:
             long_score += 3
             long_reasons.append("alt likidasyon iğnesi")
 
         if body_ratio >= MIN_BODY_RATIO:
             long_score += 1
-            long_reasons.append("dönüş mumu toparlamış")
+            long_reasons.append("dönüş mumu")
 
         if bb_lower_touch:
             long_score += 2
-            long_reasons.append("BB alt banttan dönüş")
+            long_reasons.append("BB alt bant dönüşü")
 
         if bb_squeeze:
             long_score += 1
@@ -232,15 +459,35 @@ def analyze(symbol):
             long_score += 2
             long_reasons.append("Mini Bookmap alım destekli")
 
+        # =====================================================
+        # LONG VALID
+        # =====================================================
         long_valid = (
+
             common_valid
-            and long_score >= 8
-            and lower_wick >= MIN_WICK_RATIO
-            and bb_lower_touch
-            and close_position >= 0.45
+
+            and
+
+            long_score >= LONG_MIN_SCORE
+
+            and
+
+            lower_wick >= MIN_LOWER_WICK_LONG
+
+            and
+
+            bb_lower_touch
+
+            and
+
+            close_position >= 0.45
         )
 
+        # =====================================================
+        # SHORT SCORE
+        # =====================================================
         short_score = 0
+
         short_reasons = []
 
         if volume_usdt >= MIN_VOLUME_USDT:
@@ -249,15 +496,15 @@ def analyze(symbol):
 
         if volume_ratio >= MIN_VOLUME_RATIO:
             short_score += 2
-            short_reasons.append("para girişi / hacim spike")
+            short_reasons.append("para girişi var")
 
-        if upper_wick >= MIN_WICK_RATIO:
+        if upper_wick >= MIN_UPPER_WICK_SHORT:
             short_score += 3
             short_reasons.append("üst likidasyon iğnesi")
 
-        if body_ratio >= MIN_BODY_RATIO:
+        if body_ratio >= MIN_BODY_RATIO_SHORT:
             short_score += 1
-            short_reasons.append("red/rejection mumu oluşmuş")
+            short_reasons.append("rejection mumu")
 
         if bb_upper_touch:
             short_score += 2
@@ -271,67 +518,143 @@ def analyze(symbol):
             short_score += 2
             short_reasons.append("Mini Bookmap satış baskılı")
 
+        # =====================================================
+        # SHORT VALID
+        # =====================================================
         short_valid = (
+
             common_valid
-            and short_score >= 8
-            and upper_wick >= MIN_WICK_RATIO
-            and bb_upper_touch
-            and close_position <= 0.55
+
+            and
+
+            short_score >= SHORT_MIN_SCORE
+
+            and
+
+            upper_wick >= MIN_UPPER_WICK_SHORT
+
+            and
+
+            body_ratio >= MIN_BODY_RATIO_SHORT
+
+            and
+
+            bb_upper_touch
+
+            and
+
+            close_position <= MAX_CLOSE_POSITION_SHORT
+
+            and
+
+            book["bid_ask_ratio"]
+            <=
+            MAX_BID_ASK_RATIO_SHORT
+
+            and
+
+            book["spread_percent"]
+            <=
+            MAX_SPREAD_PERCENT_SHORT
         )
 
+        # =====================================================
+        # YÖN
+        # =====================================================
         if not long_valid and not short_valid:
             return None
 
         if long_valid and long_score >= short_score:
+
             direction = "LONG"
+
             score = long_score
+
             reasons = long_reasons
+
         else:
+
             direction = "SHORT"
+
             score = short_score
+
             reasons = short_reasons
 
         return {
+
             "symbol": symbol,
+
             "price": c,
+
             "direction": direction,
+
             "score": score,
+
             "price_change_5m": price_change_5m,
+
             "price_change_15m": price_change_15m,
+
             "volume_usdt": volume_usdt,
+
             "volume_ratio": volume_ratio,
+
             "body_ratio": body_ratio,
+
             "upper_wick": upper_wick,
+
             "lower_wick": lower_wick,
+
             "close_position": close_position,
+
             "bb_width": bb_width,
+
             "bb_lower_touch": bb_lower_touch,
+
             "bb_upper_touch": bb_upper_touch,
+
             "bb_squeeze": bb_squeeze,
+
             "book": book,
+
             "reasons": reasons
         }
 
     except Exception as e:
+
         print("Analiz hata:", symbol, e)
+
         return None
 
+# =========================================================
+# RUN
+# =========================================================
 def run():
-    telegram(f"{BOT_NAME} aktif edildi hocam 🚀")
+
+    telegram(
+        f"{BOT_NAME} aktif edildi hocam 🚀"
+    )
 
     while True:
+
         try:
+
             pairs = get_pairs()
+
             now = time.time()
+
             signal_count = 0
 
             for symbol in pairs:
+
                 if signal_count >= MAX_SIGNALS_PER_SCAN:
                     break
 
-                cache_key = symbol
-
-                if cache_key in sent_cache and now - sent_cache[cache_key] < COOLDOWN:
+                if (
+                    symbol in sent_cache
+                    and
+                    now - sent_cache[symbol]
+                    < COOLDOWN
+                ):
                     continue
 
                 result = analyze(symbol)
@@ -341,25 +664,36 @@ def run():
 
                 book = result["book"]
 
+                # =================================================
+                # LONG / SHORT MESAJ
+                # =================================================
                 if result["direction"] == "LONG":
-                    title = "🟢 MEXC LONG LİKİDASYON TOPLAMA"
-                    karar = """
-Aşağı likidasyon iğnesi + para girişi + BB alt bant dönüşü var.
-Mini Bookmap alım tarafını kontrol etti.
 
-Direkt FOMO yapılmaz.
-1m/3m yeşil dönüş ve direnç kırılımı beklenir.
+                    title = "🟢 MEXC LONG LİKİDASYON"
+
+                    karar = """
+Alt likidasyon iğnesi +
+BB dönüşü +
+balina toplama ihtimali.
+
+1m/3m yeşil dönüş beklenir.
 """
+
                 else:
-                    title = "🔴 MEXC SHORT LİKİDASYON REDDİ"
-                    karar = """
-Yukarı likidasyon iğnesi + hacim spike + BB üst bant reddi var.
-Mini Bookmap satış baskısını kontrol etti.
 
-Direkt FOMO yapılmaz.
-1m/3m kırmızı onay ve destek kırılımı beklenir.
+                    title = "🔴 MEXC SHORT LİKİDASYON"
+
+                    karar = """
+Üst likidasyon iğnesi +
+BB üst bant reddi +
+satış baskısı var.
+
+1m/3m kırmızı onay beklenir.
 """
 
+                # =================================================
+                # MESAJ
+                # =================================================
                 msg = f"""
 {BOT_NAME}
 
@@ -413,8 +747,9 @@ BB Üst Bant:
 BB Sıkışma:
 {'VAR ✅' if result['bb_squeeze'] else 'YOK ❌'}
 
-📊 MINI BOOKMAP:
-Bid / Ask Gücü:
+📊 MINI BOOKMAP
+
+Bid / Ask:
 {book['bid_ask_ratio']:.2f}x
 
 Spread:
@@ -428,10 +763,12 @@ Ask Toplam:
 
 En Güçlü Bid:
 {book['strongest_bid_price']:.8f}
+
 ({int(book['strongest_bid_usdt'])} USDT)
 
 En Güçlü Ask:
 {book['strongest_ask_price']:.8f}
+
 ({int(book['strongest_ask_usdt'])} USDT)
 
 Order Book:
@@ -446,18 +783,29 @@ Order Book:
 
                 telegram(msg)
 
-                sent_cache[cache_key] = now
+                sent_cache[symbol] = now
+
                 signal_count += 1
 
-                print(result["direction"], result["symbol"])
+                print(
+                    result["direction"],
+                    result["symbol"]
+                )
+
                 time.sleep(0.25)
 
             print("Tarama tamamlandı")
+
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
+
             print("Genel hata:", e)
+
             time.sleep(10)
 
+# =========================================================
+# START
+# =========================================================
 if __name__ == "__main__":
     run()
