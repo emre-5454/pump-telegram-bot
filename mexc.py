@@ -43,7 +43,9 @@ exchange = ccxt.mexc({
 # =========================================================
 # AYARLAR
 # =========================================================
-TIMEFRAME = "5m"
+LONG_TIMEFRAME = "5m"
+
+SHORT_TIMEFRAME = "15m"
 
 SLEEP_SECONDS = 60
 
@@ -313,78 +315,151 @@ def analyze(symbol):
 
     try:
 
-        candles = exchange.fetch_ohlcv(
+        # =====================================================
+        # LONG = 5M
+        # =====================================================
+        candles_long = exchange.fetch_ohlcv(
             symbol,
-            timeframe=TIMEFRAME,
+            timeframe=LONG_TIMEFRAME,
             limit=40
         )
 
-        if len(candles) < 25:
+        # =====================================================
+        # SHORT = 15M
+        # =====================================================
+        candles_short = exchange.fetch_ohlcv(
+            symbol,
+            timeframe=SHORT_TIMEFRAME,
+            limit=40
+        )
+
+        if len(candles_long) < 25:
             return None
 
-        last = candles[-1]
-        prev = candles[-2]
-
-        o = last[1]
-        h = last[2]
-        l = last[3]
-        c = last[4]
-        v = last[5]
-
-        closes = [x[4] for x in candles]
-        volumes = [x[5] for x in candles]
+        if len(candles_short) < 25:
+            return None
 
         # =====================================================
-        # PRICE CHANGE
+        # LONG MUM
+        # =====================================================
+        last_long = candles_long[-1]
+        prev_long = candles_long[-2]
+
+        o_long = last_long[1]
+        h_long = last_long[2]
+        l_long = last_long[3]
+        c_long = last_long[4]
+        v_long = last_long[5]
+
+        closes_long = [x[4] for x in candles_long]
+        volumes_long = [x[5] for x in candles_long]
+
+        # =====================================================
+        # SHORT MUM
+        # =====================================================
+        last_short = candles_short[-1]
+        prev_short = candles_short[-2]
+
+        o_short = last_short[1]
+        h_short = last_short[2]
+        l_short = last_short[3]
+        c_short = last_short[4]
+        v_short = last_short[5]
+
+        closes_short = [x[4] for x in candles_short]
+        volumes_short = [x[5] for x in candles_short]
+
+        # =====================================================
+        # LONG PRICE CHANGE
         # =====================================================
         price_change_5m = (
-            (c - prev[4]) / prev[4]
+            (c_long - prev_long[4]) / prev_long[4]
         ) * 100
 
+        # =====================================================
+        # SHORT PRICE CHANGE
+        # =====================================================
         price_change_15m = (
-            (c - candles[-4][4]) / candles[-4][4]
+            (c_short - prev_short[4]) / prev_short[4]
         ) * 100
 
         # =====================================================
         # HACİM
         # =====================================================
         avg_volume = sum(
-            volumes[-21:-1]
+            volumes_long[-21:-1]
         ) / 20
 
         if avg_volume == 0:
             return None
 
-        volume_ratio = v / avg_volume
+        volume_ratio = v_long / avg_volume
 
-        volume_usdt = v * c
-
-        # =====================================================
-        # BOLLINGER
-        # =====================================================
-        bb_upper, bb_mid, bb_lower, bb_width = bollinger(
-            closes,
-            20
-        )
-
-        if bb_upper is None:
-            return None
-
-        bb_lower_touch = l <= bb_lower
-
-        bb_upper_touch = h >= bb_upper
-
-        bb_squeeze = bb_width <= MAX_BB_WIDTH
+        volume_usdt = v_long * c_long
 
         # =====================================================
-        # MUM
+        # LONG BB
         # =====================================================
         (
-            body_ratio,
-            upper_wick,
-            lower_wick,
-            close_position
-        ) = candle_stats(o, h, l, c)
+            bb_upper_long,
+            bb_mid_long,
+            bb_lower_long,
+            bb_width_long
+        ) = bollinger(closes_long, 20)
+
+        # =====================================================
+        # SHORT BB
+        # =====================================================
+        (
+            bb_upper_short,
+            bb_mid_short,
+            bb_lower_short,
+            bb_width_short
+        ) = bollinger(closes_short, 20)
+
+        if bb_upper_long is None:
+            return None
+
+        if bb_upper_short is None:
+            return None
+
+        bb_lower_touch = l_long <= bb_lower_long
+
+        bb_upper_touch = h_short >= bb_upper_short
+
+        bb_squeeze = (
+            bb_width_long <= MAX_BB_WIDTH
+        )
+
+        # =====================================================
+        # LONG MUM ANALİZİ
+        # =====================================================
+        (
+            body_ratio_long,
+            upper_wick_long,
+            lower_wick_long,
+            close_position_long
+        ) = candle_stats(
+            o_long,
+            h_long,
+            l_long,
+            c_long
+        )
+
+        # =====================================================
+        # SHORT MUM ANALİZİ
+        # =====================================================
+        (
+            body_ratio_short,
+            upper_wick_short,
+            lower_wick_short,
+            close_position_short
+        ) = candle_stats(
+            o_short,
+            h_short,
+            l_short,
+            c_short
+        )
 
         # =====================================================
         # BOOKMAP
@@ -393,36 +468,6 @@ def analyze(symbol):
 
         if not book:
             return None
-
-        # =====================================================
-        # ORTAK ŞARTLAR
-        # =====================================================
-        common_valid = (
-
-            volume_usdt >= MIN_VOLUME_USDT
-
-            and
-
-            volume_ratio >= MIN_VOLUME_RATIO
-
-            and
-
-            body_ratio >= MIN_BODY_RATIO
-
-            and
-
-            MIN_PRICE_CHANGE_15M
-            <=
-            price_change_15m
-            <=
-            MAX_PRICE_CHANGE_15M
-
-            and
-
-            book["spread_percent"]
-            <=
-            MAX_SPREAD_PERCENT
-        )
 
         # =====================================================
         # LONG SCORE
@@ -439,11 +484,11 @@ def analyze(symbol):
             long_score += 2
             long_reasons.append("para girişi var")
 
-        if lower_wick >= MIN_LOWER_WICK_LONG:
+        if lower_wick_long >= MIN_LOWER_WICK_LONG:
             long_score += 3
             long_reasons.append("alt likidasyon iğnesi")
 
-        if body_ratio >= MIN_BODY_RATIO:
+        if body_ratio_long >= MIN_BODY_RATIO:
             long_score += 1
             long_reasons.append("dönüş mumu")
 
@@ -464,15 +509,19 @@ def analyze(symbol):
         # =====================================================
         long_valid = (
 
-            common_valid
-
-            and
-
             long_score >= LONG_MIN_SCORE
 
             and
 
-            lower_wick >= MIN_LOWER_WICK_LONG
+            volume_usdt >= MIN_VOLUME_USDT
+
+            and
+
+            volume_ratio >= MIN_VOLUME_RATIO
+
+            and
+
+            lower_wick_long >= MIN_LOWER_WICK_LONG
 
             and
 
@@ -480,7 +529,7 @@ def analyze(symbol):
 
             and
 
-            close_position >= 0.45
+            close_position_long >= 0.45
         )
 
         # =====================================================
@@ -498,21 +547,17 @@ def analyze(symbol):
             short_score += 2
             short_reasons.append("para girişi var")
 
-        if upper_wick >= MIN_UPPER_WICK_SHORT:
+        if upper_wick_short >= MIN_UPPER_WICK_SHORT:
             short_score += 3
             short_reasons.append("üst likidasyon iğnesi")
 
-        if body_ratio >= MIN_BODY_RATIO_SHORT:
+        if body_ratio_short >= MIN_BODY_RATIO_SHORT:
             short_score += 1
             short_reasons.append("rejection mumu")
 
         if bb_upper_touch:
             short_score += 2
             short_reasons.append("BB üst bant reddi")
-
-        if bb_squeeze:
-            short_score += 1
-            short_reasons.append("BB sıkışma sonrası reject")
 
         if book["short_book"]:
             short_score += 2
@@ -523,19 +568,15 @@ def analyze(symbol):
         # =====================================================
         short_valid = (
 
-            common_valid
-
-            and
-
             short_score >= SHORT_MIN_SCORE
 
             and
 
-            upper_wick >= MIN_UPPER_WICK_SHORT
+            upper_wick_short >= MIN_UPPER_WICK_SHORT
 
             and
 
-            body_ratio >= MIN_BODY_RATIO_SHORT
+            body_ratio_short >= MIN_BODY_RATIO_SHORT
 
             and
 
@@ -543,7 +584,9 @@ def analyze(symbol):
 
             and
 
-            close_position <= MAX_CLOSE_POSITION_SHORT
+            close_position_short
+            <=
+            MAX_CLOSE_POSITION_SHORT
 
             and
 
@@ -572,6 +615,18 @@ def analyze(symbol):
 
             reasons = long_reasons
 
+            price = c_long
+
+            body_ratio = body_ratio_long
+
+            upper_wick = upper_wick_long
+
+            lower_wick = lower_wick_long
+
+            close_position = close_position_long
+
+            bb_width = bb_width_long
+
         else:
 
             direction = "SHORT"
@@ -580,11 +635,23 @@ def analyze(symbol):
 
             reasons = short_reasons
 
+            price = c_short
+
+            body_ratio = body_ratio_short
+
+            upper_wick = upper_wick_short
+
+            lower_wick = lower_wick_short
+
+            close_position = close_position_short
+
+            bb_width = bb_width_short
+
         return {
 
             "symbol": symbol,
 
-            "price": c,
+            "price": price,
 
             "direction": direction,
 
@@ -665,7 +732,7 @@ def run():
                 book = result["book"]
 
                 # =================================================
-                # LONG / SHORT MESAJ
+                # LONG / SHORT
                 # =================================================
                 if result["direction"] == "LONG":
 
@@ -688,7 +755,7 @@ balina toplama ihtimali.
 BB üst bant reddi +
 satış baskısı var.
 
-1m/3m kırmızı onay beklenir.
+15m rejection onayı beklenir.
 """
 
                 # =================================================
