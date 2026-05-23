@@ -1,11 +1,12 @@
 import ccxt
 import time
 import requests
+import math
 
 # =========================================================
 # BOT ADI
 # =========================================================
-BOT_NAME = "☁️ RENDER PARA GİRİŞİ BOTU"
+BOT_NAME = "☁️ RENDER LİKİDASYON BOTU"
 
 # =========================================================
 # TELEGRAM
@@ -48,21 +49,88 @@ SLEEP_SECONDS = 60
 
 COOLDOWN = 3 * 60 * 60
 
+MAX_SIGNALS_PER_SCAN = 5
+
 # =========================================================
-# PARA GİRİŞİ AYARLARI
+# LİKİDASYON AYARLARI
 # =========================================================
 MIN_VOLUME_USDT = 25000
 
 MIN_VOLUME_RATIO = 2.5
 
-MIN_PRICE_CHANGE_5M = -0.50
+MIN_LOWER_WICK = 0.35
 
-MAX_PRICE_CHANGE_15M = 4.0
+MIN_BODY_RATIO = 0.20
+
+MIN_PRICE_CHANGE_15M = -5.0
+MAX_PRICE_CHANGE_15M = 2.5
+
+MAX_BB_WIDTH = 0.070
 
 # =========================================================
 # CACHE
 # =========================================================
 sent_cache = {}
+
+# =========================================================
+# SMA
+# =========================================================
+def sma(values, period):
+
+    if len(values) < period:
+        return None
+
+    return sum(values[-period:]) / period
+
+# =========================================================
+# BOLLINGER
+# =========================================================
+def bollinger(values, period=20):
+
+    if len(values) < period:
+        return None, None, None, None
+
+    mid = sma(values, period)
+
+    variance = sum(
+        (x - mid) ** 2
+        for x in values[-period:]
+    ) / period
+
+    std = math.sqrt(variance)
+
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+
+    width = (upper - lower) / mid
+
+    return upper, mid, lower, width
+
+# =========================================================
+# MUM ANALİZİ
+# =========================================================
+def candle_stats(open_, high, low, close):
+
+    rng = high - low
+
+    if rng == 0:
+        return 0, 0, 0
+
+    body_ratio = abs(close - open_) / rng
+
+    upper_wick = (
+        high - max(open_, close)
+    ) / rng
+
+    lower_wick = (
+        min(open_, close) - low
+    ) / rng
+
+    return (
+        body_ratio,
+        upper_wick,
+        lower_wick
+    )
 
 # =========================================================
 # PAIRS
@@ -105,22 +173,26 @@ def analyze(symbol):
         candles = exchange.fetch_ohlcv(
             symbol,
             timeframe=TIMEFRAME,
-            limit=30
+            limit=40
         )
 
-        if len(candles) < 20:
+        if len(candles) < 25:
             return None
 
         last = candles[-1]
         prev = candles[-2]
 
+        o = last[1]
+        h = last[2]
+        l = last[3]
         c = last[4]
         v = last[5]
 
+        closes = [x[4] for x in candles]
         volumes = [x[5] for x in candles]
 
         # =====================================================
-        # FİYAT DEĞİŞİMİ
+        # PRICE CHANGE
         # =====================================================
         price_change_5m = (
             (c - prev[4]) / prev[4]
@@ -145,9 +217,73 @@ def analyze(symbol):
         volume_usdt = v * c
 
         # =====================================================
-        # ŞARTLAR
+        # BOLLINGER
+        # =====================================================
+        bb_upper, bb_mid, bb_lower, bb_width = bollinger(
+            closes,
+            20
+        )
+
+        if bb_lower is None:
+            return None
+
+        bb_touch = l <= bb_lower
+
+        # =====================================================
+        # MUM
+        # =====================================================
+        body_ratio, upper_wick, lower_wick = candle_stats(
+            o, h, l, c
+        )
+
+        # =====================================================
+        # SCORE
+        # =====================================================
+        score = 0
+        reasons = []
+
+        if volume_usdt >= MIN_VOLUME_USDT:
+            score += 1
+            reasons.append("USDT hacim yeterli")
+
+        if volume_ratio >= MIN_VOLUME_RATIO:
+            score += 2
+            reasons.append("hacim spike var")
+
+        if lower_wick >= MIN_LOWER_WICK:
+            score += 3
+            reasons.append("likidasyon iğnesi var")
+
+        if body_ratio >= MIN_BODY_RATIO:
+            score += 1
+            reasons.append("mum toparlamış")
+
+        if bb_touch:
+            score += 2
+            reasons.append("BB alt bant dönüşü")
+
+        if bb_width <= MAX_BB_WIDTH:
+            score += 1
+            reasons.append("BB sıkışık")
+
+        if (
+            MIN_PRICE_CHANGE_15M
+            <=
+            price_change_15m
+            <=
+            MAX_PRICE_CHANGE_15M
+        ):
+            score += 1
+            reasons.append("fiyat henüz uçmamış")
+
+        # =====================================================
+        # VALID
         # =====================================================
         valid = (
+
+            score >= 7
+
+            and
 
             volume_usdt >= MIN_VOLUME_USDT
 
@@ -157,11 +293,23 @@ def analyze(symbol):
 
             and
 
-            price_change_5m >= MIN_PRICE_CHANGE_5M
+            lower_wick >= MIN_LOWER_WICK
 
             and
 
-            price_change_15m <= MAX_PRICE_CHANGE_15M
+            body_ratio >= MIN_BODY_RATIO
+
+            and
+
+            bb_touch
+
+            and
+
+            MIN_PRICE_CHANGE_15M
+            <=
+            price_change_15m
+            <=
+            MAX_PRICE_CHANGE_15M
         )
 
         if not valid:
@@ -173,13 +321,27 @@ def analyze(symbol):
 
             "price": c,
 
+            "score": score,
+
             "price_change_5m": price_change_5m,
 
             "price_change_15m": price_change_15m,
 
             "volume_usdt": volume_usdt,
 
-            "volume_ratio": volume_ratio
+            "volume_ratio": volume_ratio,
+
+            "body_ratio": body_ratio,
+
+            "upper_wick": upper_wick,
+
+            "lower_wick": lower_wick,
+
+            "bb_width": bb_width,
+
+            "bb_touch": bb_touch,
+
+            "reasons": reasons
         }
 
     except Exception as e:
@@ -205,11 +367,16 @@ def run():
 
             now = time.time()
 
+            signal_count = 0
+
             for symbol in pairs:
 
-                # =============================================
+                if signal_count >= MAX_SIGNALS_PER_SCAN:
+                    break
+
+                # =================================================
                 # COOLDOWN
-                # =============================================
+                # =================================================
                 if (
                     symbol in sent_cache
                     and
@@ -222,19 +389,22 @@ def run():
                 if not result:
                     continue
 
-                # =============================================
+                # =================================================
                 # MESAJ
-                # =============================================
+                # =================================================
                 msg = f"""
 {BOT_NAME}
 
-💰 MEXC PARA GİRİŞİ
+🐋 MEXC LİKİDASYON + PARA GİRİŞİ
 
 Coin:
 {result['symbol']}
 
 Fiyat:
 {result['price']:.8f}
+
+Skor:
+{result['score']}/11
 
 5dk Değişim:
 %{result['price_change_5m']:.2f}
@@ -248,9 +418,29 @@ USDT Hacim:
 Hacim Artışı:
 {result['volume_ratio']:.2f}x
 
-📌 Karar:
-Likidite girişi var.
-Takibe alınabilir.
+Alt Fitil:
+{result['lower_wick']:.2f}
+
+Üst Fitil:
+{result['upper_wick']:.2f}
+
+Mum Gücü:
+{result['body_ratio']:.2f}
+
+BB Width:
+{result['bb_width']:.4f}
+
+BB Alt Bant:
+{'TEMAS ✅' if result['bb_touch'] else 'YOK ❌'}
+
+📌 Sebep:
+{", ".join(result['reasons'])}
+
+📍 Karar:
+Likidasyon iğnesi sonrası
+balina toplama ihtimali olabilir.
+
+1m/3m dönüş onayı beklenir.
 Direkt FOMO yapılmaz.
 """
 
@@ -258,7 +448,9 @@ Direkt FOMO yapılmaz.
 
                 sent_cache[symbol] = now
 
-                print("PARA GİRİŞİ:", symbol)
+                signal_count += 1
+
+                print("LİKİDASYON:", symbol)
 
                 time.sleep(0.2)
 
