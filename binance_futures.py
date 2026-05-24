@@ -15,13 +15,14 @@ MAX_SYMBOLS = 60
 COOLDOWN_PREP = 6 * 60 * 60
 COOLDOWN_TRADE = 6 * 60 * 60
 COOLDOWN_SWEEP = 3 * 60 * 60
+COOLDOWN_SHORT = 3 * 60 * 60
 
 PREP_MIN_SCORE = 8
 PREP_MIN_VOLUME_USDT = 50000
-PREP_MIN_VOLUME_RATIO = 2.0
-PREP_MIN_OI_RATIO = 1.005
+PREP_MIN_VOLUME_RATIO = 2.5
+PREP_MIN_OI_RATIO = 1.001
 PREP_MIN_3M_CHANGE = 0.10
-PREP_MAX_3M_CHANGE = 3.50
+PREP_MAX_3M_CHANGE = 2.20
 PREP_MIN_BODY_RATIO = 0.35
 PREP_MAX_UPPER_WICK = 0.40
 
@@ -43,6 +44,12 @@ SWEEP_MAX_BODY_RATIO = 0.55
 SWEEP_RECOVERY_LEVEL = 0.35
 SWEEP_MAX_OI_RATIO = 1.0015
 
+SHORT_MIN_SCORE = 7
+SHORT_MIN_RSI = 82
+SHORT_MIN_UPPER_WICK = 0.45
+SHORT_MIN_VOLUME_RATIO = 3.5
+SHORT_MIN_OI_RATIO = 1.002
+
 ORDER_BOOK_LIMIT = 50
 ORDER_BOOK_RANGE_PCT = 0.015
 ORDER_BOOK_MIN_BID_ASK_RATIO = 1.25
@@ -56,6 +63,7 @@ FOMO_DISTANCE = 0.012
 sent_prep = {}
 sent_trade = {}
 sent_sweep = {}
+sent_short = {}
 oi_cache = {}
 
 
@@ -131,7 +139,7 @@ def macd(values):
     return macd_line, signal, macd_line - signal
 
 
-def bollinger_width(values, period=20):
+def bollinger_data(values, period=20):
     if len(values) < period:
         return None
 
@@ -144,7 +152,23 @@ def bollinger_width(values, period=20):
     variance = sum((x - mid) ** 2 for x in recent) / period
     std = variance ** 0.5
 
-    return ((mid + 2 * std) - (mid - 2 * std)) / mid
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+    width = (upper - lower) / mid
+
+    return {
+        "mid": mid,
+        "upper": upper,
+        "lower": lower,
+        "width": width
+    }
+
+
+def bollinger_width(values, period=20):
+    data = bollinger_data(values, period)
+    if not data:
+        return None
+    return data["width"]
 
 
 def obv(closes, volumes):
@@ -283,52 +307,95 @@ def get_order_book_signal(symbol, price):
                 biggest_ask_price = p
 
         bid_ask_ratio = bid_liq / ask_liq if ask_liq > 0 else 99
+        ask_bid_ratio = ask_liq / bid_liq if bid_liq > 0 else 99
 
         bid_wall = bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
         strong_bid_wall = bid_ask_ratio >= ORDER_BOOK_STRONG_BID_RATIO
+
+        ask_wall = ask_bid_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
+        strong_ask_wall = ask_bid_ratio >= ORDER_BOOK_STRONG_BID_RATIO
+
         ask_pressure = ask_liq > bid_liq * 1.25
+        bid_pressure = bid_liq > ask_liq * 1.25
+
         spread_ok = spread_pct <= ORDER_BOOK_MAX_SPREAD_PCT
 
-        score = 0
-        reasons = []
+        long_score = 0
+        long_reasons = []
 
         if bid_wall:
-            score += 2
-            reasons.append("alış tarafı güçlü")
+            long_score += 2
+            long_reasons.append("alış tarafı güçlü")
 
         if strong_bid_wall:
-            score += 2
-            reasons.append("güçlü bid wall var")
+            long_score += 2
+            long_reasons.append("güçlü bid wall var")
 
         if not ask_pressure:
-            score += 1
-            reasons.append("satış duvarı baskısı zayıf")
+            long_score += 1
+            long_reasons.append("satış duvarı baskısı zayıf")
 
         if spread_ok:
-            score += 1
-            reasons.append("spread uygun")
+            long_score += 1
+            long_reasons.append("spread uygun")
 
         if biggest_bid_usdt > biggest_ask_usdt:
-            score += 1
-            reasons.append("en büyük duvar alış tarafında")
+            long_score += 1
+            long_reasons.append("en büyük duvar alış tarafında")
 
-        confirm = score >= 4 and bid_wall and spread_ok
+        long_confirm = long_score >= 4 and bid_wall and spread_ok
+
+        short_score = 0
+        short_reasons = []
+
+        if ask_wall:
+            short_score += 2
+            short_reasons.append("satış tarafı güçlü")
+
+        if strong_ask_wall:
+            short_score += 2
+            short_reasons.append("güçlü ask wall var")
+
+        if not bid_pressure:
+            short_score += 1
+            short_reasons.append("alış duvarı baskısı zayıf")
+
+        if spread_ok:
+            short_score += 1
+            short_reasons.append("spread uygun")
+
+        if biggest_ask_usdt > biggest_bid_usdt:
+            short_score += 1
+            short_reasons.append("en büyük duvar satış tarafında")
+
+        short_confirm = short_score >= 4 and ask_wall and spread_ok
 
         return {
-            "score": score,
-            "confirm": confirm,
+            "long_score": long_score,
+            "long_confirm": long_confirm,
+            "short_score": short_score,
+            "short_confirm": short_confirm,
+
             "bid_liq": bid_liq,
             "ask_liq": ask_liq,
             "bid_ask_ratio": bid_ask_ratio,
+            "ask_bid_ratio": ask_bid_ratio,
             "spread_pct": spread_pct,
+
             "bid_wall": bid_wall,
             "strong_bid_wall": strong_bid_wall,
+            "ask_wall": ask_wall,
+            "strong_ask_wall": strong_ask_wall,
             "ask_pressure": ask_pressure,
+            "bid_pressure": bid_pressure,
+
             "biggest_bid_price": biggest_bid_price,
             "biggest_bid_usdt": biggest_bid_usdt,
             "biggest_ask_price": biggest_ask_price,
             "biggest_ask_usdt": biggest_ask_usdt,
-            "reasons": reasons
+
+            "long_reasons": long_reasons,
+            "short_reasons": short_reasons
         }
 
     except Exception as e:
@@ -381,7 +448,9 @@ def get_1h_trend(symbol):
 
         return {
             "trend_up": ema9 > ema21,
+            "trend_down": ema9 < ema21,
             "ma200_above": price > ma200,
+            "ma200_below": price < ma200,
             "ema9": ema9,
             "ema21": ema21,
             "ma200": ma200
@@ -437,7 +506,16 @@ def get_15m_indicators(symbol):
         volumes = [float(x[7]) for x in candles]
 
         rsi_val = rsi(closes, 14)
-        bb_now = bollinger_width(closes, 20)
+
+        bb = bollinger_data(closes[:-1], 20)
+        bb_now = bb["width"] if bb else None
+        price_now = closes[-2]
+
+        bb_upper = bb["upper"] if bb else None
+        bb_lower = bb["lower"] if bb else None
+
+        bb_upper_break = bool(bb and price_now > bb_upper)
+        bb_lower_break = bool(bb and price_now < bb_lower)
 
         bb_values = []
         for i in range(20, len(closes) + 1):
@@ -456,8 +534,18 @@ def get_15m_indicators(symbol):
             "bb_width": bb_now,
             "bb_avg": bb_avg,
             "bb_tight": bb_now is not None and bb_avg is not None and bb_now < bb_avg,
+
+            "bb_upper": bb_upper,
+            "bb_lower": bb_lower,
+            "bb_upper_break": bb_upper_break,
+            "bb_lower_break": bb_lower_break,
+
             "macd_bull": macd_line is not None and macd_signal is not None and macd_line > macd_signal,
+            "macd_bear": macd_line is not None and macd_signal is not None and macd_line < macd_signal,
+
             "obv_bull": obv_now is not None and obv_avg is not None and obv_now > obv_avg,
+            "obv_bear": obv_now is not None and obv_avg is not None and obv_now < obv_avg,
+
             "fib": fib
         }
 
@@ -521,7 +609,7 @@ def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, o
             sweep_score += 1
             reasons.append("OI şişmemiş / reset ihtimali")
 
-        if orderbook and orderbook["confirm"]:
+        if orderbook and orderbook["long_confirm"]:
             sweep_score += 3
             reasons.append("order book alış tarafı destekli")
 
@@ -545,12 +633,79 @@ def detect_liquidity_sweep(symbol, candles, stats, quote_volume, volume_ratio, o
             "recovery": recovery,
             "lower_wick": lower_wick,
             "body_ratio": body_ratio,
-            "bookmap_confirm": bool(orderbook and orderbook["confirm"]),
+            "bookmap_confirm": bool(orderbook and orderbook["long_confirm"]),
             "reasons": reasons
         }
 
     except Exception as e:
         print("Sweep hata:", symbol, e, flush=True)
+        return None
+
+
+def detect_bb_short(symbol, stats, quote_volume, volume_ratio, oi_ratio, ind15, orderbook):
+    try:
+        if not ind15:
+            return None
+
+        score = 0
+        reasons = []
+
+        upper_wick = stats["upper_wick"]
+        body_ratio = stats["body_ratio"]
+
+        bb_upper_break = ind15.get("bb_upper_break", False)
+        rsi_val = ind15.get("rsi")
+
+        if bb_upper_break:
+            score += 2
+            reasons.append("15m BB üst bant dışı")
+
+        if rsi_val is not None and rsi_val >= SHORT_MIN_RSI:
+            score += 2
+            reasons.append("RSI aşırı şişmiş")
+
+        if upper_wick >= SHORT_MIN_UPPER_WICK:
+            score += 2
+            reasons.append("üst fitil güçlü rejection")
+
+        if volume_ratio >= SHORT_MIN_VOLUME_RATIO:
+            score += 1
+            reasons.append("hacim spike var")
+
+        if oi_ratio >= SHORT_MIN_OI_RATIO:
+            score += 1
+            reasons.append("OI artıyor")
+
+        if orderbook and orderbook.get("short_confirm"):
+            score += 2
+            reasons.append("order book satış tarafı destekli")
+
+        valid = (
+            score >= SHORT_MIN_SCORE
+            and bb_upper_break
+            and rsi_val is not None
+            and rsi_val >= SHORT_MIN_RSI
+            and upper_wick >= SHORT_MIN_UPPER_WICK
+        )
+
+        if not valid:
+            return None
+
+        return {
+            "mode": "BB_SHORT_PREP",
+            "score": score,
+            "upper_wick": upper_wick,
+            "body_ratio": body_ratio,
+            "rsi": rsi_val,
+            "bb_upper": ind15.get("bb_upper"),
+            "bb_lower": ind15.get("bb_lower"),
+            "bb_width": ind15.get("bb_width"),
+            "bookmap_confirm": bool(orderbook and orderbook.get("short_confirm")),
+            "reasons": reasons
+        }
+
+    except Exception as e:
+        print("BB Short hata:", symbol, e, flush=True)
         return None
 
 
@@ -612,7 +767,7 @@ def make_trade_plan(result, mode):
 def classify_signal(price, resistance, volume_ratio, oi_ratio, upper_wick, body_ratio, five, orderbook):
     distance = (price - resistance) / resistance
 
-    ob_confirm = orderbook and orderbook.get("confirm")
+    ob_confirm = orderbook and orderbook.get("long_confirm")
 
     if distance > FOMO_DISTANCE:
         return "FOMO"
@@ -684,6 +839,48 @@ def analyze(symbol):
 
         orderbook = get_order_book_signal(symbol, c)
 
+        trend = get_1h_trend(symbol)
+        ind15 = get_15m_indicators(symbol)
+
+        if not ind15:
+            return None
+
+        bb_short = detect_bb_short(
+            symbol,
+            stats,
+            quote_volume,
+            volume_ratio,
+            oi_ratio,
+            ind15,
+            orderbook
+        )
+
+        if bb_short:
+            now = time.time()
+            key = symbol + "_BB_SHORT_PREP"
+
+            if key in sent_short and now - sent_short[key] < COOLDOWN_SHORT:
+                return None
+
+            sent_short[key] = now
+
+            return {
+                "symbol": symbol,
+                "price": c,
+                "mode": "BB_SHORT_PREP_BOOKMAP" if bb_short["bookmap_confirm"] else "BB_SHORT_PREP",
+                "score": bb_short["score"],
+                "quote_volume": quote_volume,
+                "volume_ratio": volume_ratio,
+                "oi_ratio": oi_ratio,
+                "price_change_1m": price_change_1m,
+                "price_change_3m": price_change_3m,
+                "body_ratio": body_ratio,
+                "upper_wick": upper_wick,
+                "lower_wick": lower_wick,
+                "bb_short": bb_short,
+                "orderbook": orderbook
+            }
+
         sweep = detect_liquidity_sweep(
             symbol,
             candles,
@@ -720,10 +917,7 @@ def analyze(symbol):
                 "orderbook": orderbook
             }
 
-        trend = get_1h_trend(symbol)
-        ind15 = get_15m_indicators(symbol)
-
-        if not trend or not ind15 or not ind15["fib"]:
+        if not trend or not ind15.get("fib"):
             return None
 
         fib = ind15["fib"]
@@ -793,7 +987,7 @@ def analyze(symbol):
             score += 1
             reasons.append("15m MACD yukarı")
 
-        if orderbook and orderbook["confirm"]:
+        if orderbook and orderbook["long_confirm"]:
             score += 2
             reasons.append("order book alış tarafı destekli")
 
@@ -832,7 +1026,7 @@ def analyze(symbol):
                 "VOL:", round(volume_ratio, 2),
                 "OI:", round(oi_ratio, 4),
                 "LW:", round(lower_wick, 2),
-                "OB:", orderbook["score"] if orderbook else "YOK",
+                "OB:", orderbook["long_score"] if orderbook else "YOK",
                 "OBV:", ind15["obv_bull"],
                 "MACD:", ind15["macd_bull"],
                 flush=True
@@ -908,12 +1102,17 @@ def format_orderbook(orderbook):
 
     return f"""
 Bid/Ask Oranı: {orderbook['bid_ask_ratio']:.2f}x
+Ask/Bid Oranı: {orderbook['ask_bid_ratio']:.2f}x
+
 Bid Likidite: {int(orderbook['bid_liq'])} USDT
 Ask Likidite: {int(orderbook['ask_liq'])} USDT
 Spread: %{orderbook['spread_pct']:.4f}
 
 Alış Duvarı: {'GÜÇLÜ ✅' if orderbook['strong_bid_wall'] else 'VAR ✅' if orderbook['bid_wall'] else 'ZAYIF ❌'}
+Satış Duvarı: {'GÜÇLÜ ⚠️' if orderbook['strong_ask_wall'] else 'VAR ⚠️' if orderbook['ask_wall'] else 'ZAYIF ✅'}
+
 Satış Baskısı: {'VAR ⚠️' if orderbook['ask_pressure'] else 'ZAYIF ✅'}
+Alış Baskısı: {'VAR ✅' if orderbook['bid_pressure'] else 'ZAYIF ❌'}
 
 En Büyük Bid:
 {orderbook['biggest_bid_price']:.6f} / {int(orderbook['biggest_bid_usdt'])} USDT
@@ -921,13 +1120,75 @@ En Büyük Bid:
 En Büyük Ask:
 {orderbook['biggest_ask_price']:.6f} / {int(orderbook['biggest_ask_usdt'])} USDT
 
-Bookmap Onay: {'VAR ✅' if orderbook['confirm'] else 'YOK ❌'}
-Sebep: {", ".join(orderbook['reasons']) if orderbook['reasons'] else 'Nötr'}
+Long Bookmap Onay: {'VAR ✅' if orderbook['long_confirm'] else 'YOK ❌'}
+Short Bookmap Onay: {'VAR ⚠️' if orderbook['short_confirm'] else 'YOK ✅'}
+
+Long Sebep: {", ".join(orderbook['long_reasons']) if orderbook['long_reasons'] else 'Nötr'}
+Short Sebep: {", ".join(orderbook['short_reasons']) if orderbook['short_reasons'] else 'Nötr'}
 """.strip()
 
 
 def format_signal(result):
     mode = result["mode"]
+
+    if mode in ["BB_SHORT_PREP", "BB_SHORT_PREP_BOOKMAP"]:
+        short = result["bb_short"]
+        orderbook = result.get("orderbook")
+
+        entry_low = result["price"] * 0.997
+        entry_high = result["price"] * 1.003
+        stop = result["price"] * 1.025
+
+        tp1 = result["price"] * 0.970
+        tp2 = result["price"] * 0.940
+        tp3 = result["price"] * 0.900
+
+        title = "🔴 BINANCE FUTURES BB SHORT PREP + BOOKMAP ONAY" if mode == "BB_SHORT_PREP_BOOKMAP" else "🔴 BINANCE FUTURES BB SHORT PREP"
+
+        return f"""
+{title}
+
+Coin: {result['symbol'].replace('USDT', '/USDT')}
+Fiyat: {result['price']:.6f}
+
+Short Skoru: {short['score']}/10
+
+15m BB Üst Bant: {short['bb_upper']:.6f}
+15m BB Width: {short['bb_width']:.4f}
+15m RSI: {short['rsi']:.2f}
+
+1dk Değişim: %{result['price_change_1m']:.2f}
+3dk Değişim: %{result['price_change_3m']:.2f}
+
+1dk Futures Hacim: {int(result['quote_volume'])} USDT
+Hacim Artışı: {result['volume_ratio']:.2f}x
+OI Artışı: {result['oi_ratio']:.4f}x
+
+Mum Gücü: {result['body_ratio']:.2f}
+Üst Fitil: {result['upper_wick']:.2f}
+Alt Fitil: {result['lower_wick']:.2f}
+
+📘 ORDER BOOK / BOOKMAP:
+{format_orderbook(orderbook)}
+
+📌 SHORT TAKİP BÖLGESİ:
+{entry_low:.6f} - {entry_high:.6f}
+
+🛑 Stop:
+{stop:.6f} üstü 5m kapanış
+
+🎯 TP:
+TP1: {tp1:.6f}
+TP2: {tp2:.6f}
+TP3: {tp3:.6f}
+
+📌 Sebep:
+{", ".join(short['reasons'])}
+
+📍 Karar:
+BB üst bant dışı + RSI şişme + üst fitil rejection var.
+Direkt short değil; 5m kırmızı kapanış, bid zayıflaması veya ask baskısı bekle.
+""".strip()
 
     if mode in ["LIQUIDITY_SWEEP", "LIQUIDITY_SWEEP_BOOKMAP"]:
         sweep = result["sweep"]
@@ -988,7 +1249,7 @@ TP3: {tp3:.6f}
 
 📍 Karar:
 Likidite süpürmesi algılandı.
-Bookmap onayı varsa küçük pozisyon daha mantıklı.
+Bookmap long onayı varsa küçük pozisyon daha mantıklı.
 Bookmap onayı yoksa sadece takip.
 """.strip()
 
@@ -1199,7 +1460,7 @@ Alt Fitil: {result['lower_wick']:.2f}
 
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES HYBRID SMART MONEY BOT başladı: BREAKOUT + RETEST + MOMENTUM + SWEEP + ORDER BOOK")
+    send_telegram("🚀 BINANCE FUTURES HYBRID SMART MONEY BOT başladı: LONG + SWEEP + ORDER BOOK + BB SHORT")
     print("BINANCE FUTURES HYBRID SMART MONEY BOT ÇALIŞTI", flush=True)
 
     while True:
@@ -1239,7 +1500,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "Binance Futures Hybrid Smart Money Scanner Aktif", 200
+    return "Binance Futures Hybrid Smart Money Scanner Aktif: Long + Sweep + Order Book + BB Short", 200
 
 
 if __name__ == "__main__":
