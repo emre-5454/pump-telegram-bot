@@ -31,7 +31,7 @@ WATCHLIST_MIN_SCORE = 9
 PREP_NOTIFY_MIN_SCORE = 999
 
 MIN_CONFIDENCE = 65
-RECOVERY_MIN_CONFIDENCE = 62
+RECOVERY_MIN_CONFIDENCE = 58
 SWEEP_MIN_CONFIDENCE = 75
 
 MAX_RISK_PCT = 4.0
@@ -745,7 +745,7 @@ def check_signal(symbol, data):
                 and five
                 and five["breakout"]
                 and futures["volume_ratio"] >= 2.5
-                and futures["change_3m"] >= 0.30
+                and futures["change_3m"] >= 0.18
                 and futures["upper_wick"] <= 0.55
             ):
                 mode = "SAFE_LONG"
