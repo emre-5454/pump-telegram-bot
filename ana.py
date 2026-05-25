@@ -27,29 +27,29 @@ WATCHLIST_EXPIRE = 60 * 60
 
 SEND_PREP_MESSAGES = False
 
-WATCHLIST_MIN_SCORE = 9
-PREP_NOTIFY_MIN_SCORE = 999
-
-MIN_CONFIDENCE = 62
-RECOVERY_MIN_CONFIDENCE = 58
+WATCHLIST_MIN_SCORE = 8
+MIN_CONFIDENCE = 58
+RECOVERY_MIN_CONFIDENCE = 55
 SWEEP_MIN_CONFIDENCE = 75
+WHALE_MIN_CONFIDENCE = 55
 
 MAX_RISK_PCT = 4.0
 
 COOLDOWN_SIGNAL = 4 * 60 * 60
 COOLDOWN_RECOVERY = 3 * 60 * 60
 COOLDOWN_SWEEP = 4 * 60 * 60
+COOLDOWN_WHALE = 3 * 60 * 60
 
 sent_signal = {}
 sent_recovery = {}
 sent_sweep = {}
+sent_whale = {}
 watchlist = {}
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Telegram token/chat id eksik", flush=True)
         return
-
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -129,15 +129,12 @@ def indicators(df):
 def fetch_df(exchange, symbol, timeframe, limit):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-
         if not ohlcv or len(ohlcv) < 30:
             return None
-
         return pd.DataFrame(
             ohlcv,
             columns=["time", "open", "high", "low", "close", "volume"]
         )
-
     except Exception as e:
         print("Fetch hata:", symbol, timeframe, e, flush=True)
         return None
@@ -145,7 +142,6 @@ def fetch_df(exchange, symbol, timeframe, limit):
 def build_symbols():
     try:
         markets = spot_exchange.load_markets()
-
         symbols = [
             s for s in markets
             if s.endswith("/USDT")
@@ -197,7 +193,6 @@ def fib_targets(df, lookback=60):
 
 def spot_engine(symbol):
     df15 = fetch_df(spot_exchange, symbol, "15m", LIMIT_15M)
-
     if df15 is None or len(df15) < 210:
         return None
 
@@ -226,50 +221,39 @@ def spot_engine(symbol):
     if ema_trend:
         score += 2
         reasons.append("EMA trend yukarı")
-
     if ma200_above:
         score += 1
         reasons.append("MA200 üstü")
-
     if bb_squeeze:
         score += 1
         reasons.append("BB squeeze")
-
-    if volume_ratio >= 1.8:
+    if volume_ratio >= 1.5:
         score += 2
-        reasons.append("Spot hacim hazırlık")
-
+        reasons.append("Spot hacim girişi")
     if volume_ratio >= 2.5:
         score += 1
         reasons.append("Spot hacim güçlü")
-
-    if usdt_volume >= 25000:
+    if usdt_volume >= 10000:
         score += 1
         reasons.append("USDT hacim yeterli")
-
-    if 48 <= last.rsi <= 72:
+    if 42 <= last.rsi <= 72:
         score += 2
         reasons.append("RSI uygun")
-
-    if last.roc > 0.5:
+    if last.roc > 0:
         score += 1
-        reasons.append("ROC pozitif")
-
+        reasons.append("ROC pozitife dönüyor")
     if obv_bull:
         score += 2
         reasons.append("OBV toplama")
-
     if macd_bull:
         score += 1
         reasons.append("MACD yukarı")
-
-    if last.body_ratio >= 0.35:
+    if last.body_ratio >= 0.30:
         score += 1
-        reasons.append("Mum gövdesi güçlü")
-
-    if last.upper_wick <= 0.45:
+        reasons.append("Mum gövdesi yeterli")
+    if last.upper_wick <= 0.55:
         score += 1
-        reasons.append("Üst fitil sağlıklı")
+        reasons.append("Üst fitil kabul edilebilir")
 
     fib = fib_targets(df15)
 
@@ -299,7 +283,6 @@ def futures_engine(symbol):
         return None
 
     df1 = fetch_df(future_exchange, symbol, "1m", LIMIT_1M)
-
     if df1 is None or len(df1) < 30:
         return None
 
@@ -321,34 +304,27 @@ def futures_engine(symbol):
     score = 0
     reasons = []
 
-    if volume_ratio >= 2.5:
+    if volume_ratio >= 1.8:
         score += 2
         reasons.append("Futures hacim artışı")
-
-    if volume_ratio >= 4.0:
+    if volume_ratio >= 3.5:
         score += 2
         reasons.append("Futures hacim patlaması")
-
-    if usdt_volume >= 6000:
+    if usdt_volume >= 4000:
         score += 1
         reasons.append("Futures USDT hacim yeterli")
-
-    if change_1m >= 0.15:
+    if change_1m >= 0.10:
         score += 1
         reasons.append("1m momentum başladı")
-
-    if change_3m >= 0.30:
+    if change_3m >= 0.12:
         score += 1
         reasons.append("3m momentum var")
-
-    if last.body_ratio >= 0.30:
+    if last.body_ratio >= 0.25:
         score += 1
         reasons.append("Futures mum gövdesi yeterli")
-
-    if last.upper_wick <= 0.55:
+    if last.upper_wick <= 0.60:
         score += 1
         reasons.append("Üst fitil kabul edilebilir")
-
     if last.close > last.open:
         score += 1
         reasons.append("Yeşil futures mum")
@@ -368,7 +344,6 @@ def futures_engine(symbol):
 
 def trend_1h(symbol):
     df = fetch_df(spot_exchange, symbol, "1h", LIMIT_1H)
-
     if df is None or len(df) < 210:
         return None
 
@@ -390,7 +365,6 @@ def trend_1h(symbol):
 
 def five_confirm(symbol, resistance):
     df = fetch_df(spot_exchange, symbol, "5m", LIMIT_5M)
-
     if df is None or len(df) < 30:
         return None
 
@@ -401,9 +375,8 @@ def five_confirm(symbol, resistance):
         return None
 
     last = df.iloc[-1]
-
     breakout = last.close > resistance
-    strong = breakout and last.body_ratio >= 0.40 and last.upper_wick <= 0.45
+    strong = breakout and last.body_ratio >= 0.35 and last.upper_wick <= 0.55
 
     return {
         "close": last.close,
@@ -413,38 +386,83 @@ def five_confirm(symbol, resistance):
         "upper_wick": last.upper_wick
     }
 
+def whale_entry_mode(spot, futures):
+    if not spot:
+        return False, 0
+
+    score = 0
+    reasons = []
+
+    if spot["volume_ratio"] >= 1.5:
+        score += 2
+        reasons.append("Spot hacim girişi var")
+
+    if spot["usdt_volume"] >= 10000:
+        score += 1
+        reasons.append("Spot USDT hacim yeterli")
+
+    if spot["obv_bull"]:
+        score += 2
+        reasons.append("OBV alttan toparlıyor")
+
+    if spot["macd_bull"]:
+        score += 1
+        reasons.append("MACD yukarı dönüyor")
+
+    if 38 <= spot["rsi"] <= 68:
+        score += 1
+        reasons.append("RSI dipten çıkış bölgesi")
+
+    if spot["lower_wick"] >= 0.25:
+        score += 1
+        reasons.append("Alt fitil / dip tepkisi var")
+
+    if spot["roc"] > -0.5:
+        score += 1
+        reasons.append("ROC toparlıyor")
+
+    if futures:
+        if futures["volume_ratio"] >= 1.8:
+            score += 2
+            reasons.append("Futures hacim destekliyor")
+
+        if futures["change_3m"] >= 0.12:
+            score += 1
+            reasons.append("Futures 3m hareket var")
+
+    valid = (
+        score >= 7
+        and spot["volume_ratio"] >= 1.5
+        and spot["usdt_volume"] >= 10000
+        and spot["obv_bull"]
+    )
+
+    return valid, score, reasons
+
 def recovery_mode(spot, futures):
     if not spot:
         return False, 0
 
     score = 0
 
-    if spot["lower_wick"] >= 0.35:
+    if spot["lower_wick"] >= 0.30:
         score += 2
-
-    if spot["volume_ratio"] >= 2.0:
+    if spot["volume_ratio"] >= 1.8:
         score += 2
-
     if spot["obv_bull"]:
         score += 2
-
     if spot["macd_bull"]:
         score += 1
-
     if 42 <= spot["rsi"] <= 72:
         score += 1
-
     if spot["roc"] > 0:
         score += 1
-
     if futures:
-        if futures["volume_ratio"] >= 2.5:
+        if futures["volume_ratio"] >= 1.8:
             score += 2
-
-        if futures["change_3m"] >= 0.30:
+        if futures["change_3m"] >= 0.12:
             score += 1
-
-        if futures["upper_wick"] <= 0.55:
+        if futures["upper_wick"] <= 0.60:
             score += 1
 
     return score >= 7, score
@@ -459,7 +477,6 @@ def sweep_mode(symbol, spot):
         return False, 0, None
 
     df1 = fetch_df(future_exchange, symbol, "1m", LIMIT_1M)
-
     if df1 is None or len(df1) < 30:
         return False, 0, None
 
@@ -481,28 +498,29 @@ def sweep_mode(symbol, spot):
     if futures["volume_ratio"] >= 4:
         score += 2
         reasons.append("Futures hacim patlaması")
-
     if futures["lower_wick"] >= 0.45:
         score += 2
         reasons.append("Alt fitil güçlü")
-
     if swept:
         score += 2
         reasons.append("Lokal destek süpürüldü")
-
     if reclaimed:
         score += 2
         reasons.append("Destek geri alındı")
-
     if recovery >= 0.40:
         score += 2
         reasons.append("Recovery güçlü")
-
     if spot["obv_bull"]:
         score += 2
         reasons.append("Spot OBV destekliyor")
 
-    valid = score >= 10 and swept and reclaimed and futures["volume_ratio"] >= 4 and futures["lower_wick"] >= 0.45
+    valid = (
+        score >= 10
+        and swept
+        and reclaimed
+        and futures["volume_ratio"] >= 4
+        and futures["lower_wick"] >= 0.45
+    )
 
     data = {
         "score": score,
@@ -518,18 +536,14 @@ def sweep_mode(symbol, spot):
 def fake_breakout_risk(spot, futures, five):
     risk = 0
 
-    if futures and futures["upper_wick"] > 0.55:
+    if futures and futures["upper_wick"] > 0.60:
         risk += 30
-
-    if futures and futures["body_ratio"] < 0.30:
+    if futures and futures["body_ratio"] < 0.25:
         risk += 20
-
-    if futures and futures["change_3m"] < 0.30:
+    if futures and futures["change_3m"] < 0.12:
         risk += 20
-
     if spot and not spot["obv_bull"]:
         risk += 20
-
     if five and not five["strong"]:
         risk += 10
 
@@ -544,51 +558,46 @@ def fake_breakout_risk(spot, futures, five):
 
     return risk, label
 
-def whale_score(spot, futures):
+def whale_score_calc(spot, futures, whale_entry=False):
     score = 0
 
-    if spot and spot["volume_ratio"] >= 2:
+    if spot and spot["volume_ratio"] >= 1.5:
         score += 20
-
-    if spot and spot["obv_bull"]:
-        score += 20
-
-    if spot and spot["body_ratio"] >= 0.35:
+    if spot and spot["volume_ratio"] >= 2.5:
         score += 10
-
-    if futures and futures["volume_ratio"] >= 2.5:
-        score += 20
-
-    if futures and futures["usdt_volume"] >= 8000:
+    if spot and spot["obv_bull"]:
+        score += 25
+    if spot and spot["body_ratio"] >= 0.30:
+        score += 10
+    if futures and futures["volume_ratio"] >= 1.8:
         score += 15
-
-    if futures and futures["upper_wick"] <= 0.45:
-        score += 15
+    if futures and futures["usdt_volume"] >= 6000:
+        score += 10
+    if futures and futures["upper_wick"] <= 0.55:
+        score += 10
+    if whale_entry:
+        score += 10
 
     return min(score, 100)
 
-def confidence_score(spot, futures, trend, five, fake_risk, whale, recovery=False, sweep=False):
+def confidence_score(spot, futures, trend, five, fake_risk, whale, recovery=False, sweep=False, whale_entry=False):
     score = 0
 
     if spot:
         score += min(spot["score"] * 3, 40)
-
     if futures:
         score += min(futures["score"] * 2, 20)
-
     if trend and trend["trend_up"]:
-        score += 8
-
+        score += 6
     if trend and trend["ma200_above"]:
-        score += 8
-
+        score += 6
     if five and five["strong"]:
-        score += 8
-
+        score += 6
     if recovery:
         score += 8
-
     if sweep:
+        score += 10
+    if whale_entry:
         score += 10
 
     score += min(whale * 0.08, 8)
@@ -610,26 +619,24 @@ def trade_plan(price, fib, mode):
     if mode == "SAFE_LONG":
         entry = resistance
         stop = resistance * 0.985
-
     elif mode == "RECOVERY_LONG":
         entry = price
         stop = max(support * 0.995, price * 0.965)
-
     elif mode == "SWEEP_LONG":
         entry = price
         stop = max(support * 0.995, price * 0.965)
-
+    elif mode == "WHALE_ENTRY":
+        entry = price
+        stop = max(support * 0.995, price * 0.970)
     else:
         entry = price
         stop = max(support * 0.995, price * 0.970)
 
     risk = entry - stop
-
     if risk <= 0:
         return None
 
     risk_pct = (risk / entry) * 100
-
     if risk_pct > MAX_RISK_PCT:
         return None
 
@@ -662,24 +669,21 @@ def clean_watchlist():
 def analyze_symbol(symbol):
     try:
         spot = spot_engine(symbol)
-
         if not spot:
             return
 
         trend = trend_1h(symbol)
-
         if not trend:
             return
 
         fib = spot.get("fib")
-
         if not fib:
             return
 
         prep_valid = (
             spot["score"] >= WATCHLIST_MIN_SCORE
-            and spot["usdt_volume"] >= 25000
-            and spot["volume_ratio"] >= 1.8
+            and spot["usdt_volume"] >= 10000
+            and spot["volume_ratio"] >= 1.5
             and spot["obv_bull"]
         )
 
@@ -700,21 +704,6 @@ def analyze_symbol(symbol):
             "fib": fib
         }
 
-        if SEND_PREP_MESSAGES and spot["score"] >= PREP_NOTIFY_MIN_SCORE:
-            msg = f"""
-🟡 🚄 MEXC HAZIRLIK
-
-Coin: {symbol}
-Fiyat: {spot['price']:.8f}
-Skor: {spot['score']}/16
-Hacim: {spot['volume_ratio']:.2f}x
-RSI: {spot['rsi']:.2f}
-OBV: {'TOPLAMA ✅' if spot['obv_bull'] else 'ZAYIF ❌'}
-
-Coin watchlist'e alındı.
-""".strip()
-            send_telegram(msg)
-
     except Exception as e:
         print("Analyze hata:", symbol, e, flush=True)
 
@@ -725,13 +714,14 @@ def check_signal(symbol, data):
         fib = data["fib"]
 
         futures = None
-        if spot["score"] >= 9:
+        if spot["score"] >= 8:
             futures = futures_engine(symbol)
 
         five = five_confirm(symbol, fib["high"])
 
         sweep_valid, sweep_score, sweep_data = sweep_mode(symbol, spot)
         recovery_valid, recovery_score = recovery_mode(spot, futures)
+        whale_valid, whale_entry_score, whale_reasons = whale_entry_mode(spot, futures)
 
         mode = None
 
@@ -739,14 +729,16 @@ def check_signal(symbol, data):
             mode = "SWEEP_LONG"
         elif recovery_valid:
             mode = "RECOVERY_LONG"
+        elif whale_valid:
+            mode = "WHALE_ENTRY"
         else:
             if (
                 futures
                 and five
                 and five["breakout"]
-                and futures["volume_ratio"] >= 2.5
-                and futures["change_3m"] >= 0.18
-                and futures["upper_wick"] <= 0.55
+                and futures["volume_ratio"] >= 1.8
+                and futures["change_3m"] >= 0.12
+                and futures["upper_wick"] <= 0.60
             ):
                 mode = "SAFE_LONG"
 
@@ -754,7 +746,7 @@ def check_signal(symbol, data):
             return
 
         fake_risk, fake_label = fake_breakout_risk(spot, futures, five)
-        whale = whale_score(spot, futures)
+        whale = whale_score_calc(spot, futures, whale_entry=(mode == "WHALE_ENTRY"))
 
         confidence = confidence_score(
             spot,
@@ -764,7 +756,8 @@ def check_signal(symbol, data):
             fake_risk,
             whale,
             recovery=(mode == "RECOVERY_LONG"),
-            sweep=(mode == "SWEEP_LONG")
+            sweep=(mode == "SWEEP_LONG"),
+            whale_entry=(mode == "WHALE_ENTRY")
         )
 
         required = MIN_CONFIDENCE
@@ -775,11 +768,14 @@ def check_signal(symbol, data):
             required = RECOVERY_MIN_CONFIDENCE
             cache = sent_recovery
             cooldown = COOLDOWN_RECOVERY
-
-        if mode == "SWEEP_LONG":
+        elif mode == "SWEEP_LONG":
             required = SWEEP_MIN_CONFIDENCE
             cache = sent_sweep
             cooldown = COOLDOWN_SWEEP
+        elif mode == "WHALE_ENTRY":
+            required = WHALE_MIN_CONFIDENCE
+            cache = sent_whale
+            cooldown = COOLDOWN_WHALE
 
         if confidence < required:
             return
@@ -801,7 +797,8 @@ def check_signal(symbol, data):
         title_map = {
             "SAFE_LONG": "🟢 SAFE LONG",
             "RECOVERY_LONG": "🚀 RECOVERY LONG",
-            "SWEEP_LONG": "🧹 STRONG LIQUIDITY SWEEP"
+            "SWEEP_LONG": "🧹 STRONG LIQUIDITY SWEEP",
+            "WHALE_ENTRY": "🐋 WHALE ENTRY"
         }
 
         futures_text = "Futures veri yok"
@@ -821,6 +818,13 @@ Alt Fitil: {futures['lower_wick']:.2f}
 5m Kapanış: {five['close']:.8f}
 Breakout: {'EVET ✅' if five['breakout'] else 'HAYIR ❌'}
 Güçlü: {'EVET ✅' if five['strong'] else 'HAYIR ❌'}
+""".strip()
+
+        whale_text = ""
+        if mode == "WHALE_ENTRY":
+            whale_text = f"""
+🐋 Whale Entry Sebebi:
+{", ".join(whale_reasons)}
 """.strip()
 
         msg = f"""
@@ -875,6 +879,8 @@ FUTURES:
 5M:
 {five_text}
 
+{whale_text}
+
 Trend:
 {'YUKARI ✅' if trend['trend_up'] else 'ZAYIF ❌'}
 
@@ -882,8 +888,8 @@ MA200:
 {'ÜSTÜ ✅' if trend['ma200_above'] else 'ALTI ❌'}
 
 📍 Karar:
-Hazırlık mesajı kapalıdır.
-Bu mesaj yalnızca onay oluştuğu için gönderildi.
+Bu otomatik işlem değildir.
+Balina/Recovery/Onay yapısı oluştuğu için plan verildi.
 Riskini sabit tut, FOMO yapma.
 """.strip()
 
@@ -908,7 +914,7 @@ def scan_watchlist():
         time.sleep(0.40)
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. Hazırlık mesajları kapalı, sadece AI onay sinyalleri gönderilecek.")
+    send_telegram(f"✅ {BOT_NAME} başladı. Hazırlık kapalı, Whale Entry aktif.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
