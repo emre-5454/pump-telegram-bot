@@ -1,6 +1,6 @@
 # =========================================================
 # BINANCE FUTURES RENDER LONG + SHORT BOT
-# SIKI FILTRELI SURUM
+# BOOKMAP-LITE + OI FILTER
 # =========================================================
 
 from flask import Flask
@@ -20,22 +20,30 @@ MAX_SYMBOLS = 80
 COOLDOWN_PUMP = 8 * 60 * 60
 COOLDOWN_SHORT = 8 * 60 * 60
 
-PUMP_MIN_SCORE = 16
-SHORT_MIN_SCORE = 16
+PUMP_MIN_SCORE = 17
+SHORT_MIN_SCORE = 17
 
 PUMP_MIN_VOLUME_USDT = 250000
 SHORT_MIN_VOLUME_USDT = 250000
 
-PUMP_MIN_VOLUME_RATIO = 5.0
+PUMP_MIN_VOLUME_RATIO = 4.0
 SHORT_MIN_VOLUME_RATIO = 5.0
 
-PUMP_MIN_RSI = 78
+PUMP_MIN_RSI = 75
 SHORT_MIN_RSI = 84
 
-ORDER_BOOK_LIMIT = 50
+PUMP_MIN_OI_RATIO = 1.0000
+PUMP_STRONG_OI_RATIO = 1.0020
+SHORT_MIN_OI_RATIO = 1.0030
+
+ORDER_BOOK_LIMIT = 100
 ORDER_BOOK_RANGE_PCT = 0.015
 ORDER_BOOK_MIN_BID_ASK_RATIO = 1.35
+ORDER_BOOK_SHORT_RATIO = 0.65
 ORDER_BOOK_MAX_SPREAD_PCT = 0.10
+
+WALL_MULTIPLIER = 4.0
+WALL_NEAR_PCT = 0.80
 
 sent_pump = {}
 sent_short = {}
@@ -103,7 +111,6 @@ def macd(values):
         return None, None, None
 
     macd_line = ema(values, 12) - ema(values, 26)
-
     macd_series = []
 
     for i in range(35, len(values) + 1):
@@ -185,7 +192,6 @@ def get_symbols():
         pairs.append((symbol, volume))
 
     pairs.sort(key=lambda x: x[1], reverse=True)
-
     return [x[0] for x in pairs[:MAX_SYMBOLS]]
 
 
@@ -248,7 +254,7 @@ def candle_stats(candle):
     }
 
 
-def get_order_book_signal(symbol, price):
+def get_bookmap_lite(symbol, price):
     try:
         data = requests.get(
             "https://fapi.binance.com/fapi/v1/depth",
@@ -273,6 +279,9 @@ def get_order_book_signal(symbol, price):
         bid_liq = 0
         ask_liq = 0
 
+        bid_orders = []
+        ask_orders = []
+
         for bid in bids:
             p = float(bid[0])
             q = float(bid[1])
@@ -280,6 +289,7 @@ def get_order_book_signal(symbol, price):
 
             if low_range <= p <= best_bid:
                 bid_liq += usdt
+                bid_orders.append((p, usdt))
 
         for ask in asks:
             p = float(ask[0])
@@ -288,6 +298,7 @@ def get_order_book_signal(symbol, price):
 
             if best_ask <= p <= high_range:
                 ask_liq += usdt
+                ask_orders.append((p, usdt))
 
         bid_liq = max(bid_liq, 1)
         ask_liq = max(ask_liq, 1)
@@ -295,15 +306,82 @@ def get_order_book_signal(symbol, price):
         bid_ask_ratio = bid_liq / ask_liq
         spread_ok = spread_pct <= ORDER_BOOK_MAX_SPREAD_PCT
 
+        avg_bid_order = bid_liq / max(len(bid_orders), 1)
+        avg_ask_order = ask_liq / max(len(ask_orders), 1)
+
+        biggest_bid = max(bid_orders, key=lambda x: x[1]) if bid_orders else (0, 0)
+        biggest_ask = max(ask_orders, key=lambda x: x[1]) if ask_orders else (0, 0)
+
+        bid_wall = biggest_bid[1] >= avg_bid_order * WALL_MULTIPLIER
+        ask_wall = biggest_ask[1] >= avg_ask_order * WALL_MULTIPLIER
+
+        nearest_bid_wall_pct = None
+        nearest_ask_wall_pct = None
+
+        if bid_wall and biggest_bid[0] > 0:
+            nearest_bid_wall_pct = abs((price - biggest_bid[0]) / price) * 100
+
+        if ask_wall and biggest_ask[0] > 0:
+            nearest_ask_wall_pct = abs((biggest_ask[0] - price) / price) * 100
+
+        bid_wall_near = (
+            bid_wall and
+            nearest_bid_wall_pct is not None and
+            nearest_bid_wall_pct <= WALL_NEAR_PCT
+        )
+
+        ask_wall_near = (
+            ask_wall and
+            nearest_ask_wall_pct is not None and
+            nearest_ask_wall_pct <= WALL_NEAR_PCT
+        )
+
+        long_confirm = (
+            bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
+            and spread_ok
+        )
+
+        short_confirm = (
+            bid_ask_ratio <= ORDER_BOOK_SHORT_RATIO
+            and spread_ok
+        )
+
+        wall_direction = "NÖTR"
+
+        if long_confirm and bid_wall_near and not ask_wall_near:
+            wall_direction = "LONG"
+
+        elif short_confirm and ask_wall_near and not bid_wall_near:
+            wall_direction = "SHORT"
+
+        elif bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO:
+            wall_direction = "LONG BASKI"
+
+        elif bid_ask_ratio <= ORDER_BOOK_SHORT_RATIO:
+            wall_direction = "SHORT BASKI"
+
         return {
             "bid_ask_ratio": bid_ask_ratio,
             "spread_pct": spread_pct,
-            "long_confirm": bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO and spread_ok,
-            "short_confirm": bid_ask_ratio <= 0.65 and spread_ok
+            "bid_liq": bid_liq,
+            "ask_liq": ask_liq,
+            "bid_wall": bid_wall,
+            "ask_wall": ask_wall,
+            "bid_wall_price": biggest_bid[0],
+            "ask_wall_price": biggest_ask[0],
+            "bid_wall_usdt": biggest_bid[1],
+            "ask_wall_usdt": biggest_ask[1],
+            "nearest_bid_wall_pct": nearest_bid_wall_pct,
+            "nearest_ask_wall_pct": nearest_ask_wall_pct,
+            "bid_wall_near": bid_wall_near,
+            "ask_wall_near": ask_wall_near,
+            "long_confirm": long_confirm,
+            "short_confirm": short_confirm,
+            "wall_direction": wall_direction
         }
 
     except Exception as e:
-        print("Orderbook hata:", symbol, e, flush=True)
+        print("Bookmap-lite hata:", symbol, e, flush=True)
         return None
 
 
@@ -368,7 +446,7 @@ def analyze(symbol):
 
         oi_ratio = oi_now / prev_oi
 
-        orderbook = get_order_book_signal(symbol, c)
+        bookmap = get_bookmap_lite(symbol, c)
 
         recent_high = max(highs[-20:-2])
         recent_low = min(lows[-20:-2])
@@ -377,17 +455,12 @@ def analyze(symbol):
         breakdown = c < recent_low
 
         bb_upper_break = False
-        bb_lower_break = False
 
         if bb:
             bb_upper_break = c > bb["upper"]
-            bb_lower_break = c < bb["lower"]
 
         above_ma200 = ma200 is not None and c > ma200
-        below_ma200 = ma200 is not None and c < ma200
-
         ma_bull = ma20 is not None and ma50 is not None and ma20 > ma50
-        ma_bear = ma20 is not None and ma50 is not None and ma20 < ma50
 
         macd_positive = macd_hist is not None and macd_hist > 0
         macd_negative = macd_hist is not None and macd_hist < 0
@@ -395,68 +468,89 @@ def analyze(symbol):
         obv_positive = obv_value is not None and obv_avg is not None and obv_value > obv_avg
         obv_negative = obv_value is not None and obv_avg is not None and obv_value < obv_avg
 
+        pump_allowed = True
+
+        if oi_ratio < PUMP_MIN_OI_RATIO:
+            pump_allowed = False
+
+        if rsi_value is None or rsi_value < PUMP_MIN_RSI:
+            pump_allowed = False
+
+        if volume_ratio < PUMP_MIN_VOLUME_RATIO:
+            pump_allowed = False
+
         pump_score = 0
         pump_reasons = []
 
-        if quote_volume >= PUMP_MIN_VOLUME_USDT:
-            pump_score += 1
-            pump_reasons.append("yüksek hacim")
+        if pump_allowed:
 
-        if volume_ratio >= PUMP_MIN_VOLUME_RATIO:
-            pump_score += 3
-            pump_reasons.append("hacim patlaması")
+            if quote_volume >= PUMP_MIN_VOLUME_USDT:
+                pump_score += 1
+                pump_reasons.append("yüksek hacim")
 
-        if price_change_1m >= 0.30:
-            pump_score += 1
-            pump_reasons.append("1dk momentum")
+            if volume_ratio >= PUMP_MIN_VOLUME_RATIO:
+                pump_score += 3
+                pump_reasons.append("hacim patlaması")
 
-        if 0.80 <= price_change_3m <= 5.50:
-            pump_score += 2
-            pump_reasons.append("3dk güçlü momentum")
+            if price_change_1m >= 0.30:
+                pump_score += 1
+                pump_reasons.append("1dk momentum")
 
-        if rsi_value is not None and rsi_value >= PUMP_MIN_RSI:
-            pump_score += 2
-            pump_reasons.append("RSI güçlü")
+            if 0.80 <= price_change_3m <= 5.50:
+                pump_score += 2
+                pump_reasons.append("3dk güçlü momentum")
 
-        if bb_upper_break:
-            pump_score += 3
-            pump_reasons.append("BB üst bant kırılımı")
+            if rsi_value is not None and rsi_value >= PUMP_MIN_RSI:
+                pump_score += 2
+                pump_reasons.append("RSI 75+ güçlü")
 
-        if above_ma200:
-            pump_score += 3
-            pump_reasons.append("MA200 üstü")
+            if bb_upper_break:
+                pump_score += 3
+                pump_reasons.append("BB üst bant kırılımı")
 
-        if ma_bull:
-            pump_score += 1
-            pump_reasons.append("MA trend pozitif")
+            if above_ma200:
+                pump_score += 3
+                pump_reasons.append("MA200 üstü")
 
-        if breakout:
-            pump_score += 2
-            pump_reasons.append("direnç kırılımı")
+            if ma_bull:
+                pump_score += 1
+                pump_reasons.append("MA trend pozitif")
 
-        if macd_positive:
-            pump_score += 1
-            pump_reasons.append("MACD pozitif")
+            if breakout:
+                pump_score += 2
+                pump_reasons.append("direnç kırılımı")
 
-        if obv_positive:
-            pump_score += 2
-            pump_reasons.append("OBV para girişi")
+            if macd_positive:
+                pump_score += 1
+                pump_reasons.append("MACD pozitif")
 
-        if stats["body_ratio"] >= 0.55:
-            pump_score += 1
-            pump_reasons.append("güçlü mum")
+            if obv_positive:
+                pump_score += 2
+                pump_reasons.append("OBV para girişi")
 
-        if stats["upper_wick"] <= 0.25:
-            pump_score += 1
-            pump_reasons.append("üst fitil düşük")
+            if stats["body_ratio"] >= 0.55:
+                pump_score += 1
+                pump_reasons.append("güçlü mum")
 
-        if oi_ratio >= 1.002:
-            pump_score += 2
-            pump_reasons.append("OI artışı")
+            if stats["upper_wick"] <= 0.25:
+                pump_score += 1
+                pump_reasons.append("üst fitil düşük")
 
-        if orderbook and orderbook["long_confirm"]:
-            pump_score += 2
-            pump_reasons.append("orderbook long destek")
+            if oi_ratio >= PUMP_STRONG_OI_RATIO:
+                pump_score += 2
+                pump_reasons.append("OI artışı güçlü")
+
+            if bookmap and bookmap["long_confirm"]:
+                pump_score += 2
+                pump_reasons.append("bookmap-lite long baskı")
+
+            if bookmap and bookmap["bid_wall_near"]:
+                pump_score += 1
+                pump_reasons.append("yakın bid duvarı destek")
+
+            if bookmap and bookmap["ask_wall_near"]:
+                pump_score -= 2
+                pump_reasons.append("yakın ask duvarı risk")
 
         short_score = 0
         short_reasons = []
@@ -485,7 +579,7 @@ def analyze(symbol):
             short_score += 1
             short_reasons.append("mum gövdesi zayıf")
 
-        if oi_ratio >= 1.003:
+        if oi_ratio >= SHORT_MIN_OI_RATIO:
             short_score += 2
             short_reasons.append("OI şişiyor")
 
@@ -497,9 +591,17 @@ def analyze(symbol):
             short_score += 2
             short_reasons.append("OBV para çıkışı")
 
-        if orderbook and orderbook["short_confirm"]:
+        if bookmap and bookmap["short_confirm"]:
             short_score += 3
-            short_reasons.append("orderbook short baskı")
+            short_reasons.append("bookmap-lite short baskı")
+
+        if bookmap and bookmap["ask_wall_near"]:
+            short_score += 2
+            short_reasons.append("yakın ask duvarı satış")
+
+        if bookmap and bookmap["bid_wall_near"]:
+            short_score -= 2
+            short_reasons.append("yakın bid duvarı short riski")
 
         if price_change_1m < -0.20 and price_change_3m > 1.00:
             short_score += 2
@@ -511,6 +613,27 @@ def analyze(symbol):
 
         now = time.time()
 
+        base_result = {
+            "symbol": symbol,
+            "price": c,
+            "volume_ratio": volume_ratio,
+            "quote_volume": quote_volume,
+            "oi_ratio": oi_ratio,
+            "price_change_1m": price_change_1m,
+            "price_change_3m": price_change_3m,
+            "rsi": rsi_value,
+            "bb_width": bb["width"] if bb else None,
+            "ma200": ma200,
+            "macd_hist": macd_hist,
+            "body_ratio": stats["body_ratio"],
+            "upper_wick": stats["upper_wick"],
+            "bb_upper_break": bb_upper_break,
+            "above_ma200": above_ma200,
+            "breakout": breakout,
+            "breakdown": breakdown,
+            "bookmap": bookmap
+        }
+
         if short_score >= SHORT_MIN_SCORE:
             last_sent = sent_short.get(symbol)
 
@@ -518,29 +641,12 @@ def analyze(symbol):
                 return None
 
             sent_short[symbol] = now
-
-            return {
+            base_result.update({
                 "mode": "SHORT",
-                "symbol": symbol,
-                "price": c,
                 "score": short_score,
-                "volume_ratio": volume_ratio,
-                "quote_volume": quote_volume,
-                "oi_ratio": oi_ratio,
-                "price_change_1m": price_change_1m,
-                "price_change_3m": price_change_3m,
-                "rsi": rsi_value,
-                "bb_width": bb["width"] if bb else None,
-                "ma200": ma200,
-                "macd_hist": macd_hist,
-                "body_ratio": stats["body_ratio"],
-                "upper_wick": stats["upper_wick"],
-                "bb_upper_break": bb_upper_break,
-                "above_ma200": above_ma200,
-                "breakout": breakout,
-                "breakdown": breakdown,
                 "reasons": short_reasons
-            }
+            })
+            return base_result
 
         if pump_score >= PUMP_MIN_SCORE:
             last_sent = sent_pump.get(symbol)
@@ -549,29 +655,12 @@ def analyze(symbol):
                 return None
 
             sent_pump[symbol] = now
-
-            return {
+            base_result.update({
                 "mode": "PUMP",
-                "symbol": symbol,
-                "price": c,
                 "score": pump_score,
-                "volume_ratio": volume_ratio,
-                "quote_volume": quote_volume,
-                "oi_ratio": oi_ratio,
-                "price_change_1m": price_change_1m,
-                "price_change_3m": price_change_3m,
-                "rsi": rsi_value,
-                "bb_width": bb["width"] if bb else None,
-                "ma200": ma200,
-                "macd_hist": macd_hist,
-                "body_ratio": stats["body_ratio"],
-                "upper_wick": stats["upper_wick"],
-                "bb_upper_break": bb_upper_break,
-                "above_ma200": above_ma200,
-                "breakout": breakout,
-                "breakdown": breakdown,
                 "reasons": pump_reasons
-            }
+            })
+            return base_result
 
         return None
 
@@ -580,18 +669,40 @@ def analyze(symbol):
         return None
 
 
+def format_pct(value):
+    if value is None:
+        return "YOK"
+    return f"%{value:.2f}"
+
+
 def format_signal(result):
     if result["mode"] == "SHORT":
         title = "🔴 BINANCE FUTURES SHORT HAZIR"
         note = "Şişme + satış baskısı var. Direkt short değil; 1m/3m zayıflama ve retest bekle."
     else:
         title = "🚀 BINANCE FUTURES PUMP ONAY"
-        note = "Güçlü pump onayı var. Direkt FOMO değil; mümkünse retest bekle."
+        note = "OI düşmüyor + güçlü hacim + RSI 75+ + Bookmap-lite filtresinden geçti. Retest bekle."
 
     rsi_text = f"{result['rsi']:.2f}" if result["rsi"] is not None else "YOK"
     bb_text = f"{result['bb_width']:.4f}" if result["bb_width"] is not None else "YOK"
     ma200_text = f"{result['ma200']:.8f}" if result["ma200"] is not None else "YOK"
     macd_text = f"{result['macd_hist']:.8f}" if result["macd_hist"] is not None else "YOK"
+
+    bm = result.get("bookmap")
+
+    if bm:
+        bookmap_text = f"""
+Bookmap-lite:
+Bid/Ask: {bm['bid_ask_ratio']:.2f}x
+Spread: %{bm['spread_pct']:.4f}
+Bid Wall: {"VAR ✅" if bm["bid_wall"] else "YOK ❌"}
+Ask Wall: {"VAR ✅" if bm["ask_wall"] else "YOK ❌"}
+Yakın Bid Duvarı: {"VAR ✅" if bm["bid_wall_near"] else "YOK ❌"} {format_pct(bm["nearest_bid_wall_pct"])}
+Yakın Ask Duvarı: {"VAR ✅" if bm["ask_wall_near"] else "YOK ❌"} {format_pct(bm["nearest_ask_wall_pct"])}
+Likidite Yönü: {bm["wall_direction"]}
+""".strip()
+    else:
+        bookmap_text = "Bookmap-lite: YOK"
 
     return f"""
 {title}
@@ -599,7 +710,7 @@ def format_signal(result):
 Coin: {result['symbol']}
 Fiyat: {result['price']:.8f}
 
-Skor: {result['score']}/25
+Skor: {result['score']}/30
 
 1dk Değişim: %{result['price_change_1m']:.2f}
 3dk Değişim: %{result['price_change_3m']:.2f}
@@ -622,6 +733,8 @@ MA200 Üstü: {"VAR ✅" if result["above_ma200"] else "YOK ❌"}
 Direnç Kırılımı: {"VAR ✅" if result["breakout"] else "YOK ❌"}
 Destek Kırılımı: {"VAR ✅" if result["breakdown"] else "YOK ❌"}
 
+{bookmap_text}
+
 Sebep:
 {", ".join(result['reasons'])}
 
@@ -631,7 +744,7 @@ Not:
 
 
 def run_bot():
-    send_telegram("🚀 BINANCE FUTURES RENDER LONG + SHORT BOT AKTIF")
+    send_telegram("🚀 BINANCE FUTURES RENDER LONG + SHORT BOOKMAP-LITE BOT AKTIF")
 
     while True:
         try:
@@ -659,7 +772,7 @@ def run_bot():
                     flush=True
                 )
 
-                time.sleep(0.25)
+                time.sleep(0.30)
 
             print("Tarama bitti.", flush=True)
             time.sleep(SLEEP_SECONDS)
@@ -671,7 +784,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES RENDER LONG + SHORT BOT AKTIF", 200
+    return "BINANCE FUTURES RENDER LONG + SHORT BOOKMAP-LITE BOT AKTIF", 200
 
 
 if __name__ == "__main__":
@@ -682,7 +795,4 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 10000))
 
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    app.run(host="0.0.0.0", port=port)
