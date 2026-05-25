@@ -527,6 +527,10 @@ def analyze(symbol):
             (c - prev3_close) / prev3_close
         ) * 100
 
+        # Zayıf momentum filtresi
+if price_change_1m <= 0 and price_change_3m < 0.10:
+    return None
+
         old_volumes = [
             float(x[7]) for x in candles[-22:-2]
         ]
