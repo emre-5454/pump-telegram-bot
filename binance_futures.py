@@ -1,7 +1,7 @@
 # =========================================================
 # BINANCE FUTURES HYBRID SMART MONEY BOT
+# FINAL FULL VERSION
 # LONG + SWEEP + ORDER BOOK + BB SHORT
-# FINAL STABLE VERSION
 # =========================================================
 
 from flask import Flask
@@ -59,7 +59,7 @@ TRADE_MIN_BODY_RATIO = 0.50
 TRADE_MAX_UPPER_WICK = 0.30
 
 # =========================================================
-# SWEEP
+# SWEEP FILTERS
 # =========================================================
 
 SWEEP_MIN_SCORE = 8
@@ -71,7 +71,7 @@ SWEEP_RECOVERY_LEVEL = 0.35
 SWEEP_MAX_OI_RATIO = 1.0015
 
 # =========================================================
-# BB SHORT
+# BB SHORT FILTERS
 # =========================================================
 
 SHORT_MIN_SCORE = 7
@@ -122,6 +122,7 @@ def send_telegram(msg):
         return
 
     try:
+
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={
@@ -132,6 +133,7 @@ def send_telegram(msg):
         )
 
     except Exception as e:
+
         print("Telegram hata:", e, flush=True)
 
 # =========================================================
@@ -326,10 +328,14 @@ def get_klines(symbol, interval="1m", limit=220):
         "limit": limit
     }
 
-    return requests.get(url, params=params, timeout=15).json()
+    return requests.get(
+        url,
+        params=params,
+        timeout=15
+    ).json()
 
 # =========================================================
-# OI
+# OPEN INTEREST
 # =========================================================
 
 def get_open_interest(symbol):
@@ -343,6 +349,38 @@ def get_open_interest(symbol):
     ).json()
 
     return float(data["openInterest"])
+
+# =========================================================
+# CANDLE STATS
+# =========================================================
+
+def candle_stats(candle):
+
+    o = float(candle[1])
+    h = float(candle[2])
+    l = float(candle[3])
+    c = float(candle[4])
+
+    candle_range = h - l
+
+    if candle_range <= 0:
+        return None
+
+    body_ratio = abs(c - o) / candle_range
+
+    upper_wick = (h - max(o, c)) / candle_range
+
+    lower_wick = (min(o, c) - l) / candle_range
+
+    return {
+        "open": o,
+        "high": h,
+        "low": l,
+        "close": c,
+        "body_ratio": body_ratio,
+        "upper_wick": upper_wick,
+        "lower_wick": lower_wick
+    }
 
 # =========================================================
 # ORDER BOOK
@@ -486,15 +524,107 @@ def get_order_book_signal(symbol, price):
         return None
 
 # =========================================================
-# FLASK
+# ANALYZE
 # =========================================================
 
-@app.route("/")
-def home():
-    return "BOT AKTIF", 200
+def analyze(symbol):
+
+    try:
+
+        candles = get_klines(symbol, "1m", 30)
+
+        if not candles or len(candles) < 25:
+            return None
+
+        last = candles[-2]
+        prev = candles[-3]
+        prev3 = candles[-5]
+
+        stats = candle_stats(last)
+
+        if not stats:
+            return None
+
+        c = stats["close"]
+
+        quote_volume = float(last[7])
+
+        prev_close = float(prev[4])
+        prev3_close = float(prev3[4])
+
+        price_change_1m = (
+            (c - prev_close) / prev_close
+        ) * 100
+
+        price_change_3m = (
+            (c - prev3_close) / prev3_close
+        ) * 100
+
+        old_volumes = [
+            float(x[7]) for x in candles[-22:-2]
+        ]
+
+        avg_volume = sum(old_volumes) / len(old_volumes)
+
+        if avg_volume <= 0:
+            return None
+
+        volume_ratio = quote_volume / avg_volume
+
+        oi_now = get_open_interest(symbol)
+
+        prev_oi = oi_cache.get(symbol)
+
+        oi_cache[symbol] = oi_now
+
+        if prev_oi is None or prev_oi <= 0:
+            return None
+
+        oi_ratio = oi_now / prev_oi
+
+        orderbook = get_order_book_signal(symbol, c)
+
+        signal = False
+
+        if (
+            volume_ratio >= PREP_MIN_VOLUME_RATIO
+            and oi_ratio >= PREP_MIN_OI_RATIO
+        ):
+            signal = True
+
+        if not signal:
+            return None
+
+        return {
+            "symbol": symbol,
+            "score": 10,
+            "mode": "PREP",
+            "price": c
+        }
+
+    except Exception as e:
+
+        print("Analyze hata:", symbol, e, flush=True)
+
+        return None
 
 # =========================================================
-# START
+# FORMAT SIGNAL
+# =========================================================
+
+def format_signal(result):
+
+    return f"""
+🟡 BINANCE FUTURES HAZIRLIK
+
+Coin: {result['symbol']}
+Fiyat: {result['price']:.6f}
+
+Puan: {result['score']}/20
+""".strip()
+
+# =========================================================
+# BOT
 # =========================================================
 
 def run_bot():
@@ -515,7 +645,25 @@ def run_bot():
 
                 print("Taranıyor:", symbol, flush=True)
 
-                time.sleep(0.2)
+                result = analyze(symbol)
+
+                if not result:
+                    continue
+
+                msg = format_signal(result)
+
+                send_telegram(msg)
+
+                print(
+                    result["mode"],
+                    "SINYAL:",
+                    result["symbol"],
+                    flush=True
+                )
+
+                time.sleep(0.25)
+
+            print("Tarama bitti", flush=True)
 
             time.sleep(SLEEP_SECONDS)
 
@@ -524,6 +672,14 @@ def run_bot():
             print("Genel hata:", e, flush=True)
 
             time.sleep(10)
+
+# =========================================================
+# FLASK
+# =========================================================
+
+@app.route("/")
+def home():
+    return "BOT AKTIF", 200
 
 # =========================================================
 # MAIN
