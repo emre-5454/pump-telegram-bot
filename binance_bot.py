@@ -7,8 +7,8 @@ from datetime import datetime
 
 BOT_NAME = "🚀 BINANCE RAILWAY FUTURES BOT"
 
-TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
-TELEGRAM_CHAT_ID = os.getenv("6977265844")
+TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ").strip()
+TELEGRAM_CHAT_ID = os.getenv("6977265844").strip()
 
 BASE_URL = "https://fapi.binance.com"
 
@@ -36,8 +36,10 @@ last_alert = {}
 def telegram_send(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram bilgileri eksik.")
+        print("TOKEN VAR MI:", bool(TELEGRAM_TOKEN))
+        print("CHAT_ID VAR MI:", bool(TELEGRAM_CHAT_ID))
         print(text)
-        return
+        return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
@@ -49,17 +51,32 @@ def telegram_send(text):
                 "text": text,
                 "parse_mode": "HTML"
             },
-            timeout=10
+            timeout=15
         )
         print("Telegram cevap:", r.status_code, r.text)
+        return r.status_code == 200
     except Exception as e:
         print("Telegram hata:", e)
+        return False
 
 
-def safe_get_json(url, params=None, timeout=15):
+def safe_get_json(url, params=None, timeout=20):
     try:
         r = requests.get(url, params=params, timeout=timeout)
-        return r.json()
+        text = r.text
+
+        try:
+            data = r.json()
+        except:
+            print("JSON okunamadı:", text[:300])
+            return None
+
+        if isinstance(data, dict) and data.get("code") == 0 and "restricted location" in str(data).lower():
+            print("Binance Railway IP engeli:", data)
+            return None
+
+        return data
+
     except Exception as e:
         print("API hata:", e)
         return None
@@ -101,11 +118,7 @@ def get_top_symbols():
 
 def get_klines(symbol, interval="15m", limit=250):
     url = f"{BASE_URL}/fapi/v1/klines"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
 
     data = safe_get_json(url, params=params)
 
@@ -203,7 +216,6 @@ def analyze_symbol(symbol):
         return None
 
     price = c15["close"]
-
     body, upper_wick, lower_wick = candle_stats(c15)
 
     avg_vol = df15["quote_volume"].iloc[-21:-1].mean()
@@ -330,7 +342,6 @@ def can_alert(symbol, direction, signal_type):
 
 def format_signal(s):
     emoji = "🟢" if s["direction"] == "LONG" else "🔴"
-
     reasons_text = "\n- ".join(s["reasons"])
 
     return f"""
@@ -376,7 +387,7 @@ def main():
             print("Taranan coin:", len(symbols), datetime.now())
 
             if not symbols:
-                telegram_send("⚠️ Binance veri gelmedi hocam. Bir sonraki tur tekrar denenecek.")
+                telegram_send("⚠️ Binance verisi gelmedi hocam. Railway IP Binance tarafından kısıtlanmış olabilir.")
                 time.sleep(SCAN_INTERVAL)
                 continue
 
@@ -403,4 +414,5 @@ def main():
 
 
 if __name__ == "__main__":
+    telegram_send("🧪 TEST MESAJI: Binance bot Railway üzerinde başladı hocam.")
     main()
