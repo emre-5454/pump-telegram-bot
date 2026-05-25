@@ -12,6 +12,7 @@ exchange = ccxt.mexc({"enableRateLimit": True})
 
 LONG_TIMEFRAME = "5m"
 SHORT_TIMEFRAME = "15m"
+LONG_BIG_REVERSAL="1h"
 
 SLEEP_SECONDS = 60
 COOLDOWN = 2 * 60 * 60
@@ -174,8 +175,23 @@ def get_quality(direction, score):
 
 def analyze(symbol):
     try:
-        candles_long = exchange.fetch_ohlcv(symbol, timeframe=LONG_TIMEFRAME, limit=40)
-        candles_short = exchange.fetch_ohlcv(symbol, timeframe=SHORT_TIMEFRAME, limit=40)
+candles_long = exchange.fetch_ohlcv(
+    symbol,
+    timeframe=LONG_TIMEFRAME,
+    limit=40
+)
+
+candles_short = exchange.fetch_ohlcv(
+    symbol,
+    timeframe=SHORT_TIMEFRAME,
+    limit=40
+)
+
+candles_big_long = exchange.fetch_ohlcv(
+    symbol,
+    timeframe=LONG_BIG_REVERSAL,
+    limit=40
+)
 
         if len(candles_long) < 25 or len(candles_short) < 25:
             return None
