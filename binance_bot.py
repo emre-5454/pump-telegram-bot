@@ -7,7 +7,7 @@ from datetime import datetime
 
 BOT_NAME = "🚀 BINANCE RAILWAY FUTURES BOT"
 
-TELEGRAM_TOKEN = os.getenv( "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
+TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
 TELEGRAM_CHAT_ID = os.getenv("6977265844")
 
 BASE_URL = "https://fapi.binance.com"
@@ -40,29 +40,58 @@ def telegram_send(text):
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
     try:
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML"
-        }, timeout=10)
+        r = requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML"
+            },
+            timeout=10
+        )
+        print("Telegram cevap:", r.status_code, r.text)
     except Exception as e:
         print("Telegram hata:", e)
 
 
+def safe_get_json(url, params=None, timeout=15):
+    try:
+        r = requests.get(url, params=params, timeout=timeout)
+        return r.json()
+    except Exception as e:
+        print("API hata:", e)
+        return None
+
+
 def get_top_symbols():
     url = f"{BASE_URL}/fapi/v1/ticker/24hr"
-    data = requests.get(url, timeout=15).json()
+    data = safe_get_json(url)
+
+    if not isinstance(data, list):
+        print("Binance ticker veri hatası:", data)
+        return []
 
     symbols = []
+
     for x in data:
+        if not isinstance(x, dict):
+            continue
+
         symbol = x.get("symbol", "")
+
         if not symbol.endswith("USDT"):
             continue
+
         if any(bad in symbol for bad in ["BUSD", "USDC"]):
             continue
 
-        quote_vol = float(x.get("quoteVolume", 0))
+        try:
+            quote_vol = float(x.get("quoteVolume", 0))
+        except:
+            quote_vol = 0
+
         if quote_vol >= MIN_24H_VOLUME_USDT:
             symbols.append((symbol, quote_vol))
 
@@ -72,8 +101,17 @@ def get_top_symbols():
 
 def get_klines(symbol, interval="15m", limit=250):
     url = f"{BASE_URL}/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    data = requests.get(url, params=params, timeout=15).json()
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+
+    data = safe_get_json(url, params=params)
+
+    if not isinstance(data, list):
+        print(symbol, interval, "kline veri hatası:", data)
+        return None
 
     df = pd.DataFrame(data, columns=[
         "open_time", "open", "high", "low", "close", "volume",
@@ -82,7 +120,12 @@ def get_klines(symbol, interval="15m", limit=250):
     ])
 
     for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_quote"]:
-        df[col] = df[col].astype(float)
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna()
+
+    if len(df) < 210:
+        return None
 
     return df
 
@@ -90,8 +133,13 @@ def get_klines(symbol, interval="15m", limit=250):
 def get_open_interest(symbol):
     url = f"{BASE_URL}/fapi/v1/openInterest"
     params = {"symbol": symbol}
+
+    data = safe_get_json(url, params=params, timeout=10)
+
+    if not isinstance(data, dict):
+        return 0
+
     try:
-        data = requests.get(url, params=params, timeout=10).json()
         return float(data.get("openInterest", 0))
     except:
         return 0
@@ -137,15 +185,22 @@ def candle_stats(row):
 
 def analyze_symbol(symbol):
     try:
-        df15 = add_indicators(get_klines(symbol, "15m"))
-        df1h = add_indicators(get_klines(symbol, "1h"))
-    except Exception as e:
-        print(symbol, "kline hata:", e)
-        return None
+        df15 = get_klines(symbol, "15m")
+        df1h = get_klines(symbol, "1h")
 
-    c15 = df15.iloc[-1]
-    p15 = df15.iloc[-2]
-    c1h = df1h.iloc[-1]
+        if df15 is None or df1h is None:
+            return None
+
+        df15 = add_indicators(df15)
+        df1h = add_indicators(df1h)
+
+        c15 = df15.iloc[-1]
+        p15 = df15.iloc[-2]
+        c1h = df1h.iloc[-1]
+
+    except Exception as e:
+        print(symbol, "analiz hata:", e)
+        return None
 
     price = c15["close"]
 
@@ -167,25 +222,22 @@ def analyze_symbol(symbol):
     long_reasons = []
     short_reasons = []
 
-    # Bollinger LONG
     if price <= c15["bb_lower"] * 1.01:
         long_score += 3
-        long_reasons.append("15m BB alt banda temas")
+        long_reasons.append("15m Bollinger alt banda temas")
 
     if price <= c1h["bb_lower"] * 1.015:
         long_score += 4
-        long_reasons.append("1h BB alt banda yakın")
+        long_reasons.append("1h Bollinger alt banda yakın")
 
-    # Bollinger SHORT
     if price >= c15["bb_upper"] * 0.99:
         short_score += 3
-        short_reasons.append("15m BB üst banda temas")
+        short_reasons.append("15m Bollinger üst banda temas")
 
     if price >= c1h["bb_upper"] * 0.985:
         short_score += 4
-        short_reasons.append("1h BB üst banda yakın")
+        short_reasons.append("1h Bollinger üst banda yakın")
 
-    # Alttan balina / üstten satış
     if lower_wick >= BIG_WICK_RATIO and taker_buy_ratio >= 0.55:
         long_score += 4
         long_reasons.append("Alttan iğne + alıcı baskısı")
@@ -194,14 +246,12 @@ def analyze_symbol(symbol):
         short_score += 4
         short_reasons.append("Üstten iğne + satıcı baskısı")
 
-    # Hacim / balina hacmi
     if last_vol >= MIN_LAST_VOLUME_USDT and vol_mult >= WHALE_VOLUME_MULTIPLIER:
         long_score += 3
         short_score += 3
         long_reasons.append("Balina hacim artışı")
         short_reasons.append("Balina hacim artışı")
 
-    # Mum gücü
     if body >= STRONG_BODY_RATIO and c15["close"] > c15["open"]:
         long_score += 3
         long_reasons.append("Güçlü yeşil mum")
@@ -210,7 +260,6 @@ def analyze_symbol(symbol):
         short_score += 3
         short_reasons.append("Güçlü kırmızı mum")
 
-    # MA200 yön
     if price > c15["ma200"]:
         long_score += 2
         long_reasons.append("MA200 üstü")
@@ -219,7 +268,6 @@ def analyze_symbol(symbol):
         short_score += 2
         short_reasons.append("MA200 altı")
 
-    # RSI aşırı bölge filtresi
     rsi = c15["rsi"]
 
     if rsi < 38:
@@ -241,8 +289,7 @@ def analyze_symbol(symbol):
     if not signals:
         return None
 
-    best = sorted(signals, key=lambda x: x[1], reverse=True)[0]
-    direction, score, reasons = best
+    direction, score, reasons = sorted(signals, key=lambda x: x[1], reverse=True)[0]
 
     signal_type = "ONAY" if score >= MIN_SCORE_CONFIRM else "HAZIRLIK"
 
@@ -284,6 +331,8 @@ def can_alert(symbol, direction, signal_type):
 def format_signal(s):
     emoji = "🟢" if s["direction"] == "LONG" else "🔴"
 
+    reasons_text = "\n- ".join(s["reasons"])
+
     return f"""
 {emoji} <b>{BOT_NAME}</b>
 
@@ -298,7 +347,7 @@ Skor: <b>{s['score']}</b>
 Hacim Artışı: {s['vol_mult']:.2f}x
 Son Mum Hacmi: {s['last_vol']:.0f} USDT
 
-OI: {s['oi']:.2f}
+Open Interest: {s['oi']:.2f}
 
 RSI: {s['rsi']:.2f}
 BB Width 15m: {s['bb_width_15m']:.4f}
@@ -310,11 +359,11 @@ Alt Fitil: %{s['lower_wick'] * 100:.1f}
 Taker Buy: %{s['taker_buy_ratio'] * 100:.1f}
 
 Sebep:
-- """ + "\n- ".join(s["reasons"]) + """
+- {reasons_text}
 
 Not:
-Bu sinyal direkt işlem değil hocam.
-Direnç kırılımı / destek kırılımı ve 15m kapanış beklemek daha güvenli.
+Bu sinyal direkt işlem değildir hocam.
+Direnç kırılımı / destek kırılımı ve 15m kapanış beklemek daha güvenlidir.
 """
 
 
@@ -325,6 +374,11 @@ def main():
         try:
             symbols = get_top_symbols()
             print("Taranan coin:", len(symbols), datetime.now())
+
+            if not symbols:
+                telegram_send("⚠️ Binance veri gelmedi hocam. Bir sonraki tur tekrar denenecek.")
+                time.sleep(SCAN_INTERVAL)
+                continue
 
             for symbol in symbols:
                 signal = analyze_symbol(symbol)
@@ -338,6 +392,8 @@ def main():
                     print(msg)
 
                 time.sleep(0.25)
+
+            print("Tur bitti. Bekleniyor:", SCAN_INTERVAL)
 
         except Exception as e:
             print("Ana döngü hata:", e)
