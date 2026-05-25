@@ -1,7 +1,23 @@
 # =========================================================
 # BINANCE FUTURES HYBRID SMART MONEY BOT
-# FINAL FULL VERSION
-# LONG + SWEEP + ORDER BOOK + BB SHORT
+# FINAL PROFESSIONAL VERSION
+#
+# FEATURES:
+# ✅ Dinamik puan sistemi
+# ✅ 1m / 3m momentum
+# ✅ OI analizi
+# ✅ EMA trend
+# ✅ MA200 filtresi
+# ✅ RSI
+# ✅ Bollinger sıkışma
+# ✅ MACD
+# ✅ OBV
+# ✅ Liquidity Sweep
+# ✅ Order Book / Bookmap
+# ✅ Breakout
+# ✅ Retest Long
+# ✅ Momentum Long
+# ✅ BB Short Prep
 # =========================================================
 
 from flask import Flask
@@ -71,7 +87,7 @@ SWEEP_RECOVERY_LEVEL = 0.35
 SWEEP_MAX_OI_RATIO = 1.0015
 
 # =========================================================
-# BB SHORT FILTERS
+# SHORT FILTERS
 # =========================================================
 
 SHORT_MIN_SCORE = 7
@@ -118,7 +134,7 @@ oi_cache = {}
 def send_telegram(msg):
 
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Telegram token/chat id eksik", flush=True)
+        print("Telegram eksik", flush=True)
         return
 
     try:
@@ -288,7 +304,6 @@ def get_symbols():
     except Exception as e:
 
         print("Symbol hata:", e, flush=True)
-
         return []
 
     pairs = []
@@ -422,12 +437,6 @@ def get_order_book_signal(symbol, price):
         bid_liq = 0
         ask_liq = 0
 
-        biggest_bid_price = 0
-        biggest_bid_usdt = 0
-
-        biggest_ask_price = 0
-        biggest_ask_usdt = 0
-
         for bid in bids:
 
             p = float(bid[0])
@@ -437,10 +446,6 @@ def get_order_book_signal(symbol, price):
 
             if low_range <= p <= best_bid:
                 bid_liq += usdt
-
-            if usdt > biggest_bid_usdt:
-                biggest_bid_usdt = usdt
-                biggest_bid_price = p
 
         for ask in asks:
 
@@ -452,10 +457,6 @@ def get_order_book_signal(symbol, price):
             if best_ask <= p <= high_range:
                 ask_liq += usdt
 
-            if usdt > biggest_ask_usdt:
-                biggest_ask_usdt = usdt
-                biggest_ask_price = p
-
         if ask_liq <= 0:
             ask_liq = 1
 
@@ -463,56 +464,22 @@ def get_order_book_signal(symbol, price):
             bid_liq = 1
 
         bid_ask_ratio = bid_liq / ask_liq
-        ask_bid_ratio = ask_liq / bid_liq
-
-        bid_wall = bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
-        strong_bid_wall = bid_ask_ratio >= ORDER_BOOK_STRONG_BID_RATIO
-
-        ask_wall = ask_bid_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
-        strong_ask_wall = ask_bid_ratio >= ORDER_BOOK_STRONG_BID_RATIO
-
-        ask_pressure = ask_liq > bid_liq * 1.25
-        bid_pressure = bid_liq > ask_liq * 1.25
 
         spread_ok = spread_pct <= ORDER_BOOK_MAX_SPREAD_PCT
 
         long_confirm = (
-            bid_wall
+            bid_ask_ratio >= ORDER_BOOK_MIN_BID_ASK_RATIO
             and spread_ok
-            and biggest_bid_usdt > biggest_ask_usdt
         )
 
         short_confirm = (
-            ask_wall
+            bid_ask_ratio <= 0.75
             and spread_ok
-            and biggest_ask_usdt > biggest_bid_usdt
         )
 
         return {
-
-            "bid_liq": bid_liq,
-            "ask_liq": ask_liq,
-
             "bid_ask_ratio": bid_ask_ratio,
-            "ask_bid_ratio": ask_bid_ratio,
-
             "spread_pct": spread_pct,
-
-            "bid_wall": bid_wall,
-            "strong_bid_wall": strong_bid_wall,
-
-            "ask_wall": ask_wall,
-            "strong_ask_wall": strong_ask_wall,
-
-            "ask_pressure": ask_pressure,
-            "bid_pressure": bid_pressure,
-
-            "biggest_bid_price": biggest_bid_price,
-            "biggest_bid_usdt": biggest_bid_usdt,
-
-            "biggest_ask_price": biggest_ask_price,
-            "biggest_ask_usdt": biggest_ask_usdt,
-
             "long_confirm": long_confirm,
             "short_confirm": short_confirm
         }
@@ -584,22 +551,63 @@ def analyze(symbol):
 
         orderbook = get_order_book_signal(symbol, c)
 
-        signal = False
+        score = 0
 
-        if (
-            volume_ratio >= PREP_MIN_VOLUME_RATIO
-            and oi_ratio >= PREP_MIN_OI_RATIO
-        ):
-            signal = True
+        reasons = []
 
-        if not signal:
+        # =================================================
+        # VOLUME
+        # =================================================
+
+        if quote_volume >= PREP_MIN_VOLUME_USDT:
+            score += 1
+            reasons.append("hacim yeterli")
+
+        if volume_ratio >= PREP_MIN_VOLUME_RATIO:
+            score += 2
+            reasons.append("hacim spike")
+
+        # =================================================
+        # OI
+        # =================================================
+
+        if oi_ratio >= PREP_MIN_OI_RATIO:
+            score += 2
+            reasons.append("OI artıyor")
+
+        # =================================================
+        # MOMENTUM
+        # =================================================
+
+        if PREP_MIN_3M_CHANGE <= price_change_3m <= PREP_MAX_3M_CHANGE:
+            score += 2
+            reasons.append("erken momentum")
+
+        # =================================================
+        # ORDERBOOK
+        # =================================================
+
+        if orderbook and orderbook["long_confirm"]:
+            score += 3
+            reasons.append("bookmap long")
+
+        # =================================================
+        # SIGNAL
+        # =================================================
+
+        if score < PREP_MIN_SCORE:
             return None
 
         return {
             "symbol": symbol,
-            "score": 10,
+            "score": score,
             "mode": "PREP",
-            "price": c
+            "price": c,
+            "volume_ratio": volume_ratio,
+            "oi_ratio": oi_ratio,
+            "price_change_1m": price_change_1m,
+            "price_change_3m": price_change_3m,
+            "reasons": reasons
         }
 
     except Exception as e:
@@ -621,6 +629,15 @@ Coin: {result['symbol']}
 Fiyat: {result['price']:.6f}
 
 Puan: {result['score']}/20
+
+1dk Değişim: %{result['price_change_1m']:.2f}
+3dk Değişim: %{result['price_change_3m']:.2f}
+
+Hacim Artışı: {result['volume_ratio']:.2f}x
+OI Artışı: {result['oi_ratio']:.4f}x
+
+Sebep:
+{", ".join(result['reasons'])}
 """.strip()
 
 # =========================================================
