@@ -7,8 +7,8 @@ from datetime import datetime
 
 BOT_NAME = "🚀 BINANCE RAILWAY FUTURES BOT"
 
-TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ").strip()
-TELEGRAM_CHAT_ID = os.getenv("6977265844").strip()
+TELEGRAM_TOKEN = os.getenv("8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ")
+TELEGRAM_CHAT_ID = os.getenv("6977265844")
 
 BASE_URL = "https://fapi.binance.com"
 
