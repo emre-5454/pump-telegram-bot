@@ -9,7 +9,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "🚄 MEXC FUTURES 3 KADEME AI BOT"
+BOT_NAME = "🚄 MEXC FUTURES 3 KADEME AI BOT + TV RADAR"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 240
@@ -39,6 +39,7 @@ sent_sweep = {}
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Telegram token/chat id eksik", flush=True)
+        print(msg, flush=True)
         return
     try:
         requests.post(
@@ -121,11 +122,56 @@ def build_symbols():
         ranked = []
 
         for s in symbols:
-            qv = tickers.get(s, {}).get("quoteVolume") or 0
-            ranked.append((s, qv))
+            t = tickers.get(s, {})
 
-        ranked = sorted(ranked, key=lambda x: x[1], reverse=True)
-        return [x[0] for x in ranked[:MAX_SYMBOLS]]
+            qv = t.get("quoteVolume") or 0
+            pct = t.get("percentage") or 0
+            last = t.get("last") or 0
+            high = t.get("high") or 0
+            low = t.get("low") or 0
+
+            if last <= 0 or high <= 0 or low <= 0:
+                continue
+
+            volatility = ((high - low) / last) * 100
+
+            score = 0
+
+            if qv >= 10_000_000:
+                score += 3
+            elif qv >= 5_000_000:
+                score += 2
+            elif qv >= 2_000_000:
+                score += 1
+
+            if 1 <= pct <= 12:
+                score += 3
+            elif 0 <= pct <= 18:
+                score += 1
+
+            if 3 <= volatility <= 18:
+                score += 3
+            elif 2 <= volatility <= 25:
+                score += 1
+
+            if score >= 5:
+                ranked.append((s, score, qv, pct, volatility))
+
+        ranked = sorted(ranked, key=lambda x: (x[1], x[2]), reverse=True)
+        selected = [x[0] for x in ranked[:MAX_SYMBOLS]]
+
+        print("TradingView Radar seçilen coin:", len(selected), flush=True)
+        for x in ranked[:20]:
+            print(
+                x[0],
+                "Score:", x[1],
+                "Vol:", int(x[2]),
+                "24h%:", round(x[3], 2),
+                "Volatility:", round(x[4], 2),
+                flush=True
+            )
+
+        return selected
 
     except Exception as e:
         print("Sembol hata:", e, flush=True)
@@ -787,7 +833,7 @@ Whale Sebebi:
         print("Analiz hata:", symbol, e, flush=True)
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. Günlük yaklaşık 7-12 kaliteli sinyal hedefli.")
+    send_telegram(f"✅ {BOT_NAME} başladı. TradingView Radar coin eleme aktif.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
@@ -810,7 +856,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC Futures 3 Kademe AI Bot Aktif", 200
+    return "MEXC Futures 3 Kademe AI Bot + TV Radar Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
