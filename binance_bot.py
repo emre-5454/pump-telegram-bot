@@ -7,8 +7,15 @@ from datetime import datetime
 
 BOT_NAME = "🚀 BINANCE RAILWAY FUTURES BOT"
 
-TELEGRAM_TOKEN = 
-TELEGRAM_CHAT_ID =
+TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
+TELEGRAM_CHAT_ID = "6977265844"
+
+PROXY = "http://maxwemri:ashvrfdkt6r5@38.154.203.95:5863"
+
+proxies = {
+    "http": PROXY,
+    "https": PROXY
+}
 
 BASE_URL = "https://fapi.binance.com"
 
@@ -34,13 +41,6 @@ last_alert = {}
 
 
 def telegram_send(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram bilgileri eksik.")
-        print("TOKEN VAR MI:", bool(TELEGRAM_TOKEN))
-        print("CHAT_ID VAR MI:", bool(TELEGRAM_CHAT_ID))
-        print(text)
-        return False
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     try:
@@ -54,26 +54,30 @@ def telegram_send(text):
             timeout=15
         )
         print("Telegram cevap:", r.status_code, r.text)
-        return r.status_code == 200
     except Exception as e:
         print("Telegram hata:", e)
-        return False
 
 
 def safe_get_json(url, params=None, timeout=20):
     try:
-        r = requests.get(url, params=params, timeout=timeout)
-        text = r.text
+        r = requests.get(
+            url,
+            params=params,
+            timeout=timeout,
+            proxies=proxies
+        )
 
         try:
             data = r.json()
-        except:
-            print("JSON okunamadı:", text[:300])
+        except Exception:
+            print("JSON okunamadı:", r.text[:300])
             return None
 
-        if isinstance(data, dict) and data.get("code") == 0 and "restricted location" in str(data).lower():
-            print("Binance Railway IP engeli:", data)
-            return None
+        if isinstance(data, dict):
+            msg = str(data).lower()
+            if "restricted location" in msg or "service unavailable" in msg:
+                print("Binance proxy/IP engeli:", data)
+                return None
 
         return data
 
@@ -106,7 +110,7 @@ def get_top_symbols():
 
         try:
             quote_vol = float(x.get("quoteVolume", 0))
-        except:
+        except Exception:
             quote_vol = 0
 
         if quote_vol >= MIN_24H_VOLUME_USDT:
@@ -118,7 +122,11 @@ def get_top_symbols():
 
 def get_klines(symbol, interval="15m", limit=250):
     url = f"{BASE_URL}/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
 
     data = safe_get_json(url, params=params)
 
@@ -154,7 +162,7 @@ def get_open_interest(symbol):
 
     try:
         return float(data.get("openInterest", 0))
-    except:
+    except Exception:
         return 0
 
 
@@ -302,7 +310,6 @@ def analyze_symbol(symbol):
         return None
 
     direction, score, reasons = sorted(signals, key=lambda x: x[1], reverse=True)[0]
-
     signal_type = "ONAY" if score >= MIN_SCORE_CONFIRM else "HAZIRLIK"
 
     return {
@@ -379,6 +386,7 @@ Direnç kırılımı / destek kırılımı ve 15m kapanış beklemek daha güven
 
 
 def main():
+    telegram_send("🧪 TEST MESAJI: Binance bot Railway üzerinde başladı hocam.")
     telegram_send("✅ Binance Railway Futures Bot başlatıldı hocam.")
 
     while True:
@@ -387,7 +395,7 @@ def main():
             print("Taranan coin:", len(symbols), datetime.now())
 
             if not symbols:
-                telegram_send("⚠️ Binance verisi gelmedi hocam. Railway IP Binance tarafından kısıtlanmış olabilir.")
+                telegram_send("⚠️ Binance verisi gelmedi hocam. Proxy çalışmıyor veya Binance proxy IP'yi de kısıtladı.")
                 time.sleep(SCAN_INTERVAL)
                 continue
 
@@ -414,5 +422,4 @@ def main():
 
 
 if __name__ == "__main__":
-    telegram_send("🧪 TEST MESAJI: Binance bot Railway üzerinde başladı hocam.")
     main()
