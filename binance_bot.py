@@ -10,11 +10,14 @@ BOT_NAME = "🚀 BINANCE RAILWAY FUTURES BOT"
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 TELEGRAM_CHAT_ID = "6977265844"
 
-PROXY = "http://maxwemri:ashvrfdkt6r5@38.154.203.95:5863"
+proxy_host = "38.154.203.95"
+proxy_port = "5863"
+proxy_user = "maxwemri"
+proxy_pass = "ashvrfdkt6r5"
 
 proxies = {
-    "http": PROXY,
-    "https": PROXY
+    "http": f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}",
+    "https": f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}"
 }
 
 BASE_URL = "https://fapi.binance.com"
