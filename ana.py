@@ -21,7 +21,7 @@ LIMIT_5M = 80
 LIMIT_15M = 180
 
 MIN_RADAR_SCORE = 7
-MIN_WHALE_SCORE = 7
+MIN_WHALE_SCORE = 8
 MIN_SAFE_CONFIDENCE = 58
 
 COOLDOWN_RADAR = 6 * 60 * 60
@@ -154,7 +154,7 @@ def build_symbols():
             elif 2 <= volatility <= 25:
                 score += 1
 
-            if score >= 5:
+            if score >= 7:
                 ranked.append((s, score, qv, pct, volatility))
 
         ranked = sorted(ranked, key=lambda x: (x[1], x[2]), reverse=True)
