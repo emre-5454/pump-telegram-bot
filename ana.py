@@ -20,7 +20,7 @@ LIMIT_15M = 180
 LIMIT_1H = 120
 LIMIT_4H = 120
 
-MIN_SAFE_CONFIDENCE = 72
+MIN_SAFE_CONFIDENCE = 65
 MAX_RISK_PCT = 4.0
 
 COOLDOWN_SAFE = 6 * 60 * 60
@@ -116,22 +116,14 @@ def get_funding(symbol):
             status = "LONG KALABALIK ⚠️"
             ok = False
         else:
-            status = "SHORT BASKI / NORMAL DIŞI ⚠️"
+            status = "SHORT BASKI ⚠️"
             ok = True
 
-        return {
-            "ok": ok,
-            "rate": rate,
-            "status": status
-        }
+        return {"ok": ok, "rate": rate, "status": status}
 
     except Exception as e:
         print("Funding hata:", symbol, e, flush=True)
-        return {
-            "ok": True,
-            "rate": 0,
-            "status": "VERİ YOK"
-        }
+        return {"ok": True, "rate": 0, "status": "VERİ YOK"}
 
 def btc_filter():
     try:
@@ -148,10 +140,7 @@ def btc_filter():
             and last.rsi >= 45
         )
 
-        if btc_ok:
-            return True, "BTC DESTEKLİ ✅"
-        else:
-            return False, "BTC ZAYIF ❌"
+        return (True, "BTC DESTEKLİ ✅") if btc_ok else (False, "BTC ZAYIF ❌")
 
     except Exception as e:
         print("BTC filtre hata:", e, flush=True)
@@ -181,7 +170,6 @@ def build_symbols():
                 continue
 
             volatility = ((high - low) / last) * 100
-
             score = 0
 
             if qv >= 15_000_000:
@@ -334,14 +322,12 @@ def internal_whale_filter(one, trend):
         and 45 <= trend["rsi"] <= 72
     )
 
-def safe_long_mode(one, trend, five, funding, btc_ok):
+def safe_long_mode(one, trend, five):
     if not trend or not five:
         return False
 
     return (
-        btc_ok
-        and funding["ok"]
-        and internal_whale_filter(one, trend)
+        internal_whale_filter(one, trend)
         and one["volume_ratio"] >= 3.5
         and one["usdt_volume"] >= 40000
         and one["change_3m"] >= 0.40
@@ -535,16 +521,26 @@ def confidence_score(one, trend, five, mode, fake_risk, btc_ok, funding):
         score += 10
     if five and five["strong"]:
         score += 10
+
     if btc_ok:
         score += 5
+    else:
+        score -= 5
+
     if funding["ok"]:
         score += 5
+    else:
+        score -= 5
+
+    if mode == "DIP_RADAR":
+        score += 5
+
     if fake_risk <= 30:
         score += 10
     elif fake_risk <= 60:
         score += 3
 
-    return int(min(score, 100))
+    return int(max(0, min(score, 100)))
 
 def trade_plan(price, fib, mode):
     if not fib or not price:
@@ -672,8 +668,8 @@ Hacim Artışı:
 {extra_text}
 
 📍 Karar:
-SAFE LONG için BTC + Funding filtresi geçti.
-DIP RADAR erken uyarıdır, direkt işlem değildir.
+BTC ve Funding sinyali kesmez, sadece güven skorunu etkiler.
+DIP RADAR erken uyarıdır, SAFE LONG onaylı sinyaldir.
 Stop şart, FOMO yok.
 """.strip()
 
@@ -690,7 +686,7 @@ def analyze(symbol, btc_ok, btc_status):
         five = five_confirm(symbol, trend["fib"]["high"])
         funding = get_funding(symbol)
 
-        safe_valid = safe_long_mode(one, trend, five, funding, btc_ok)
+        safe_valid = safe_long_mode(one, trend, five)
         sweep_valid, sweep_data = sweep_mode(one)
         dip_valid, dip_data = big_reversal_mode(symbol)
 
@@ -732,7 +728,7 @@ Dipten balina tepkisi olabilir.
 5m/15m retest ve kırılım beklenir.
 """.strip()
 
-        elif sweep_valid and trend["macd_bull"] and 40 <= trend["rsi"] <= 72 and funding["ok"]:
+        elif sweep_valid and trend["macd_bull"] and 40 <= trend["rsi"] <= 72:
             mode = "SWEEP_LONG"
             title = "🧹 GÜÇLÜ LIQUIDITY SWEEP"
             extra_text = f"""
@@ -796,7 +792,7 @@ Sweep Sebebi:
         print("Analiz hata:", symbol, e, flush=True)
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. Funding + BTC filtresi aktif.")
+    send_telegram(f"✅ {BOT_NAME} başladı. BTC/Funding artık sinyali kesmez, skora etki eder.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
