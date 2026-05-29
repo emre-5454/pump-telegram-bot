@@ -9,7 +9,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "🚄 MEXC SAFE LONG + DIP RADAR BOT"
+BOT_NAME = "🚄 MEXC SAFE LONG + DIP RADAR + FUNDING BOT"
 
 MAX_SYMBOLS = 80
 SLEEP_SECONDS = 300
@@ -21,12 +21,11 @@ LIMIT_1H = 120
 LIMIT_4H = 120
 
 MIN_SAFE_CONFIDENCE = 72
+MAX_RISK_PCT = 4.0
 
 COOLDOWN_SAFE = 6 * 60 * 60
 COOLDOWN_SWEEP = 6 * 60 * 60
 COOLDOWN_DIP = 6 * 60 * 60
-
-MAX_RISK_PCT = 4.0
 
 sent_safe = {}
 sent_sweep = {}
@@ -55,28 +54,6 @@ def get_exchange():
 
 exchange = get_exchange()
 
-print("CCXT VERSION:", ccxt.__version__, flush=True)
-print("OI DESTEK:", exchange.has.get("fetchOpenInterest"), flush=True)
-print("FUNDING DESTEK:", exchange.has.get("fetchFundingRate"), flush=True)
-
-try:
-    print(
-        "TEST OI:",
-        exchange.fetch_open_interest("BTC/USDT:USDT"),
-        flush=True
-    )
-except Exception as e:
-    print("TEST OI HATA:", e, flush=True)
-
-try:
-    print(
-        "TEST FUNDING:",
-        exchange.fetch_funding_rate("BTC/USDT:USDT"),
-        flush=True
-    )
-except Exception as e:
-    print("TEST FUNDING HATA:", e, flush=True)
-
 def rsi(series, length=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(length).mean()
@@ -97,7 +74,6 @@ def indicators(df):
 
     df["vol_avg"] = volume.rolling(20).mean()
     df["rsi"] = rsi(close, 14)
-    df["roc"] = close.pct_change(9) * 100
 
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
@@ -127,6 +103,59 @@ def fetch_df(symbol, timeframe, limit):
     except Exception as e:
         print("Fetch hata:", symbol, timeframe, e, flush=True)
         return None
+
+def get_funding(symbol):
+    try:
+        data = exchange.fetch_funding_rate(symbol)
+        rate = data.get("fundingRate") or 0
+
+        if -0.001 <= rate <= 0.0015:
+            status = "NORMAL ✅"
+            ok = True
+        elif rate > 0.0015:
+            status = "LONG KALABALIK ⚠️"
+            ok = False
+        else:
+            status = "SHORT BASKI / NORMAL DIŞI ⚠️"
+            ok = True
+
+        return {
+            "ok": ok,
+            "rate": rate,
+            "status": status
+        }
+
+    except Exception as e:
+        print("Funding hata:", symbol, e, flush=True)
+        return {
+            "ok": True,
+            "rate": 0,
+            "status": "VERİ YOK"
+        }
+
+def btc_filter():
+    try:
+        df = fetch_df("BTC/USDT:USDT", "15m", 120)
+        if df is None:
+            return True, "BTC VERİ YOK"
+
+        df = indicators(df).dropna().copy()
+        last = df.iloc[-1]
+
+        btc_ok = (
+            last.close > last.ema21
+            and last.macd > last.macd_signal
+            and last.rsi >= 45
+        )
+
+        if btc_ok:
+            return True, "BTC DESTEKLİ ✅"
+        else:
+            return False, "BTC ZAYIF ❌"
+
+    except Exception as e:
+        print("BTC filtre hata:", e, flush=True)
+        return True, "BTC FİLTRE HATA"
 
 def build_symbols():
     try:
@@ -268,7 +297,6 @@ def trend_15m(symbol):
         "ema200_above": last.close > last.ema200,
         "macd_bull": last.macd > last.macd_signal and last.macd > prev.macd,
         "rsi": last.rsi,
-        "roc": last.roc,
         "fib": fib_targets(df),
         "df": df
     }
@@ -306,12 +334,14 @@ def internal_whale_filter(one, trend):
         and 45 <= trend["rsi"] <= 72
     )
 
-def safe_long_mode(one, trend, five):
+def safe_long_mode(one, trend, five, funding, btc_ok):
     if not trend or not five:
         return False
 
     return (
-        internal_whale_filter(one, trend)
+        btc_ok
+        and funding["ok"]
+        and internal_whale_filter(one, trend)
         and one["volume_ratio"] >= 3.5
         and one["usdt_volume"] >= 40000
         and one["change_3m"] >= 0.40
@@ -407,9 +437,7 @@ def big_reversal_mode(symbol):
         np.where(df1h["close"] < df1h["close"].shift(1), -df1h["volume"], 0)
     ).cumsum()
 
-    obv_now = df1h["obv"].iloc[-1]
-    obv_prev = df1h["obv"].iloc[-4]
-    obv_up = obv_now > obv_prev
+    obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-4]
 
     vol_ratio_1h = h1.volume / h1.vol_avg if h1.vol_avg > 0 else 0
     usdt_volume_1h = h1.volume * h1.close
@@ -465,7 +493,6 @@ def big_reversal_mode(symbol):
         "vol_ratio": vol_ratio_1h,
         "usdt_volume": usdt_volume_1h,
         "lower_wick": lower_wick,
-        "obv_up": obv_up,
         "bb_lower": lower4.iloc[-1],
         "reasons": reasons
     }
@@ -493,7 +520,7 @@ def fake_breakout_risk(one, five):
 
     return risk, label
 
-def confidence_score(one, trend, five, mode, fake_risk):
+def confidence_score(one, trend, five, mode, fake_risk, btc_ok, funding):
     score = 0
 
     score += min(one["score"] * 5, 45)
@@ -508,10 +535,10 @@ def confidence_score(one, trend, five, mode, fake_risk):
         score += 10
     if five and five["strong"]:
         score += 10
-    if mode == "SAFE_LONG":
-        score += 10
-    if mode == "SWEEP_LONG":
-        score += 8
+    if btc_ok:
+        score += 5
+    if funding["ok"]:
+        score += 5
     if fake_risk <= 30:
         score += 10
     elif fake_risk <= 60:
@@ -539,28 +566,21 @@ def trade_plan(price, fib, mode):
         return None
 
     risk = entry - stop
-
     if risk <= 0:
         return None
 
     risk_pct = (risk / entry) * 100
-
     if risk_pct > MAX_RISK_PCT:
         return None
-
-    tp1 = entry + risk * 1.5
-    tp2 = entry + risk * 2.0
-    tp3 = entry + risk * 3.0
-    rr = (tp3 - entry) / risk
 
     return {
         "entry": entry,
         "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
+        "tp1": entry + risk * 1.5,
+        "tp2": entry + risk * 2.0,
+        "tp3": entry + risk * 3.0,
         "risk_pct": risk_pct,
-        "rr": rr
+        "rr": 3.0
     }
 
 def can_send(cache, key, cooldown):
@@ -570,7 +590,7 @@ def can_send(cache, key, cooldown):
     cache[key] = now
     return True
 
-def format_signal(symbol, one, trend, five, mode, confidence, fake_label, plan, title, extra_text=""):
+def format_signal(symbol, one, trend, five, mode, confidence, fake_label, plan, title, funding, btc_status, extra_text=""):
     five_text = "5m veri yok"
     if five:
         five_text = f"""
@@ -615,6 +635,13 @@ Yön: LONG ✅
 ⚠️ Fake Breakout:
 {fake_label}
 
+₿ BTC Filtre:
+{btc_status}
+
+💸 Funding:
+{funding['rate']:.6f}
+Durum: {funding['status']}
+
 1m Futures Hacim:
 {int(one['usdt_volume'])} USDT
 
@@ -645,12 +672,12 @@ Hacim Artışı:
 {extra_text}
 
 📍 Karar:
-Bu otomatik işlem değildir.
-DIP RADAR erken uyarıdır, SAFE LONG onaylı sinyaldir.
+SAFE LONG için BTC + Funding filtresi geçti.
+DIP RADAR erken uyarıdır, direkt işlem değildir.
 Stop şart, FOMO yok.
 """.strip()
 
-def analyze(symbol):
+def analyze(symbol, btc_ok, btc_status):
     try:
         one = one_min_engine(symbol)
         if not one:
@@ -661,8 +688,9 @@ def analyze(symbol):
             return
 
         five = five_confirm(symbol, trend["fib"]["high"])
+        funding = get_funding(symbol)
 
-        safe_valid = safe_long_mode(one, trend, five)
+        safe_valid = safe_long_mode(one, trend, five, funding, btc_ok)
         sweep_valid, sweep_data = sweep_mode(one)
         dip_valid, dip_data = big_reversal_mode(symbol)
 
@@ -704,7 +732,7 @@ Dipten balina tepkisi olabilir.
 5m/15m retest ve kırılım beklenir.
 """.strip()
 
-        elif sweep_valid and trend["macd_bull"] and 40 <= trend["rsi"] <= 72:
+        elif sweep_valid and trend["macd_bull"] and 40 <= trend["rsi"] <= 72 and funding["ok"]:
             mode = "SWEEP_LONG"
             title = "🧹 GÜÇLÜ LIQUIDITY SWEEP"
             extra_text = f"""
@@ -725,12 +753,14 @@ Sweep Sebebi:
                 "USDT:", int(one["usdt_volume"]),
                 "3M:", round(one["change_3m"], 2),
                 "RSI15:", round(trend["rsi"], 2),
+                "BTC:", btc_status,
+                "Funding:", funding["status"],
                 flush=True
             )
             return
 
         fake_risk, fake_label = fake_breakout_risk(one, five)
-        confidence = confidence_score(one, trend, five, mode, fake_risk)
+        confidence = confidence_score(one, trend, five, mode, fake_risk, btc_ok, funding)
 
         if mode == "SAFE_LONG" and confidence < MIN_SAFE_CONFIDENCE:
             return
@@ -755,16 +785,8 @@ Sweep Sebebi:
             return
 
         msg = format_signal(
-            symbol,
-            one,
-            trend,
-            five,
-            mode,
-            confidence,
-            fake_label,
-            plan,
-            title,
-            extra_text
+            symbol, one, trend, five, mode, confidence,
+            fake_label, plan, title, funding, btc_status, extra_text
         )
 
         send_telegram(msg)
@@ -774,18 +796,21 @@ Sweep Sebebi:
         print("Analiz hata:", symbol, e, flush=True)
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. SAFE LONG + DIP RADAR aktif.")
+    send_telegram(f"✅ {BOT_NAME} başladı. Funding + BTC filtresi aktif.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
         try:
             print("Tarama başladı:", datetime.now(), flush=True)
 
+            btc_ok, btc_status = btc_filter()
+            print("BTC DURUM:", btc_status, flush=True)
+
             symbols = build_symbols()
             print("Taranacak futures coin:", len(symbols), flush=True)
 
             for symbol in symbols:
-                analyze(symbol)
+                analyze(symbol, btc_ok, btc_status)
                 time.sleep(0.35)
 
             print(f"Tur bitti. {SLEEP_SECONDS} saniye bekleniyor.", flush=True)
@@ -797,7 +822,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC SAFE LONG + DIP RADAR Bot Aktif", 200
+    return "MEXC SAFE LONG + DIP RADAR + FUNDING Bot Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
