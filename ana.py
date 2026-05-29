@@ -9,30 +9,22 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "🚄 MEXC FUTURES 3 KADEME AI BOT + TV RADAR"
+BOT_NAME = "🚄 MEXC FUTURES SAFE LONG BOT"
 
-MAX_SYMBOLS = 120
-SLEEP_SECONDS = 240
-
-SEND_EARLY_RADAR = False
+MAX_SYMBOLS = 80
+SLEEP_SECONDS = 300
 
 LIMIT_1M = 80
 LIMIT_5M = 80
 LIMIT_15M = 180
 
-MIN_RADAR_SCORE = 7
-MIN_WHALE_SCORE = 8
-MIN_SAFE_CONFIDENCE = 58
+MIN_SAFE_CONFIDENCE = 72
 
-COOLDOWN_RADAR = 6 * 60 * 60
-COOLDOWN_WHALE = 4 * 60 * 60
-COOLDOWN_SAFE = 4 * 60 * 60
-COOLDOWN_SWEEP = 4 * 60 * 60
+COOLDOWN_SAFE = 6 * 60 * 60
+COOLDOWN_SWEEP = 6 * 60 * 60
 
 MAX_RISK_PCT = 4.0
 
-sent_radar = {}
-sent_whale = {}
 sent_safe = {}
 sent_sweep = {}
 
@@ -137,21 +129,21 @@ def build_symbols():
 
             score = 0
 
-            if qv >= 10_000_000:
+            if qv >= 15_000_000:
                 score += 3
-            elif qv >= 5_000_000:
+            elif qv >= 8_000_000:
                 score += 2
-            elif qv >= 2_000_000:
+            elif qv >= 4_000_000:
                 score += 1
 
-            if 1 <= pct <= 12:
+            if 1 <= pct <= 10:
                 score += 3
-            elif 0 <= pct <= 18:
+            elif 0 <= pct <= 15:
                 score += 1
 
-            if 3 <= volatility <= 18:
+            if 4 <= volatility <= 16:
                 score += 3
-            elif 2 <= volatility <= 25:
+            elif 3 <= volatility <= 22:
                 score += 1
 
             if score >= 7:
@@ -160,16 +152,7 @@ def build_symbols():
         ranked = sorted(ranked, key=lambda x: (x[1], x[2]), reverse=True)
         selected = [x[0] for x in ranked[:MAX_SYMBOLS]]
 
-        print("TradingView Radar seçilen coin:", len(selected), flush=True)
-        for x in ranked[:20]:
-            print(
-                x[0],
-                "Score:", x[1],
-                "Vol:", int(x[2]),
-                "24h%:", round(x[3], 2),
-                "Volatility:", round(x[4], 2),
-                flush=True
-            )
+        print("TV Radar seçilen coin:", len(selected), flush=True)
 
         return selected
 
@@ -217,43 +200,21 @@ def one_min_engine(symbol):
     change_3m = ((last.close - prev3.open) / prev3.open) * 100
 
     score = 0
-    reasons = []
 
-    if volume_ratio >= 1.3:
-        score += 1
-        reasons.append("hacim uyanıyor")
-
-    if volume_ratio >= 1.8:
+    if volume_ratio >= 2.0:
         score += 2
-        reasons.append("hacim artışı var")
-
-    if volume_ratio >= 3.0:
+    if volume_ratio >= 3.5:
         score += 2
-        reasons.append("hacim patlaması var")
-
-    if usdt_volume >= 3000:
+    if usdt_volume >= 30000:
+        score += 2
+    if change_3m >= 0.35:
+        score += 2
+    if last.body_ratio >= 0.35:
         score += 1
-        reasons.append("USDT hacim yeterli")
-
-    if change_1m >= 0.05:
+    if last.upper_wick <= 0.45:
         score += 1
-        reasons.append("1m fiyat tepki verdi")
-
-    if change_3m >= 0.12:
-        score += 1
-        reasons.append("3m momentum başladı")
-
-    if last.body_ratio >= 0.25:
-        score += 1
-        reasons.append("mum gövdesi yeterli")
-
-    if last.upper_wick <= 0.65:
-        score += 1
-        reasons.append("üst fitil makul")
-
     if last.close > last.open:
         score += 1
-        reasons.append("yeşil mum")
 
     return {
         "score": score,
@@ -265,7 +226,6 @@ def one_min_engine(symbol):
         "body_ratio": last.body_ratio,
         "upper_wick": last.upper_wick,
         "lower_wick": last.lower_wick,
-        "reasons": reasons,
         "df": df
     }
 
@@ -302,7 +262,7 @@ def five_confirm(symbol, resistance):
 
     last = df.iloc[-1]
     breakout = last.close > resistance
-    strong = breakout and last.body_ratio >= 0.35 and last.upper_wick <= 0.55
+    strong = breakout and last.body_ratio >= 0.45 and last.upper_wick <= 0.45
 
     return {
         "close": last.close,
@@ -312,94 +272,37 @@ def five_confirm(symbol, resistance):
         "upper_wick": last.upper_wick
     }
 
-def early_radar_mode(one, trend):
-    score = 0
-    reasons = []
-
-    if one["volume_ratio"] >= 2.2:
-        score += 2
-        reasons.append("hacim güçlü uyanıyor")
-
-    if one["usdt_volume"] >= 10000:
-        score += 1
-        reasons.append("USDT hacim güçlü")
-
-    if one["change_3m"] >= 0.12:
-        score += 1
-        reasons.append("3m momentum başladı")
-
-    if one["lower_wick"] >= 0.20:
-        score += 1
-        reasons.append("alt fitil/dip tepkisi var")
-
-    if one["upper_wick"] <= 0.60:
-        score += 1
-        reasons.append("üst fitil sağlıklı")
-
-    if trend and 38 <= trend["rsi"] <= 72:
-        score += 1
-        reasons.append("15m RSI uygun")
-
-    if trend and trend["macd_bull"]:
-        score += 2
-        reasons.append("15m MACD yukarı")
-
-    valid = (
-        score >= MIN_RADAR_SCORE
-        and one["volume_ratio"] >= 2.2
-        and one["usdt_volume"] >= 10000
-        and one["change_3m"] >= 0.12
+def internal_whale_filter(one, trend):
+    return (
+        one["score"] >= 8
+        and one["volume_ratio"] >= 3.5
+        and one["usdt_volume"] >= 30000
+        and one["change_3m"] >= 0.35
+        and one["upper_wick"] <= 0.45
         and trend
         and trend["macd_bull"]
+        and 45 <= trend["rsi"] <= 72
     )
 
-    return valid, score, reasons
+def safe_long_mode(one, trend, five):
+    if not trend or not five:
+        return False
 
-def whale_entry_mode(one, trend):
-    score = 0
-    reasons = []
+    whale_ok = internal_whale_filter(one, trend)
 
-    if one["volume_ratio"] >= 2.0:
-        score += 2
-        reasons.append("futures hacim artışı")
-
-    if one["usdt_volume"] >= 8000:
-        score += 1
-        reasons.append("USDT hacim yeterli")
-
-    if one["change_3m"] >= 0.15:
-        score += 1
-        reasons.append("3m momentum başladı")
-
-    if one["body_ratio"] >= 0.30:
-        score += 1
-        reasons.append("mum gövdesi yeterli")
-
-    if one["upper_wick"] <= 0.55:
-        score += 1
-        reasons.append("üst fitil sağlıklı")
-
-    if one["lower_wick"] >= 0.15:
-        score += 1
-        reasons.append("alt fitil desteği var")
-
-    if trend and trend["macd_bull"]:
-        score += 2
-        reasons.append("15m MACD yukarı")
-
-    if trend and 40 <= trend["rsi"] <= 72:
-        score += 1
-        reasons.append("15m RSI uygun")
-
-    valid = (
-        score >= MIN_WHALE_SCORE
-        and one["volume_ratio"] >= 2.0
-        and one["usdt_volume"] >= 8000
-        and trend
+    return (
+        whale_ok
+        and one["volume_ratio"] >= 3.5
+        and one["usdt_volume"] >= 40000
+        and one["change_3m"] >= 0.40
+        and one["body_ratio"] >= 0.35
+        and one["upper_wick"] <= 0.45
+        and trend["trend_up"]
         and trend["macd_bull"]
+        and 48 <= trend["rsi"] <= 70
+        and five["breakout"]
+        and five["strong"]
     )
-
-    return valid, score, reasons
 
 def sweep_mode(one):
     df = one["df"]
@@ -418,13 +321,17 @@ def sweep_mode(one):
     score = 0
     reasons = []
 
-    if one["volume_ratio"] >= 3.5:
-        score += 2
-        reasons.append("hacim patlaması")
+    if one["volume_ratio"] >= 5.0:
+        score += 3
+        reasons.append("çok güçlü hacim patlaması")
 
-    if one["lower_wick"] >= 0.45:
+    if one["usdt_volume"] >= 50000:
         score += 2
-        reasons.append("alt fitil güçlü")
+        reasons.append("USDT hacim güçlü")
+
+    if one["lower_wick"] >= 0.55:
+        score += 3
+        reasons.append("alt fitil çok güçlü")
 
     if swept:
         score += 2
@@ -434,16 +341,18 @@ def sweep_mode(one):
         score += 2
         reasons.append("destek geri alındı")
 
-    if recovery >= 0.40:
+    if recovery >= 0.55:
         score += 2
         reasons.append("recovery güçlü")
 
     valid = (
-        score >= 8
+        score >= 11
         and swept
         and reclaimed
-        and one["volume_ratio"] >= 3.5
-        and one["lower_wick"] >= 0.45
+        and one["volume_ratio"] >= 5.0
+        and one["usdt_volume"] >= 50000
+        and one["lower_wick"] >= 0.55
+        and recovery >= 0.55
     )
 
     data = {
@@ -456,33 +365,20 @@ def sweep_mode(one):
 
     return valid, score, data
 
-def safe_long_mode(one, trend, five):
-    if not trend or not five:
-        return False
-
-    return (
-        one["score"] >= 7
-        and one["volume_ratio"] >= 2.0
-        and one["change_3m"] >= 0.20
-        and one["upper_wick"] <= 0.55
-        and trend["macd_bull"]
-        and five["breakout"]
-    )
-
 def fake_breakout_risk(one, five):
     risk = 0
 
-    if one["upper_wick"] > 0.65:
+    if one["upper_wick"] > 0.45:
         risk += 35
 
-    if one["body_ratio"] < 0.25:
+    if one["body_ratio"] < 0.35:
         risk += 25
 
-    if one["change_3m"] < 0.12:
+    if one["change_3m"] < 0.35:
         risk += 20
 
     if five and not five["strong"]:
-        risk += 20
+        risk += 25
 
     risk = min(risk, 100)
 
@@ -498,36 +394,33 @@ def fake_breakout_risk(one, five):
 def confidence_score(one, trend, five, mode, fake_risk):
     score = 0
 
-    score += min(one["score"] * 5, 40)
+    score += min(one["score"] * 5, 45)
 
     if trend and trend["trend_up"]:
         score += 10
 
     if trend and trend["ema200_above"]:
-        score += 10
+        score += 8
 
     if trend and trend["macd_bull"]:
-        score += 10
+        score += 12
 
     if five and five["breakout"]:
-        score += 8
+        score += 10
 
     if five and five["strong"]:
-        score += 8
+        score += 10
 
     if mode == "SAFE_LONG":
         score += 10
 
-    if mode == "WHALE_ENTRY":
-        score += 6
-
     if mode == "SWEEP_LONG":
-        score += 12
+        score += 8
 
     if fake_risk <= 30:
         score += 10
     elif fake_risk <= 60:
-        score += 5
+        score += 3
 
     return int(min(score, 100))
 
@@ -544,12 +437,8 @@ def trade_plan(price, fib, mode):
     elif mode == "SWEEP_LONG":
         entry = price
         stop = max(support * 0.995, price * 0.965)
-    elif mode == "WHALE_ENTRY":
-        entry = price
-        stop = max(support * 0.995, price * 0.970)
     else:
-        entry = price
-        stop = max(support * 0.995, price * 0.970)
+        return None
 
     risk = entry - stop
 
@@ -584,53 +473,6 @@ def can_send(cache, key, cooldown):
 
     cache[key] = now
     return True
-
-def send_early_radar(symbol, one, trend, radar_score, radar_reasons):
-    key = symbol + "_RADAR"
-
-    if not can_send(sent_radar, key, COOLDOWN_RADAR):
-        return
-
-    msg = f"""
-👀 {BOT_NAME} | EARLY RADAR
-
-Coin: {symbol}
-
-Bu işlem sinyali değildir.
-Coin uyanıyor olabilir.
-
-Radar Skoru: {radar_score}/9
-
-Fiyat:
-{one['price']:.8f}
-
-1m Hacim:
-{int(one['usdt_volume'])} USDT
-
-Hacim Artışı:
-{one['volume_ratio']:.2f}x
-
-1m Değişim:
-%{one['change_1m']:.2f}
-
-3m Değişim:
-%{one['change_3m']:.2f}
-
-15m RSI:
-{trend['rsi']:.2f}
-
-15m MACD:
-{'YUKARI ✅' if trend['macd_bull'] else 'ZAYIF ❌'}
-
-📌 Sebep:
-{", ".join(radar_reasons)}
-
-📍 Karar:
-Sadece radar.
-Giriş için WHALE ENTRY veya SAFE LONG bekle.
-""".strip()
-
-    send_telegram(msg)
 
 def format_trade_signal(symbol, one, trend, five, mode, confidence, fake_label, plan, title, extra_text=""):
     five_text = "5m veri yok"
@@ -716,43 +558,39 @@ Alt Fitil:
 {extra_text}
 
 📍 Karar:
-Bu otomatik işlem değildir.
-Radar → Whale → Safe Long kademeli sistemde bu seviye oluştu.
-Riskini sabit tut, FOMO yapma.
+RADAR ve WHALE içeride filtre olarak geçti.
+Telegram’a sadece güçlü SAFE/SWEEP sinyali gönderildi.
+FOMO yapma, stop şart.
 """.strip()
 
 def analyze(symbol):
     try:
         one = one_min_engine(symbol)
-
         if not one:
             return
 
         trend = trend_15m(symbol)
-
         if not trend or not trend["fib"]:
             return
 
         five = five_confirm(symbol, trend["fib"]["high"])
 
-        radar_valid, radar_score, radar_reasons = early_radar_mode(one, trend)
-
-        if radar_valid and SEND_EARLY_RADAR:
-            send_early_radar(symbol, one, trend, radar_score, radar_reasons)
-
-        sweep_valid, sweep_score, sweep_data = sweep_mode(one)
-        whale_valid, whale_score_value, whale_reasons = whale_entry_mode(one, trend)
         safe_valid = safe_long_mode(one, trend, five)
+        sweep_valid, sweep_score, sweep_data = sweep_mode(one)
 
         mode = None
         title = None
         extra_text = ""
 
-        if sweep_valid:
+        if safe_valid:
+            mode = "SAFE_LONG"
+            title = "🟢 SAFE LONG"
+
+        elif sweep_valid and trend["macd_bull"] and 40 <= trend["rsi"] <= 72:
             mode = "SWEEP_LONG"
-            title = "🧹 LIQUIDITY SWEEP"
+            title = "🧹 GÜÇLÜ LIQUIDITY SWEEP"
             extra_text = f"""
-Sweep Skoru: {sweep_data['score']}/10
+Sweep Skoru: {sweep_data['score']}/14
 Süpürülen Destek: {sweep_data['support']:.8f}
 Sweep Dibi: {sweep_data['sweep_low']:.8f}
 Recovery: {sweep_data['recovery']:.2f}
@@ -761,26 +599,12 @@ Sweep Sebebi:
 {", ".join(sweep_data['reasons'])}
 """.strip()
 
-        elif safe_valid:
-            mode = "SAFE_LONG"
-            title = "🟢 SAFE LONG"
-
-        elif whale_valid:
-            mode = "WHALE_ENTRY"
-            title = "🐋 WHALE ENTRY"
-            extra_text = f"""
-Whale Entry Skoru: {whale_score_value}/10
-
-Whale Sebebi:
-{", ".join(whale_reasons)}
-""".strip()
-
         if not mode:
             print(
                 symbol,
-                "RADAR:", radar_score,
-                "ONE:", one["score"],
+                "İÇ FİLTRE | ONE:", one["score"],
                 "VOL:", round(one["volume_ratio"], 2),
+                "USDT:", int(one["usdt_volume"]),
                 "3M:", round(one["change_3m"], 2),
                 "RSI15:", round(trend["rsi"], 2),
                 flush=True
@@ -790,11 +614,10 @@ Whale Sebebi:
         fake_risk, fake_label = fake_breakout_risk(one, five)
         confidence = confidence_score(one, trend, five, mode, fake_risk)
 
-        if mode == "SAFE_LONG" and confidence < MIN_SAFE_CONFIDENCE:
+        if confidence < MIN_SAFE_CONFIDENCE:
             return
 
         plan = trade_plan(one["price"], trend["fib"], mode)
-
         if not plan:
             return
 
@@ -803,12 +626,9 @@ Whale Sebebi:
         if mode == "SAFE_LONG":
             cache = sent_safe
             cooldown = COOLDOWN_SAFE
-        elif mode == "SWEEP_LONG":
+        else:
             cache = sent_sweep
             cooldown = COOLDOWN_SWEEP
-        else:
-            cache = sent_whale
-            cooldown = COOLDOWN_WHALE
 
         if not can_send(cache, key, cooldown):
             return
@@ -833,7 +653,7 @@ Whale Sebebi:
         print("Analiz hata:", symbol, e, flush=True)
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. TradingView Radar coin eleme aktif.")
+    send_telegram(f"✅ {BOT_NAME} başladı. Sadece SAFE LONG ve güçlü SWEEP gönderilecek.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
@@ -856,7 +676,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC Futures 3 Kademe AI Bot + TV Radar Aktif", 200
+    return "MEXC Futures SAFE LONG Bot Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
