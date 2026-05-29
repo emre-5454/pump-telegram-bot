@@ -55,6 +55,28 @@ def get_exchange():
 
 exchange = get_exchange()
 
+print("CCXT VERSION:", ccxt.__version__, flush=True)
+print("OI DESTEK:", exchange.has.get("fetchOpenInterest"), flush=True)
+print("FUNDING DESTEK:", exchange.has.get("fetchFundingRate"), flush=True)
+
+try:
+    print(
+        "TEST OI:",
+        exchange.fetch_open_interest("BTC/USDT:USDT"),
+        flush=True
+    )
+except Exception as e:
+    print("TEST OI HATA:", e, flush=True)
+
+try:
+    print(
+        "TEST FUNDING:",
+        exchange.fetch_funding_rate("BTC/USDT:USDT"),
+        flush=True
+    )
+except Exception as e:
+    print("TEST FUNDING HATA:", e, flush=True)
+
 def rsi(series, length=14):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(length).mean()
