@@ -9,7 +9,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8637824602:AAG8V2VJ3QM0WI40PUpu1zbT-67qCpWgbOQ"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "🚄 MEXC FUTURES SAFE LONG BOT"
+BOT_NAME = "🚄 MEXC SAFE LONG + DIP RADAR BOT"
 
 MAX_SYMBOLS = 80
 SLEEP_SECONDS = 300
@@ -17,16 +17,20 @@ SLEEP_SECONDS = 300
 LIMIT_1M = 80
 LIMIT_5M = 80
 LIMIT_15M = 180
+LIMIT_1H = 120
+LIMIT_4H = 120
 
 MIN_SAFE_CONFIDENCE = 72
 
 COOLDOWN_SAFE = 6 * 60 * 60
 COOLDOWN_SWEEP = 6 * 60 * 60
+COOLDOWN_DIP = 6 * 60 * 60
 
 MAX_RISK_PCT = 4.0
 
 sent_safe = {}
 sent_sweep = {}
+sent_dip = {}
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -138,22 +142,21 @@ def build_symbols():
 
             if 1 <= pct <= 10:
                 score += 3
-            elif 0 <= pct <= 15:
+            elif -8 <= pct <= 15:
                 score += 1
 
-            if 4 <= volatility <= 16:
+            if 4 <= volatility <= 22:
                 score += 3
-            elif 3 <= volatility <= 22:
+            elif 3 <= volatility <= 30:
                 score += 1
 
-            if score >= 7:
+            if score >= 6:
                 ranked.append((s, score, qv, pct, volatility))
 
         ranked = sorted(ranked, key=lambda x: (x[1], x[2]), reverse=True)
         selected = [x[0] for x in ranked[:MAX_SYMBOLS]]
 
         print("TV Radar seçilen coin:", len(selected), flush=True)
-
         return selected
 
     except Exception as e:
@@ -161,9 +164,6 @@ def build_symbols():
         return []
 
 def fib_targets(df, lookback=60):
-    if len(df) < lookback:
-        return None
-
     recent = df.tail(lookback)
     low = recent["low"].min()
     high = recent["high"].max()
@@ -183,7 +183,7 @@ def fib_targets(df, lookback=60):
 
 def one_min_engine(symbol):
     df = fetch_df(symbol, "1m", LIMIT_1M)
-    if df is None or len(df) < 30:
+    if df is None:
         return None
 
     df = indicators(df).dropna().copy()
@@ -253,7 +253,7 @@ def trend_15m(symbol):
 
 def five_confirm(symbol, resistance):
     df = fetch_df(symbol, "5m", LIMIT_5M)
-    if df is None or len(df) < 30:
+    if df is None:
         return None
 
     df = indicators(df).dropna().copy()
@@ -288,15 +288,11 @@ def safe_long_mode(one, trend, five):
     if not trend or not five:
         return False
 
-    whale_ok = internal_whale_filter(one, trend)
-
     return (
-        whale_ok
+        internal_whale_filter(one, trend)
         and one["volume_ratio"] >= 3.5
         and one["usdt_volume"] >= 40000
         and one["change_3m"] >= 0.40
-        and one["body_ratio"] >= 0.35
-        and one["upper_wick"] <= 0.45
         and trend["trend_up"]
         and trend["macd_bull"]
         and 48 <= trend["rsi"] <= 70
@@ -312,7 +308,7 @@ def sweep_mode(one):
 
     candle_range = last.high - last.low
     if candle_range <= 0:
-        return False, 0, None
+        return False, None
 
     swept = last.low < local_support
     reclaimed = last.close > local_support
@@ -324,23 +320,18 @@ def sweep_mode(one):
     if one["volume_ratio"] >= 5.0:
         score += 3
         reasons.append("çok güçlü hacim patlaması")
-
     if one["usdt_volume"] >= 50000:
         score += 2
         reasons.append("USDT hacim güçlü")
-
     if one["lower_wick"] >= 0.55:
         score += 3
         reasons.append("alt fitil çok güçlü")
-
     if swept:
         score += 2
         reasons.append("lokal destek süpürüldü")
-
     if reclaimed:
         score += 2
         reasons.append("destek geri alındı")
-
     if recovery >= 0.55:
         score += 2
         reasons.append("recovery güçlü")
@@ -355,7 +346,7 @@ def sweep_mode(one):
         and recovery >= 0.55
     )
 
-    data = {
+    return valid, {
         "score": score,
         "support": local_support,
         "sweep_low": last.low,
@@ -363,20 +354,109 @@ def sweep_mode(one):
         "reasons": reasons
     }
 
-    return valid, score, data
+def big_reversal_mode(symbol):
+    df1h = fetch_df(symbol, "1h", LIMIT_1H)
+    df4h = fetch_df(symbol, "4h", LIMIT_4H)
+
+    if df1h is None or df4h is None:
+        return False, None
+
+    df1h = indicators(df1h).dropna().copy()
+    df4h = indicators(df4h).dropna().copy()
+
+    if len(df1h) < 50 or len(df4h) < 50:
+        return False, None
+
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+    h4 = df4h.iloc[-1]
+    h4_prev = df4h.iloc[-2]
+
+    close4 = df4h["close"]
+    basis4 = close4.rolling(20).mean()
+    dev4 = close4.rolling(20).std()
+    lower4 = basis4 - dev4 * 2
+
+    bb_lower_touch = h4.low <= lower4.iloc[-1] or h4_prev.low <= lower4.iloc[-2]
+
+    df1h["obv"] = np.where(
+        df1h["close"] > df1h["close"].shift(1),
+        df1h["volume"],
+        np.where(df1h["close"] < df1h["close"].shift(1), -df1h["volume"], 0)
+    ).cumsum()
+
+    obv_now = df1h["obv"].iloc[-1]
+    obv_prev = df1h["obv"].iloc[-4]
+    obv_up = obv_now > obv_prev
+
+    vol_ratio_1h = h1.volume / h1.vol_avg if h1.vol_avg > 0 else 0
+    usdt_volume_1h = h1.volume * h1.close
+
+    candle_range = h1.high - h1.low
+    lower_wick = (min(h1.open, h1.close) - h1.low) / candle_range if candle_range > 0 else 0
+
+    green_reclaim = h1.close > h1.open
+    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 68
+    macd_turn = h1.macd > h1_prev.macd
+
+    score = 0
+    reasons = []
+
+    if bb_lower_touch:
+        score += 3
+        reasons.append("4H alt Bollinger tepki bölgesi")
+    if vol_ratio_1h >= 2.5:
+        score += 2
+        reasons.append("1H hacim patlaması")
+    if usdt_volume_1h >= 50000:
+        score += 2
+        reasons.append("USDT hacim güçlü")
+    if lower_wick >= 0.35:
+        score += 2
+        reasons.append("alt fitil/dip süpürme var")
+    if green_reclaim:
+        score += 1
+        reasons.append("yeşil dönüş mumu")
+    if rsi_turn:
+        score += 2
+        reasons.append("RSI dipten yukarı dönüyor")
+    if macd_turn:
+        score += 1
+        reasons.append("MACD toparlanıyor")
+    if obv_up:
+        score += 2
+        reasons.append("OBV para girişi gösteriyor")
+
+    valid = (
+        score >= 9
+        and bb_lower_touch
+        and vol_ratio_1h >= 2.5
+        and usdt_volume_1h >= 50000
+        and rsi_turn
+        and obv_up
+    )
+
+    return valid, {
+        "score": score,
+        "price": h1.close,
+        "rsi": h1.rsi,
+        "vol_ratio": vol_ratio_1h,
+        "usdt_volume": usdt_volume_1h,
+        "lower_wick": lower_wick,
+        "obv_up": obv_up,
+        "bb_lower": lower4.iloc[-1],
+        "reasons": reasons
+    }
 
 def fake_breakout_risk(one, five):
     risk = 0
 
     if one["upper_wick"] > 0.45:
         risk += 35
-
     if one["body_ratio"] < 0.35:
         risk += 25
-
     if one["change_3m"] < 0.35:
         risk += 20
-
     if five and not five["strong"]:
         risk += 25
 
@@ -398,25 +478,18 @@ def confidence_score(one, trend, five, mode, fake_risk):
 
     if trend and trend["trend_up"]:
         score += 10
-
     if trend and trend["ema200_above"]:
         score += 8
-
     if trend and trend["macd_bull"]:
         score += 12
-
     if five and five["breakout"]:
         score += 10
-
     if five and five["strong"]:
         score += 10
-
     if mode == "SAFE_LONG":
         score += 10
-
     if mode == "SWEEP_LONG":
         score += 8
-
     if fake_risk <= 30:
         score += 10
     elif fake_risk <= 60:
@@ -437,6 +510,9 @@ def trade_plan(price, fib, mode):
     elif mode == "SWEEP_LONG":
         entry = price
         stop = max(support * 0.995, price * 0.965)
+    elif mode == "DIP_RADAR":
+        entry = price
+        stop = price * 0.965
     else:
         return None
 
@@ -467,14 +543,12 @@ def trade_plan(price, fib, mode):
 
 def can_send(cache, key, cooldown):
     now = time.time()
-
     if key in cache and now - cache[key] < cooldown:
         return False
-
     cache[key] = now
     return True
 
-def format_trade_signal(symbol, one, trend, five, mode, confidence, fake_label, plan, title, extra_text=""):
+def format_signal(symbol, one, trend, five, mode, confidence, fake_label, plan, title, extra_text=""):
     five_text = "5m veri yok"
     if five:
         five_text = f"""
@@ -492,10 +566,10 @@ Mod: {title}
 Coin: {symbol}
 Yön: LONG ✅
 
-📍 NET GİRİŞ:
+📍 Giriş / İzleme:
 {plan['entry']:.8f}
 
-🛑 STOP:
+🛑 Stop:
 {plan['stop']:.8f}
 
 🎯 TP1:
@@ -531,15 +605,6 @@ Hacim Artışı:
 3m Değişim:
 %{one['change_3m']:.2f}
 
-Mum Gücü:
-{one['body_ratio']:.2f}
-
-Üst Fitil:
-{one['upper_wick']:.2f}
-
-Alt Fitil:
-{one['lower_wick']:.2f}
-
 15m Trend:
 {'YUKARI ✅' if trend['trend_up'] else 'ZAYIF ❌'}
 
@@ -558,9 +623,9 @@ Alt Fitil:
 {extra_text}
 
 📍 Karar:
-RADAR ve WHALE içeride filtre olarak geçti.
-Telegram’a sadece güçlü SAFE/SWEEP sinyali gönderildi.
-FOMO yapma, stop şart.
+Bu otomatik işlem değildir.
+DIP RADAR erken uyarıdır, SAFE LONG onaylı sinyaldir.
+Stop şart, FOMO yok.
 """.strip()
 
 def analyze(symbol):
@@ -576,7 +641,8 @@ def analyze(symbol):
         five = five_confirm(symbol, trend["fib"]["high"])
 
         safe_valid = safe_long_mode(one, trend, five)
-        sweep_valid, sweep_score, sweep_data = sweep_mode(one)
+        sweep_valid, sweep_data = sweep_mode(one)
+        dip_valid, dip_data = big_reversal_mode(symbol)
 
         mode = None
         title = None
@@ -585,6 +651,36 @@ def analyze(symbol):
         if safe_valid:
             mode = "SAFE_LONG"
             title = "🟢 SAFE LONG"
+
+        elif dip_valid:
+            mode = "DIP_RADAR"
+            title = "🟣 BIG REVERSAL / DIP RADAR"
+            extra_text = f"""
+Dip Radar Skoru: {dip_data['score']}/15
+
+4H Alt Bollinger:
+{dip_data['bb_lower']:.8f}
+
+1H Hacim Artışı:
+{dip_data['vol_ratio']:.2f}x
+
+1H USDT Hacim:
+{int(dip_data['usdt_volume'])} USDT
+
+1H RSI:
+{dip_data['rsi']:.2f}
+
+Alt Fitil:
+%{dip_data['lower_wick'] * 100:.1f}
+
+Sebep:
+{", ".join(dip_data['reasons'])}
+
+📍 Dip Kararı:
+Bu direkt long değildir.
+Dipten balina tepkisi olabilir.
+5m/15m retest ve kırılım beklenir.
+""".strip()
 
         elif sweep_valid and trend["macd_bull"] and 40 <= trend["rsi"] <= 72:
             mode = "SWEEP_LONG"
@@ -614,7 +710,7 @@ Sweep Sebebi:
         fake_risk, fake_label = fake_breakout_risk(one, five)
         confidence = confidence_score(one, trend, five, mode, fake_risk)
 
-        if confidence < MIN_SAFE_CONFIDENCE:
+        if mode == "SAFE_LONG" and confidence < MIN_SAFE_CONFIDENCE:
             return
 
         plan = trade_plan(one["price"], trend["fib"], mode)
@@ -626,6 +722,9 @@ Sweep Sebebi:
         if mode == "SAFE_LONG":
             cache = sent_safe
             cooldown = COOLDOWN_SAFE
+        elif mode == "DIP_RADAR":
+            cache = sent_dip
+            cooldown = COOLDOWN_DIP
         else:
             cache = sent_sweep
             cooldown = COOLDOWN_SWEEP
@@ -633,7 +732,7 @@ Sweep Sebebi:
         if not can_send(cache, key, cooldown):
             return
 
-        msg = format_trade_signal(
+        msg = format_signal(
             symbol,
             one,
             trend,
@@ -653,7 +752,7 @@ Sweep Sebebi:
         print("Analiz hata:", symbol, e, flush=True)
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. Sadece SAFE LONG ve güçlü SWEEP gönderilecek.")
+    send_telegram(f"✅ {BOT_NAME} başladı. SAFE LONG + DIP RADAR aktif.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
@@ -676,7 +775,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC Futures SAFE LONG Bot Aktif", 200
+    return "MEXC SAFE LONG + DIP RADAR Bot Aktif", 200
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
