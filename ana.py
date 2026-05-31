@@ -11,15 +11,15 @@ CHAT_ID = "6977265844"
 
 BOT_NAME = "🚄 MEXC RS EARLY RADAR + SAFE LONG BOT"
 
-MAX_SYMBOLS = 120
-SLEEP_SECONDS = 60
+MAX_SYMBOLS = 220
+SLEEP_SECONDS = 30
 
 COOLDOWN_EARLY = 4 * 60 * 60
 COOLDOWN_SAFE = 6 * 60 * 60
 COOLDOWN_DIP = 6 * 60 * 60
 COOLDOWN_SWEEP = 6 * 60 * 60
 
-MIN_EARLY_RS = 75
+MIN_EARLY_RS = 70
 MIN_SAFE_CONFIDENCE = 68
 MAX_RISK_PCT = 4.0
 
@@ -257,7 +257,7 @@ def early_radar(symbol, rs):
     if usdt_vol >= 30000:
         score += 1
         reasons.append("USDT hacim yeterli")
-    if 45 <= h1.rsi <= 72:
+    if 45 <= h1.rsi <= 85:
         score += 2
         reasons.append("RSI erken bölge")
     if obv_up:
