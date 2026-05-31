@@ -719,10 +719,10 @@ def analyze(item, btc_ok, btc_status):
     funding = get_funding(symbol)
 
     try:
-        early_ok, early_data = early_radar(symbol, rs)
+                early_ok, early_data = early_radar(symbol, rs)
 
-       if early_ok:
-    print("EARLY LOG:", symbol, round(rs, 1), flush=True)
+        if early_ok:
+            print("EARLY LOG:", symbol, round(rs, 1), flush=True)
 
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
 
