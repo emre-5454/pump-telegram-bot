@@ -721,9 +721,8 @@ def analyze(item, btc_ok, btc_status):
     try:
         early_ok, early_data = early_radar(symbol, rs)
 
-        if early_ok and can_send(sent_early, symbol + "_EARLY", COOLDOWN_EARLY):
-            send_telegram(format_early(symbol, early_data, funding, btc_status))
-            print("EARLY:", symbol, round(rs, 1), flush=True)
+       if early_ok:
+    print("EARLY LOG:", symbol, round(rs, 1), flush=True)
 
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
 
