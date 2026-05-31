@@ -719,7 +719,7 @@ def analyze(item, btc_ok, btc_status):
     funding = get_funding(symbol)
 
     try:
-                early_ok, early_data = early_radar(symbol, rs)
+        early_ok, early_data = early_radar(symbol, rs)
 
         if early_ok:
             print("EARLY LOG:", symbol, round(rs, 1), flush=True)
@@ -730,13 +730,19 @@ def analyze(item, btc_ok, btc_status):
             send_telegram(format_safe(symbol, safe_data, funding, btc_status))
             print("SAFE:", symbol, safe_data["confidence"], flush=True)
 
+        gold_ok, gold_data = gold_long(symbol, rs, btc_ok, funding)
+
+        if gold_ok and can_send(sent_gold, symbol + "_GOLD", COOLDOWN_GOLD):
+            send_telegram(format_gold(symbol, gold_data, funding, btc_status))
+            print("GOLD:", symbol, gold_data["score"], flush=True)
+
         dip_ok, dip_data = big_dip_radar(symbol, rs)
 
         if dip_ok and can_send(sent_dip, symbol + "_DIP", COOLDOWN_DIP):
             send_telegram(format_dip(symbol, dip_data, funding, btc_status))
             print("DIP:", symbol, round(rs, 1), flush=True)
 
-        if not early_ok and not safe_ok and not dip_ok:
+        if not early_ok and not safe_ok and not gold_ok and not dip_ok:
             print(
                 symbol,
                 "RS:", round(rs, 1),
