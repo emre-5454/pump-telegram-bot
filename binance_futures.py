@@ -450,74 +450,99 @@ def safe_long(symbol, rs, btc_ok, funding):
 
 
 def big_dip_radar(symbol, rs):
+    df15 = fetch_df(symbol, "15m", 120)
     df1h = fetch_df(symbol, "1h", 120)
     df4h = fetch_df(symbol, "4h", 120)
 
-    if df1h is None or df4h is None:
+    if df15 is None or df1h is None or df4h is None:
         return False, None
 
+    m15 = df15.iloc[-1]
+    m15_prev = df15.iloc[-2]
     h1 = df1h.iloc[-1]
     h1_prev = df1h.iloc[-2]
     h4 = df4h.iloc[-1]
-    h4_prev = df4h.iloc[-2]
 
-    bb_touch = h4.low <= h4.bb_lower or h4_prev.low <= h4_prev.bb_lower
+    bb_touch = h4.low <= h4.bb_lower * 1.03 or h1.low <= h1.bb_lower * 1.03
 
-    vol_ratio = h1.volume / h1.vol_avg if h1.vol_avg > 0 else 0
-    usdt_vol = h1.volume * h1.close
+    vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
+    usdt_vol = m15.volume * m15.close
 
-    obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
-    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 72
-    macd_turn = h1.macd > h1_prev.macd
+    strong_lower_wick = m15.lower_wick >= 0.40
+    recovered = m15.recovery_ratio >= 0.55 if "recovery_ratio" in df15.columns else ((m15.close - m15.low) / (m15.high - m15.low)) >= 0.55
+
+    rsi_was_low = h1_prev.rsi <= 45
+    rsi_turning = h1.rsi > h1_prev.rsi and h1.rsi <= 55
+
+    macd_turning = h1.macd > h1_prev.macd
+    obv_turning = df15["obv"].iloc[-1] > df15["obv"].iloc[-5]
+
+    support_reclaim = m15.close > m15.open and m15.close > m15.ema21 * 0.985
+
+    not_breakout = h1.rsi <= 55 and m15.close <= m15.ema21 * 1.04
 
     score = 0
     reasons = []
 
     if bb_touch:
         score += 3
-        reasons.append("4H alt Bollinger tepki")
+        reasons.append("4H/1H alt Bollinger yakın")
 
-    if vol_ratio >= 1.8:
+    if vol_ratio >= 2.0:
         score += 2
-        reasons.append("1H hacim artışı")
+        reasons.append("15m hacim patlaması")
 
     if usdt_vol >= 30000:
         score += 1
-        reasons.append("USDT hacim güçlü")
+        reasons.append("USDT hacim yeterli")
 
-    if h1.lower_wick >= 0.32:
-        score += 2
-        reasons.append("Alt fitil")
+    if strong_lower_wick:
+        score += 3
+        reasons.append("Aşağı iğne / güçlü alt fitil")
 
-    if obv_up:
+    if recovered:
         score += 2
-        reasons.append("OBV yukarı")
+        reasons.append("İğneden toparladı")
 
-    if rsi_turn:
-        score += 2
+    if rsi_was_low and rsi_turning:
+        score += 3
         reasons.append("RSI dipten dönüyor")
 
-    if macd_turn:
+    if macd_turning:
         score += 1
         reasons.append("MACD toparlanıyor")
 
-    if rs >= 65:
-        score += 1
-        reasons.append("RS fena değil")
+    if obv_turning:
+        score += 2
+        reasons.append("OBV para girişi")
 
-    valid = score >= 9 and bb_touch and vol_ratio >= 1.8 and obv_up and rsi_turn
+    if support_reclaim:
+        score += 2
+        reasons.append("Destek geri alındı")
+
+    valid = (
+        score >= 13
+        and bb_touch
+        and vol_ratio >= 2.0
+        and strong_lower_wick
+        and recovered
+        and rsi_was_low
+        and rsi_turning
+        and obv_turning
+        and support_reclaim
+        and not_breakout
+    )
 
     return valid, {
         "score": score,
-        "price": h1.close,
+        "price": m15.close,
         "rs": rs,
         "vol_ratio": vol_ratio,
         "usdt_vol": usdt_vol,
         "rsi": h1.rsi,
-        "lower_wick": h1.lower_wick,
+        "lower_wick": m15.lower_wick,
         "reasons": reasons
     }
-
 
 def format_safe(symbol, d, funding, btc_status):
     return f"""
