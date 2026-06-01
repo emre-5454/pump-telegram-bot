@@ -37,7 +37,6 @@ def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print(msg, flush=True)
         return
-
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -111,10 +110,8 @@ def fetch_df(symbol, timeframe, limit=120):
         data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         if not data or len(data) < 40:
             return None
-
         df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume"])
         return indicators(df).dropna().copy()
-
     except Exception as e:
         print("Fetch hata:", symbol, timeframe, e, flush=True)
         return None
@@ -131,22 +128,18 @@ def get_funding(symbol):
             return {"ok": False, "rate": rate, "status": "LONG KALABALIK ⚠️"}
         else:
             return {"ok": True, "rate": rate, "status": "SHORT BASKI ⚠️"}
-
     except Exception:
         return {"ok": True, "rate": 0, "status": "VERİ YOK"}
 
 
 def btc_filter():
     df = fetch_df("BTC/USDT:USDT", "15m", 120)
-
     if df is None:
         return True, "BTC VERİ YOK"
 
     last = df.iloc[-1]
-
     ok = last.close > last.ema21 and last.macd > last.macd_signal and last.rsi >= 42
-
-    return (ok, "BTC DESTEKLİ ✅" if ok else "BTC ZAYIF ❌")
+    return ok, "BTC DESTEKLİ ✅" if ok else "BTC ZAYIF ❌"
 
 
 def build_universe():
@@ -179,21 +172,6 @@ def build_universe():
             if volatility < 1.2:
                 continue
 
-            base_score = 0
-
-            if qv >= 15_000_000:
-                base_score += 3
-            elif qv >= 8_000_000:
-                base_score += 2
-            elif qv >= 3_000_000:
-                base_score += 1
-
-            if -10 <= pct <= 28:
-                base_score += 2
-
-            if 2 <= volatility <= 40:
-                base_score += 2
-
             rows.append({
                 "symbol": s,
                 "qv": qv,
@@ -201,15 +179,13 @@ def build_universe():
                 "last": last,
                 "high": high,
                 "low": low,
-                "volatility": volatility,
-                "base_score": base_score
+                "volatility": volatility
             })
 
         if not rows:
             return []
 
         df = pd.DataFrame(rows)
-
         df["pct_rank"] = df["pct"].rank(pct=True) * 100
         df["vol_rank"] = df["qv"].rank(pct=True) * 100
         df["volatility_rank"] = df["volatility"].rank(pct=True) * 100
@@ -221,7 +197,6 @@ def build_universe():
         )
 
         df = df.sort_values(["rs_score", "qv"], ascending=False).head(MAX_SYMBOLS)
-
         result = df.to_dict("records")
 
         print("RS evren seçildi:", len(result), flush=True)
@@ -544,62 +519,6 @@ def big_dip_radar(symbol, rs):
     }
 
 
-def format_early(symbol, d, funding, btc_status):
-    return f"""
-👀 {BOT_NAME}
-
-Mod: EARLY RADAR
-Coin: {symbol}
-
-Bu işlem sinyali değildir.
-Coin uyanıyor olabilir.
-
-RS Skoru:
-{d['rs']:.1f}/100
-
-Radar Skoru:
-{d['score']}/17
-
-Fiyat:
-{d['price']:.8f}
-
-1H Hacim Artışı:
-{d['vol_ratio_1h']:.2f}x
-
-15m Hacim Artışı:
-{d['vol_ratio_15m']:.2f}x
-
-1H USDT Hacim:
-{int(d['usdt_vol_1h'])} USDT
-
-15m USDT Hacim:
-{int(d['usdt_vol_15m'])} USDT
-
-1H RSI:
-{d['rsi']:.2f}
-
-24s Dipten Uzaklık:
-%{d['dist_from_low']:.2f}
-
-Bollinger:
-{'Açılıyor ✅' if d['bb_expanding'] else 'Henüz zayıf'}
-
-BTC:
-{btc_status}
-
-Funding:
-{funding['rate']:.6f}
-{funding['status']}
-
-Sebep:
-{", ".join(d['reasons'])}
-
-Karar:
-Takibe al.
-5m/15m kırılım gelmeden direkt long değil.
-""".strip()
-
-
 def format_safe(symbol, d, funding, btc_status):
     return f"""
 🚀 {BOT_NAME}
@@ -730,19 +649,13 @@ def analyze(item, btc_ok, btc_status):
             send_telegram(format_safe(symbol, safe_data, funding, btc_status))
             print("SAFE:", symbol, safe_data["confidence"], flush=True)
 
-        gold_ok, gold_data = gold_long(symbol, rs, btc_ok, funding)
-
-        if gold_ok and can_send(sent_gold, symbol + "_GOLD", COOLDOWN_GOLD):
-            send_telegram(format_gold(symbol, gold_data, funding, btc_status))
-            print("GOLD:", symbol, gold_data["score"], flush=True)
-
         dip_ok, dip_data = big_dip_radar(symbol, rs)
 
         if dip_ok and can_send(sent_dip, symbol + "_DIP", COOLDOWN_DIP):
             send_telegram(format_dip(symbol, dip_data, funding, btc_status))
             print("DIP:", symbol, round(rs, 1), flush=True)
 
-        if not early_ok and not safe_ok and not gold_ok and not dip_ok:
+        if not early_ok and not safe_ok and not dip_ok:
             print(
                 symbol,
                 "RS:", round(rs, 1),
@@ -756,7 +669,7 @@ def analyze(item, btc_ok, btc_status):
 
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. Binance Futures EARLY RADAR aktif.")
+    send_telegram(f"✅ {BOT_NAME} başladı. Binance Futures bot aktif.")
     print(BOT_NAME, "BAŞLADI", flush=True)
 
     while True:
@@ -784,7 +697,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES EARLY RADAR Bot Aktif", 200
+    return "BINANCE FUTURES Bot Aktif", 200
 
 
 if __name__ == "__main__":
