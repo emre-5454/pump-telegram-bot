@@ -17,11 +17,13 @@ SLEEP_SECONDS = 45
 EARLY_MAX_DISTANCE_FROM_24H_LOW = 8
 TRADE_MAX_DISTANCE_FROM_24H_LOW = 5
 SWEEP_MAX_DISTANCE_FROM_24H_LOW = 6
+SQUEEZE_MAX_DISTANCE_FROM_24H_LOW = 18
 
 COOLDOWN_EARLY = 60 * 60
 COOLDOWN_GOLD = 45 * 60
 COOLDOWN_SWEEP = 60 * 60
 COOLDOWN_SHORT = 60 * 60
+COOLDOWN_SQUEEZE = 45 * 60
 
 sent = {}
 
@@ -147,14 +149,6 @@ def btc_status():
     last = df.iloc[-1]
     ok = last.close > last.ema21 and last.rsi >= 42 and last.macd >= last.macd_signal
     return ok, "BTC DESTEKLİ ✅" if ok else "BTC ZAYIF ❌"
-
-
-def distance_from_24h_low(item):
-    low = item.get("low") or 0
-    last = item.get("last") or 0
-    if low <= 0 or last <= 0:
-        return 999
-    return ((last - low) / low) * 100
 
 
 def build_universe():
@@ -460,6 +454,95 @@ def sweep_msb_long(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding
     }
 
 
+def short_squeeze_long(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
+    if dist_low > SQUEEZE_MAX_DISTANCE_FROM_24H_LOW:
+        return False, None
+
+    df5 = fetch_df(symbol, "5m", 120)
+    df15 = fetch_df(symbol, "15m", 150)
+    df1h = fetch_df(symbol, "1h", 150)
+
+    if df5 is None or df15 is None or df1h is None:
+        return False, None
+
+    m5 = df5.iloc[-1]
+    m15 = df15.iloc[-1]
+    m15_prev = df15.iloc[-2]
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+
+    recent_support = df15["low"].iloc[-35:-5].min()
+    recent_breakdown = df15["low"].iloc[-5:].min() < recent_support
+
+    reclaim_ema21 = m15.close > m15.ema21
+    strong_green = m15.close > m15.open and m15.body_ratio >= 0.45
+
+    vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
+    usdt_vol = m15.volume * m15.close
+
+    obv_boom = df15["obv"].iloc[-1] > df15["obv"].iloc[-5]
+    macd_turn = m15.macd > m15_prev.macd
+    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi >= 48
+
+    msb = m5.close > df5["high"].iloc[-20:-1].max()
+
+    score = 0
+    reasons = []
+
+    if recent_breakdown:
+        score += 3; reasons.append("Önce destek altı fake kırılım")
+    if reclaim_ema21:
+        score += 3; reasons.append("EMA21 geri alındı")
+    if strong_green:
+        score += 3; reasons.append("Güçlü yeşil dönüş mumu")
+    if vol_ratio >= 2.0:
+        score += 2; reasons.append("15m hacim patlaması")
+    if usdt_vol >= 30000:
+        score += 1; reasons.append("USDT hacim yeterli")
+    if obv_boom:
+        score += 2; reasons.append("OBV yukarı patlama")
+    if macd_turn:
+        score += 2; reasons.append("MACD yukarı dönüyor")
+    if rsi_turn:
+        score += 2; reasons.append("RSI toparlanıyor")
+    if msb:
+        score += 3; reasons.append("5m MSB yukarı kırılım")
+    if btc_ok:
+        score += 1; reasons.append("BTC destekli")
+    if funding_ok:
+        score += 1; reasons.append("Funding uygun")
+
+    valid = (
+        score >= 16
+        and recent_breakdown
+        and reclaim_ema21
+        and strong_green
+        and vol_ratio >= 2.0
+        and obv_boom
+        and macd_turn
+        and rsi_turn
+        and msb
+    )
+
+    return valid, {
+        "score": score,
+        "price": m15.close,
+        "rs": rs,
+        "dist_low": dist_low,
+        "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol,
+        "rsi": h1.rsi,
+        "body": m15.body_ratio,
+        "recent_breakdown": recent_breakdown,
+        "reclaim_ema21": reclaim_ema21,
+        "msb": msb,
+        "reasons": reasons,
+        "btc": btc_text,
+        "funding_rate": funding_rate,
+        "funding_text": funding_text
+    }
+
+
 def dump_short(symbol, rs, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
     df5 = fetch_df(symbol, "5m", 120)
     df15 = fetch_df(symbol, "15m", 150)
@@ -471,6 +554,15 @@ def dump_short(symbol, rs, btc_ok, btc_text, funding_rate, funding_text, funding
     m15 = df15.iloc[-1]
     m15_prev = df15.iloc[-2]
     h1 = df1h.iloc[-1]
+
+    if m15.close > m15.ema21:
+        return False, None
+    if m15.close > m15.open:
+        return False, None
+    if h1.rsi > 60:
+        return False, None
+    if df15["obv"].iloc[-1] > df15["obv"].iloc[-3]:
+        return False, None
 
     support = df15["low"].iloc[-30:-1].min()
     breakdown = m15.close < support
@@ -693,6 +785,62 @@ Dipten dönüş adayı. Direkt long değil; 5m/15m tutunma bekle.
 """.strip()
 
 
+def msg_squeeze(symbol, d):
+    return f"""
+🟢 {BOT_NAME}
+
+Mod: SHORT SQUEEZE LONG
+Coin: {symbol}
+Yön: LONG ADAYI ✅
+
+Squeeze Skoru:
+{d['score']}/23
+
+RS Skoru:
+{d['rs']:.1f}/100
+
+Fiyat:
+{d['price']:.8f}
+
+24s Dipten Uzaklık:
+%{d['dist_low']:.2f}
+
+15m Hacim Artışı:
+{d['vol_ratio']:.2f}x
+
+15m USDT Hacim:
+{int(d['usdt_vol'])} USDT
+
+1H RSI:
+{d['rsi']:.2f}
+
+15m Yeşil Mum Gövde:
+%{d['body'] * 100:.1f}
+
+Fake Kırılım:
+{'VAR ✅' if d['recent_breakdown'] else 'YOK ❌'}
+
+EMA21 Geri Alındı:
+{'VAR ✅' if d['reclaim_ema21'] else 'YOK ❌'}
+
+5m MSB:
+{'VAR ✅' if d['msb'] else 'YOK ❌'}
+
+BTC:
+{d['btc']}
+
+Funding:
+{d['funding_rate']:.6f}
+{d['funding_text']}
+
+Sebep:
+{", ".join(d['reasons'])}
+
+Karar:
+Short squeeze / fake dump dönüş adayı. FOMO değil; 5m retest bekle.
+""".strip()
+
+
 def msg_short(symbol, d):
     return f"""
 🔻 {BOT_NAME}
@@ -757,6 +905,11 @@ def analyze(item, btc_ok, btc_text):
     funding_rate, funding_text, funding_ok = get_funding(symbol)
 
     try:
+        squeeze_ok, squeeze_data = short_squeeze_long(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok)
+        if squeeze_ok and can_send(symbol + "_SQUEEZE", COOLDOWN_SQUEEZE):
+            send_telegram(msg_squeeze(symbol, squeeze_data))
+            print("SQUEEZE:", symbol, squeeze_data["score"], flush=True)
+
         sweep_ok, sweep_data = sweep_msb_long(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok)
         if sweep_ok and can_send(symbol + "_SWEEP", COOLDOWN_SWEEP):
             send_telegram(msg_sweep(symbol, sweep_data))
@@ -777,22 +930,15 @@ def analyze(item, btc_ok, btc_text):
             send_telegram(msg_short(symbol, short_data))
             print("SHORT:", symbol, short_data["score"], flush=True)
 
-        if not sweep_ok and not gold_ok and not early_ok and not short_ok:
-            print(
-                symbol,
-                "RS:", round(rs, 1),
-                "DistLow:", round(dist_low, 2),
-                "Funding:", funding_text,
-                "İÇ FİLTRE",
-                flush=True
-            )
+        if not squeeze_ok and not sweep_ok and not gold_ok and not early_ok and not short_ok:
+            print(symbol, "RS:", round(rs, 1), "DistLow:", round(dist_low, 2), "Funding:", funding_text, "İÇ FİLTRE", flush=True)
 
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
 
 def run_bot():
-    send_telegram(f"✅ {BOT_NAME} başladı. EARLY + GOLD + SWEEP/MSB + SHORT aktif.")
+    send_telegram(f"✅ {BOT_NAME} başladı. EARLY + GOLD + SWEEP/MSB + SQUEEZE + SHORT aktif.")
     print(BOT_NAME, "başladı", flush=True)
 
     while True:
