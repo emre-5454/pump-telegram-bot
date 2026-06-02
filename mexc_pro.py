@@ -478,7 +478,7 @@ def short_squeeze_long(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fun
     }
 
 
-def dump_short(symbol, rs, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
+def dump_short(symbol, rs,dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
     df5 = fetch_df(symbol, "5m", 120)
     df15 = fetch_df(symbol, "15m", 150)
     df1h = fetch_df(symbol, "1h", 150)
