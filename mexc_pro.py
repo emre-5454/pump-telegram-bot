@@ -19,7 +19,7 @@ GOLD_MAX_DISTANCE_FROM_24H_LOW = 8
 SWEEP_MAX_DISTANCE_FROM_24H_LOW = 8
 SQUEEZE_MAX_DISTANCE_FROM_24H_LOW = 18
 
-COOLDOWN_EARLY = 45 * 60
+COOLDOWN_EARLY = 120 * 60
 COOLDOWN_GOLD = 45 * 60
 COOLDOWN_FLASH = 120 * 60
 COOLDOWN_SWEEP = 60 * 60
@@ -188,7 +188,15 @@ def early_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_te
     if ema_ok: score += 2; reasons.append("EMA21 Ã¼stÃ¼")
     if btc_ok: score += 1; reasons.append("BTC destekli")
     if funding_ok: score += 1; reasons.append("Funding uygun")
-    valid = score >= 11 and vol_ratio >= 1.5 and usdt_vol >= 15000 and ema_ok and obv_up
+   valid = (
+    score >= 13
+    and rs >= 70
+    and vol_ratio >= 2.2
+    and usdt_vol >= 50000
+    and ema_ok
+    and obv_up
+    and macd_turn
+)
     return valid, {"score": score, "price": m15.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
 
 
