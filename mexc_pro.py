@@ -21,7 +21,7 @@ SQUEEZE_MAX_DISTANCE_FROM_24H_LOW = 18
 
 COOLDOWN_EARLY = 45 * 60
 COOLDOWN_GOLD = 45 * 60
-COOLDOWN_FLASH = 30 * 60
+COOLDOWN_FLASH = 120 * 60
 COOLDOWN_SWEEP = 60 * 60
 COOLDOWN_SQUEEZE = 45 * 60
 COOLDOWN_SHORT = 60 * 60
@@ -253,7 +253,7 @@ def flash_sweep_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fund
     obv_turn = df5["obv"].iloc[-1] > df5["obv"].iloc[-3]
     macd_turn = df5["macd"].iloc[-1] > df5["macd"].iloc[-2]
     score, reasons = 0, []
-    if wick_5m >= 0.35 or wick_15m >= 0.35: score += 4; reasons.append("AÅŸaÄŸÄ± gÃ¼Ã§lÃ¼ iÄŸne")
+    if wick_5m >= 0.55 or wick_15m >= 0.55: score += 4; reasons.append("AÅŸaÄŸÄ± gÃ¼Ã§lÃ¼ iÄŸne")
     if recovery_5m >= 0.45 or recovery_15m >= 0.45: score += 3; reasons.append("Ä°ÄŸneden toparlanma var")
     if vol_ratio_5m >= 2.5 or vol_ratio_15m >= 2.0: score += 3; reasons.append("Hacim patlamasÄ±")
     if usdt_vol_5m >= 10000 or usdt_vol_15m >= 15000: score += 1; reasons.append("USDT hacim yeterli")
