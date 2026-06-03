@@ -188,15 +188,16 @@ def early_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_te
     if ema_ok: score += 2; reasons.append("EMA21 Ã¼stÃ¼")
     if btc_ok: score += 1; reasons.append("BTC destekli")
     if funding_ok: score += 1; reasons.append("Funding uygun")
-   valid = (
-    score >= 13
-    and rs >= 70
-    and vol_ratio >= 2.2
-    and usdt_vol >= 50000
-    and ema_ok
-    and obv_up
-    and macd_turn
-)
+    valid = (
+        score >= 13
+        and rs >= 70
+        and vol_ratio >= 2.2
+        and usdt_vol >= 50000
+        and ema_ok
+        and obv_up
+        and macd_turn
+    )
+
     return valid, {"score": score, "price": m15.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
 
 
