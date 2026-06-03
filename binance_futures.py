@@ -605,7 +605,7 @@ def dump_short(symbol, rs, btc_ok, btc_text, funding_rate, funding_text, funding
     if not btc_ok:
         score += 1; reasons.append("BTC zayıf")
 
-    valid = score >= 13 and breakdown and vol_ratio >= 2.0 and trend_down and macd_down and obv_down and red_body
+    valid = score >= 17 and breakdown and vol_ratio >= 4.0 and usdt_vol >= 100000 and trend_down and macd_down and obv_down and red_body
 
     return valid, {
         "score": score,
