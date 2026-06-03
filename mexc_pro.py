@@ -385,7 +385,16 @@ def dump_short(symbol, rs, *args):
     if red_body: score += 2; reasons.append("GÃ¼Ã§lÃ¼ kÄ±rmÄ±zÄ± mum")
     if rsi_ok: score += 1; reasons.append("RSI short iÃ§in uygun")
     if not btc_ok: score += 1; reasons.append("BTC zayÄ±f")
-    valid = score >= 13 and breakdown and vol_ratio >= 2 and trend_down and macd_down and obv_down and red_body
+    valid = (
+    score >= 17
+    and breakdown
+    and vol_ratio >= 4
+    and usdt_vol >= 100000
+    and trend_down
+    and macd_down
+    and obv_down
+    and red_body
+)
     return valid, {"score": score, "price": m15.close, "rs": rs, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "body": m15.body_ratio, "breakdown": breakdown, "trend_down": trend_down, "macd_down": macd_down, "obv_down": obv_down, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
 
 
