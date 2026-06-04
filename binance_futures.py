@@ -255,7 +255,7 @@ def early_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_te
     if funding_ok:
         score += 1; reasons.append("Funding uygun")
 
-    valid = score >= 11 and rs >= 62 and vol_ratio_15 >= 1.5 and usdt_15 >= 25000 and ema_ok and obv_up
+    valid = score >= 13 and rs >= 62 and vol_ratio_15 >= 1.5 and usdt_15 >= 100000 and ema_ok and obv_up
 
     return valid, {
         "score": score,
