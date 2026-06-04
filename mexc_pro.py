@@ -259,10 +259,10 @@ def para_girisi_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fund
         score += 1; reasons.append("BTC destekli")
 
     valid = (
-        score >= 14
-        and rs >= 60
-        and vol_ratio >= 2.0
-        and usdt_vol >= 50000
+        score >= 16
+        and rs >= 65
+        and vol_ratio >= 2.2
+        and usdt_vol >= 100000
         and obv_up
         and macd_ok
         and ema_ok
