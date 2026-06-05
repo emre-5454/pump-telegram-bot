@@ -283,7 +283,7 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundi
     if funding_ok:
         score += 1; reasons.append("Funding uygun")
 
-    valid = score >= 15 and rs >= 60 and vol_ratio >= 2.0 and usdt_vol >= 300000 and obv_up and macd_ok and ema_ok and rsi_ok
+    valid = score >= 15 and rs >= 60 and dist_low <= 20 and vol_ratio >= 2.0 and usdt_vol >= 300000 and obv_up and macd_ok and ema_ok and rsi_ok
     return valid, {"score": score, "price": m15.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "body": m5.body_ratio, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
 
 
