@@ -247,7 +247,22 @@ valid = (
     and recovery >= 0.45
 )
 
-    return valid, {"score": score, "price": price, "rs": rs, "dist_low": dist_low, "dip_price": dip_price, "bounce": bounce, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "lower_wick": lower_wick, "recovery": recovery, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
+        return valid, {
+        "score": score,
+        "price": price,
+        "rs": rs,
+        "dist_low": dist_low,
+        "dip_price": dip_price,
+        "bounce": bounce,
+        "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol,
+        "lower_wick": lower_wick,
+        "recovery": recovery,
+        "reasons": reasons,
+        "btc": btc_text,
+        "funding_rate": funding_rate,
+        "funding_text": funding_text
+    }
 
 
 def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
