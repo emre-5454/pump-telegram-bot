@@ -390,7 +390,17 @@ def safe_short(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_tex
     if not btc_ok:
         score += 1; reasons.append("BTC zayif")
 
-    valid = score >= 17 and breakdown and vol_ratio >= 4 and usdt_vol >= 300000 and trend_down and macd_down and obv_down and red_body
+    valid = (
+    score >= 17
+    and breakdown
+    and dist_low >= 8
+    and vol_ratio >= 4
+    and usdt_vol >= 300000
+    and trend_down
+    and macd_down
+    and obv_down
+    and red_body
+)
     return valid, {"score": score, "price": m15.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "body": m15.body_ratio, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
 
 
