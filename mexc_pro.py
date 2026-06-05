@@ -237,17 +237,17 @@ def dip_reversal_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fun
     if funding_ok:
         score += 1; reasons.append("Funding uygun")
         
-valid = (
-    score >= 13
-    and dist_low <= 12
-    and vol_ratio >= 1.7
-    and usdt_vol >= 25000
-    and bounce >= 1.5
-    and obv_turn
-    and recovery >= 0.45
-)
+        valid = (
+        score >= 13
+        and dist_low <= 12
+        and vol_ratio >= 1.7
+        and usdt_vol >= 25000
+        and bounce >= 1.5
+        and obv_turn
+        and recovery >= 0.45
+    )
 
-        return valid, {
+    return valid, {
         "score": score,
         "price": price,
         "rs": rs,
@@ -263,6 +263,7 @@ valid = (
         "funding_rate": funding_rate,
         "funding_text": funding_text
     }
+    
 
 
 def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
