@@ -227,7 +227,7 @@ def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundin
     valid = (
     score >= 11
     and dist_low <= 8
-    and vol_ratio >= 1.3
+    and vol_ratio >= 1.7
     and usdt_vol >= 15000
     and bounce >= 0.8
     and (obv_turn or rsi_turn)
