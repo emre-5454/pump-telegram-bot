@@ -236,8 +236,15 @@ def dip_reversal_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fun
         score += 1; reasons.append("24s dibe yakin")
     if funding_ok:
         score += 1; reasons.append("Funding uygun")
-
-    valid = score >= 15 and lower_wick >= 0.45 and recovery >= 0.60 and vol_ratio >= 2.5 and usdt_vol >= 30000 and bounce >= 2 and obv_turn
+valid = (
+    score >= 13
+    and dist_low <= 12
+    and vol_ratio >= 1.7
+    and usdt_vol >= 25000
+    and bounce >= 1.5
+    and obv_turn
+    and recovery >= 0.45
+)
 
     return valid, {"score": score, "price": price, "rs": rs, "dist_low": dist_low, "dip_price": dip_price, "bounce": bounce, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "lower_wick": lower_wick, "recovery": recovery, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
 
