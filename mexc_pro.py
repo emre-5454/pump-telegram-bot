@@ -236,6 +236,7 @@ def dip_reversal_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fun
         score += 1; reasons.append("24s dibe yakin")
     if funding_ok:
         score += 1; reasons.append("Funding uygun")
+        
 valid = (
     score >= 13
     and dist_low <= 12
