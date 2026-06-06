@@ -13,7 +13,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "MEXC PRO | IGNE + DIP + MOMENTUM BOT"
+BOT_NAME = "MEXC PRO | IGNE + SUPPORT + DIP + MOMENTUM BOT"
 
 MAX_SYMBOLS = 180
 SLEEP_SECONDS = 60
@@ -21,15 +21,9 @@ MAX_SIGNALS_PER_CYCLE = 8
 
 COOLDOWN_NEEDLE = 20 * 60
 COOLDOWN_DIP = 20 * 60
+COOLDOWN_SUPPORT = 20 * 60
 COOLDOWN_MOMENTUM = 20 * 60
-COOLDOWN_SHORT = 180 * 60
-
-sent = {}
-
-exchange = ccxt.mexc({
-    "enableRateLimit": True,
-    "timeout": 30000,
-    "options": {"defaultType": "swap", "adjustForTimeDifference": True}
+COOLDOWN_a
 })
 
 
@@ -252,6 +246,12 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     breakout = m15.close > recent_high * 1.002
     breakdown = m15.close < recent_low * 0.998
 
+    support_touch = (
+        m15.low <= recent_low * 1.015
+        or m5.low <= df5["low"].iloc[-36:-1].min() * 1.015
+        or m15.low <= m15.bb_lower * 1.02
+    )
+
     obv_turn = (
         df5["obv"].iloc[-1] > df5["obv"].iloc[-3]
         or df15["obv"].iloc[-1] > df15["obv"].iloc[-3]
@@ -291,6 +291,7 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
         "funding_text": funding_text,
         "btc": btc_text,
         "rsi_15m": m15.rsi,
+        "support_touch": support_touch,
         "obv_turn": obv_turn,
         "obv_up": obv_up,
         "obv_strong": obv_strong,
@@ -357,6 +358,69 @@ def needle_radar(m):
         and m["dist_low"] <= 12
         and m["relative_strength"] >= 0
         and m["money_impact"] >= 1.8
+    )
+
+    return valid, score, reasons
+
+
+
+def support_bounce(m):
+    score, reasons = 0, []
+
+    if m["support_touch"]:
+        score += 3
+        reasons.append("Destek bolgesine temas")
+
+    if m["dist_low"] <= 10:
+        score += 2
+        reasons.append("Dibe yakin")
+
+    if m["bounce"] >= 0.8:
+        score += 2
+        reasons.append("Destekten tepki basladi")
+
+    if m["vol_ratio"] >= 1.8:
+        score += 3
+        reasons.append("Hacim artiyor")
+
+    if m["usdt_vol"] >= 100000:
+        score += 2
+        reasons.append("USDT hacim guclu")
+
+    if m["money_impact"] >= 1.5:
+        score += 2
+        reasons.append("Para etkisi guclu")
+
+    if m["obv_turn"]:
+        score += 2
+        reasons.append("OBV donuyor")
+
+    if m["rsi_turn"]:
+        score += 2
+        reasons.append("RSI donuyor")
+
+    if m["macd_turn"]:
+        score += 1
+        reasons.append("MACD toparlaniyor")
+
+    if m["green_body"]:
+        score += 1
+        reasons.append("Yesil tepki mumu")
+
+    if m["relative_strength"] >= 0:
+        score += 2
+        reasons.append("BTCden zayif degil")
+
+    valid = (
+        score >= 13
+        and m["support_touch"]
+        and m["dist_low"] <= 10
+        and m["bounce"] >= 0.8
+        and m["vol_ratio"] >= 1.8
+        and m["usdt_vol"] >= 100000
+        and m["money_impact"] >= 1.5
+        and m["obv_turn"]
+        and m["relative_strength"] >= 0
     )
 
     return valid, score, reasons
@@ -585,6 +649,7 @@ def collect_candidates(item, btc_text, btc_change):
 
     checks = [
         ("NEEDLE", "ğŸš¨ IGNE RADARI", COOLDOWN_NEEDLE, needle_radar, "Likidasyon ignesi olabilir. Takibe al; direkt long degil."),
+        ("SUPPORT", "ğŸŸ¢ SUPPORT BOUNCE", COOLDOWN_SUPPORT, support_bounce, "Destekten tepki geliyor. Takibe al."),
         ("DIP", "ğŸ”¥ DIP RADAR", COOLDOWN_DIP, dip_radar, "Dipten donus adayi. 5m/15m kapanis takip."),
         ("MOMENTUM", "ğŸš€ MOMENTUM LONG", COOLDOWN_MOMENTUM, momentum_long, "Para girisi guclu. Retest veya devam mumu takip."),
         ("SHORT", "ğŸ”» MOMENTUM SHORT", COOLDOWN_SHORT, momentum_short, "Short adayi. Kirilim sonrasi retest takip.")
@@ -601,6 +666,12 @@ def collect_candidates(item, btc_text, btc_change):
 
             if tag == "MOMENTUM":
                 priority += 20
+
+            if tag == "DIP":
+                priority += 12
+
+            if tag == "SUPPORT":
+                priority += 8
 
             if tag == "NEEDLE":
                 priority += 5
