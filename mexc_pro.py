@@ -196,6 +196,12 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     vol_ratio = max(vol_ratio_5, vol_ratio_15)
     usdt_vol = max(m5.volume * m5.close, m15.volume * m15.close)
 
+    avg_usdt_5 = m5.vol_avg * m5.close if m5.vol_avg > 0 else 0
+    avg_usdt_15 = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    avg_usdt_vol = max(avg_usdt_5, avg_usdt_15)
+
+     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+
     dip_price = min(m5.low, m15.low)
     price = m5.close
     bounce = ((price - dip_price) / dip_price) * 100 if dip_price > 0 else 0
@@ -229,7 +235,7 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     return {
         "symbol": symbol, "price": price, "rs": rs, "dist_low": dist_low,
         "dip_price": dip_price, "bounce": bounce, "lower_wick": lower_wick,
-        "recovery": recovery, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol,
+        "recovery": recovery, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol,"money_impact": money_impact,
         "coin_change_15m": coin_change_15m, "btc_change_15m": btc_change,
         "relative_strength": relative_strength, "funding_rate": funding_rate,
         "funding_text": funding_text, "btc": btc_text, "rsi_15m": m15.rsi,
@@ -283,7 +289,7 @@ def dip_radar(m):
          score += 2
     reasons.append("BTCden guclu")
 
-    valid = score >= 15 and m["dist_low"] <= 10 and m["vol_ratio"] >= 1.8 and m["usdt_vol"] >= 50000 and m["bounce"] >= 1.2 and m["obv_turn"] and m["coin_change_15m"] >= 0.3 and m["relative_strength"] >= 0.3
+    valid = score >= 15 and m["dist_low"] <= 10 and m["vol_ratio"] >= 1.8 and m["usdt_vol"] >= 50000 and m["bounce"] >= 1.2 and m["obv_turn"] and m["coin_change_15m"] >= 0.5 and m["relative_strength"] >= 0.8 and m["money_impact"] >= 2.5
 
     return valid, score, reasons
 
