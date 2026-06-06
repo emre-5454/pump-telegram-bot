@@ -281,7 +281,7 @@ def dip_radar(m):
         score += 1; reasons.append("Yesil tepki mumu")
     if m["relative_strength"] >= 1.2:
         score += 2; reasons.append("BTCden guclu")
-    valid = score >= 15 and m["dist_low"] <= 10 and m["vol_ratio"] >= 1.8 and m["usdt_vol"] >= 50000 and m["bounce"] >= 1.2 and m["obv_turn"] and m["rsi_turn"] and m["recovery"] >= 0.45
+   valid = score >= 15 and m["dist_low"] <= 10 and m["vol_ratio"] >= 1.8 and m["usdt_vol"] >= 50000 and m["bounce"] >= 1.2 and m["obv_turn"] and m["coin_change_15m"] >= 0.3 and m["relative_strength"] >= 0.3
     return valid, score, reasons
 
 
