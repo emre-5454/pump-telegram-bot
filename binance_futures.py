@@ -8,17 +8,21 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
-BOT_NAME = "BINANCE FUTURES EARLY DIP + PARA GIRISI BOT"
+
+BOT_NAME = "BINANCE FUTURES EARLY DIP + CONFIRM BOT"
 
 MAX_SYMBOLS = 160
 SLEEP_SECONDS = 45
 
-COOLDOWN_EARLY_DIP = 90 * 60
-COOLDOWN_FLOW = 90 * 60
-COOLDOWN_GOLD = 120 * 60
-COOLDOWN_SHORT = 180 * 60
+COOLDOWN_EARLY_DIP = 120 * 60
+COOLDOWN_CONFIRM = 180 * 60
+COOLDOWN_FLOW = 120 * 60
+COOLDOWN_GOLD = 180 * 60
+COOLDOWN_SHORT = 240 * 60
+WATCH_EXPIRE_SECONDS = 90 * 60
 
 sent = {}
+watchlist = {}
 
 exchange = ccxt.binanceusdm({
     "enableRateLimit": True,
@@ -86,11 +90,20 @@ def add_indicators(df):
 
     candle_range = high - low
     df["body_ratio"] = (close - df["open"]).abs() / candle_range.replace(0, np.nan)
-    df["upper_wick"] = (high - pd.concat([df["open"], close], axis=1).max(axis=1)) / candle_range.replace(0, np.nan)
-    df["lower_wick"] = (pd.concat([df["open"], close], axis=1).min(axis=1) - low) / candle_range.replace(0, np.nan)
+    df["upper_wick"] = (
+        high - pd.concat([df["open"], close], axis=1).max(axis=1)
+    ) / candle_range.replace(0, np.nan)
+    df["lower_wick"] = (
+        pd.concat([df["open"], close], axis=1).min(axis=1) - low
+    ) / candle_range.replace(0, np.nan)
     df["recovery_ratio"] = (close - low) / candle_range.replace(0, np.nan)
 
-    df["obv"] = np.where(close > close.shift(1), volume, np.where(close < close.shift(1), -volume, 0)).cumsum()
+    df["obv"] = np.where(
+        close > close.shift(1),
+        volume,
+        np.where(close < close.shift(1), -volume, 0)
+    ).cumsum()
+
     return df.dropna().copy()
 
 
@@ -124,18 +137,26 @@ def get_funding(symbol):
 def btc_status():
     df = fetch_df("BTC/USDT:USDT", "15m", 120)
     if df is None:
-        return True, "BTC VERI YOK"
+        return True, "BTC VERI YOK", 0
+
     last = df.iloc[-1]
+    prev = df.iloc[-2]
     ok = last.close > last.ema21 and last.rsi >= 42 and last.macd >= last.macd_signal
-    return ok, "BTC DESTEKLI" if ok else "BTC ZAYIF"
+    btc_change_15m = ((last.close - prev.open) / prev.open) * 100 if prev.open > 0 else 0
+    return ok, "BTC DESTEKLI" if ok else "BTC ZAYIF", btc_change_15m
 
 
 def build_universe():
     try:
         markets = exchange.load_markets()
-        symbols = [s for s in markets if s.endswith("/USDT:USDT") and markets[s].get("active", True)]
+        symbols = [
+            s for s in markets
+            if s.endswith("/USDT:USDT") and markets[s].get("active", True)
+        ]
+
         tickers = exchange.fetch_tickers(symbols)
         rows = []
+
         for s in symbols:
             t = tickers.get(s, {})
             qv = t.get("quoteVolume") or 0
@@ -143,31 +164,49 @@ def build_universe():
             last = t.get("last") or 0
             high = t.get("high") or 0
             low = t.get("low") or 0
+
             if qv < 1_000_000 or last <= 0 or high <= 0 or low <= 0:
                 continue
+
             volatility = ((high - low) / last) * 100
             dist_low = ((last - low) / low) * 100
+
             if volatility < 1:
                 continue
-            rows.append({"symbol": s, "qv": qv, "pct": pct, "last": last, "high": high, "low": low, "volatility": volatility, "dist_low": dist_low})
+
+            rows.append({
+                "symbol": s, "qv": qv, "pct": pct, "last": last,
+                "high": high, "low": low, "volatility": volatility,
+                "dist_low": dist_low
+            })
+
         if not rows:
             return []
+
         df = pd.DataFrame(rows)
         df["pct_rank"] = df["pct"].rank(pct=True) * 100
         df["vol_rank"] = df["qv"].rank(pct=True) * 100
         df["volatility_rank"] = df["volatility"].rank(pct=True) * 100
-        df["rs_score"] = df["pct_rank"] * 0.30 + df["vol_rank"] * 0.45 + df["volatility_rank"] * 0.25
+
+        df["rs_score"] = (
+            df["pct_rank"] * 0.30 +
+            df["vol_rank"] * 0.45 +
+            df["volatility_rank"] * 0.25
+        )
+
         df = df.sort_values(["rs_score", "qv"], ascending=False).head(MAX_SYMBOLS)
         return df.to_dict("records")
+
     except Exception as e:
         print("Universe hata:", e, flush=True)
         return []
 
 
-def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
+def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok):
     df5 = fetch_df(symbol, "5m", 120)
     df15 = fetch_df(symbol, "15m", 150)
     df1h = fetch_df(symbol, "1h", 150)
+
     if df5 is None or df15 is None or df1h is None:
         return False, None
 
@@ -179,11 +218,15 @@ def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundin
     vol_ratio_5 = m5.volume / m5.vol_avg if m5.vol_avg > 0 else 0
     vol_ratio_15 = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
     vol_ratio = max(vol_ratio_5, vol_ratio_15)
-    usdt_vol = max(m5.volume * m5.close, m15.volume * m15.close)
+
+    usdt_5 = m5.volume * m5.close
+    usdt_15 = m15.volume * m15.close
+    usdt_vol = max(usdt_5, usdt_15)
 
     dip_price = min(m5.low, m15.low)
     price = m5.close
     bounce = ((price - dip_price) / dip_price) * 100 if dip_price > 0 else 0
+
     lower_wick = max(m5.lower_wick, m15.lower_wick)
     recovery = max(m5.recovery_ratio, m15.recovery_ratio)
 
@@ -192,57 +235,157 @@ def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundin
     swept_low = m5.low <= recent_low_5 * 1.004 or m15.low <= recent_low_15 * 1.004
 
     obv_turn = df5["obv"].iloc[-1] > df5["obv"].iloc[-3] or df15["obv"].iloc[-1] > df15["obv"].iloc[-3]
-    macd_turn = df5["macd_hist"].iloc[-1] > df5["macd_hist"].iloc[-2] or df15["macd_hist"].iloc[-1] > df15["macd_hist"].iloc[-2]
     rsi_turn = h1.rsi >= h1_prev.rsi or m15.rsi >= df15.iloc[-2].rsi
+    macd_turn = df5["macd_hist"].iloc[-1] > df5["macd_hist"].iloc[-2] or df15["macd_hist"].iloc[-1] > df15["macd_hist"].iloc[-2]
     green_reaction = m5.close > m5.open or m15.close > m15.open
-    near_low = dist_low <= 12
+    near_low = dist_low <= 8
+
+    coin_change_15m = ((m15.close - m15.open) / m15.open) * 100 if m15.open > 0 else 0
+    relative_strength = coin_change_15m - btc_change
 
     score = 0
     reasons = []
+
     if near_low:
         score += 3; reasons.append("24s dibe yakin")
     if lower_wick >= 0.35:
         score += 3; reasons.append("Alt igne var")
-    if recovery >= 0.45:
-        score += 3; reasons.append("Igneden toparlaniyor")
+    if recovery >= 0.35:
+        score += 2; reasons.append("Igneden toparlaniyor")
     if vol_ratio >= 1.7:
         score += 3; reasons.append("Hacim erken artiyor")
-    if usdt_vol >= 75000:
-        score += 2; reasons.append("USDT hacim yeterli")
+    if usdt_vol >= 15000:
+        score += 1; reasons.append("USDT hacim yeterli")
     if swept_low:
         score += 2; reasons.append("Likidite supurmesi")
-    if bounce >= 1.5:
+    if bounce >= 0.8:
         score += 2; reasons.append("Dipten tepki basladi")
     if obv_turn:
         score += 3; reasons.append("OBV donuyor")
+    if rsi_turn:
+        score += 2; reasons.append("RSI donuyor")
     if macd_turn:
         score += 1; reasons.append("MACD toparlaniyor")
-    if rsi_turn:
-        score += 1; reasons.append("RSI donuyor")
     if green_reaction:
         score += 1; reasons.append("Yesil tepki mumu")
-    if funding_ok:
-        score += 1; reasons.append("Funding uygun")
+    if relative_strength >= 0.8:
+        score += 2; reasons.append("BTCden guclu")
 
     valid = (
-    score >= 13
-    and dist_low <= 8
-    and vol_ratio >= 1.7
-    and usdt_vol >= 15000
-    and bounce >= 0.8
-    and obv_turn
-    and rsi_turn    
-    and recovery >= 0.35
-)
-    return valid, {"score": score, "price": price, "rs": rs, "dist_low": dist_low, "dip_price": dip_price, "bounce": bounce, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "lower_wick": lower_wick, "recovery": recovery, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
+        score >= 13
+        and dist_low <= 8
+        and vol_ratio >= 1.7
+        and usdt_vol >= 15000
+        and bounce >= 0.8
+        and obv_turn
+        and rsi_turn
+        and recovery >= 0.35
+    )
+
+    return valid, {
+        "score": score, "price": price, "rs": rs,
+        "dist_low": dist_low, "dip_price": dip_price,
+        "bounce": bounce, "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol, "lower_wick": lower_wick,
+        "recovery": recovery, "coin_change_15m": coin_change_15m,
+        "btc_change_15m": btc_change, "relative_strength": relative_strength,
+        "reasons": reasons, "btc": btc_text,
+        "funding_rate": funding_rate, "funding_text": funding_text
+    }
 
 
-def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
+def dip_confirm(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok):
+    if symbol not in watchlist:
+        return False, None
+
+    w = watchlist[symbol]
+    if time.time() - w["time"] > WATCH_EXPIRE_SECONDS:
+        watchlist.pop(symbol, None)
+        return False, None
+
+    df5 = fetch_df(symbol, "5m", 120)
+    df15 = fetch_df(symbol, "15m", 150)
+
+    if df5 is None or df15 is None:
+        return False, None
+
+    m5 = df5.iloc[-1]
+    m5_prev = df5.iloc[-2]
+    m15 = df15.iloc[-1]
+
+    price = m5.close
+    early_price = w["price"]
+    dip_price = w["dip_price"]
+
+    profit_from_alert = ((price - early_price) / early_price) * 100 if early_price > 0 else 0
+    bounce_from_dip = ((price - dip_price) / dip_price) * 100 if dip_price > 0 else 0
+
+    vol_ratio = m5.volume / m5.vol_avg if m5.vol_avg > 0 else 0
+    usdt_vol = m5.volume * m5.close
+
+    obv_continue = df5["obv"].iloc[-1] > df5["obv"].iloc[-3]
+    macd_continue = m5.macd_hist > m5_prev.macd_hist
+    ema_reclaim = m5.close > m5.ema9 or m15.close > m15.ema21
+    hold_dip = price > dip_price * 1.006
+    green_continue = m5.close > m5.open or m15.close > m15.open
+
+    coin_change_15m = ((m15.close - m15.open) / m15.open) * 100 if m15.open > 0 else 0
+    relative_strength = coin_change_15m - btc_change
+
+    score = 0
+    reasons = []
+
+    if profit_from_alert >= 0.8:
+        score += 2; reasons.append("Early alarmdan sonra yukari")
+    if bounce_from_dip >= 2.0:
+        score += 2; reasons.append("Dipten tepki devam")
+    if vol_ratio >= 1.5:
+        score += 2; reasons.append("Hacim devam ediyor")
+    if usdt_vol >= 30000:
+        score += 1; reasons.append("USDT hacim yeterli")
+    if obv_continue:
+        score += 3; reasons.append("OBV yukari devam")
+    if macd_continue:
+        score += 2; reasons.append("MACD gucleniyor")
+    if ema_reclaim:
+        score += 2; reasons.append("EMA geri aliniyor")
+    if hold_dip:
+        score += 2; reasons.append("Dip ustunde tutunuyor")
+    if green_continue:
+        score += 1; reasons.append("Yesil devam mumu")
+    if relative_strength >= 0.8:
+        score += 2; reasons.append("BTCden guclu")
+
+    valid = (
+        score >= 13
+        and profit_from_alert >= 0.8
+        and bounce_from_dip >= 2.0
+        and vol_ratio >= 1.5
+        and obv_continue
+        and hold_dip
+        and relative_strength >= 0.5
+    )
+
+    return valid, {
+        "score": score, "price": price, "rs": rs,
+        "dist_low": dist_low, "dip_price": dip_price,
+        "early_price": early_price, "profit_from_alert": profit_from_alert,
+        "bounce": bounce_from_dip, "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol, "coin_change_15m": coin_change_15m,
+        "btc_change_15m": btc_change, "relative_strength": relative_strength,
+        "reasons": reasons, "btc": btc_text,
+        "funding_rate": funding_rate, "funding_text": funding_text
+    }
+
+
+def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok):
     df5 = fetch_df(symbol, "5m", 120)
     df15 = fetch_df(symbol, "15m", 150)
     df1h = fetch_df(symbol, "1h", 150)
+
     if df5 is None or df15 is None or df1h is None:
         return False, None
+
     m5 = df5.iloc[-1]
     m15 = df15.iloc[-1]
     m15_prev = df15.iloc[-2]
@@ -250,6 +393,7 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundi
 
     vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
     usdt_vol = m15.volume * m15.close
+
     obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-6]
     macd_turn = m15.macd_hist > m15_prev.macd_hist
     macd_ok = m15.macd >= m15.macd_signal or macd_turn
@@ -259,8 +403,12 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundi
     wick_ok = m5.upper_wick <= 0.55
     rsi_ok = 42 <= h1.rsi <= 82
 
+    coin_change_15m = ((m15.close - m15.open) / m15.open) * 100 if m15.open > 0 else 0
+    relative_strength = coin_change_15m - btc_change
+
     score = 0
     reasons = []
+
     if rs >= 60:
         score += 2; reasons.append("RS guclu")
     if vol_ratio >= 2.0:
@@ -281,74 +429,38 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fundi
         score += 1; reasons.append("Ust fitil saglikli")
     if rsi_ok:
         score += 1; reasons.append("RSI uygun")
-    if funding_ok:
-        score += 1; reasons.append("Funding uygun")
+    if relative_strength >= 1.0:
+        score += 2; reasons.append("BTCden guclu")
 
-    valid = score >= 15 and rs >= 60 and dist_low <= 20 and vol_ratio >= 2.0 and usdt_vol >= 300000 and obv_up and macd_ok and ema_ok and rsi_ok
-    return valid, {"score": score, "price": m15.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "body": m5.body_ratio, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
+    valid = (
+        score >= 15 and rs >= 60 and dist_low <= 20
+        and vol_ratio >= 2.0 and usdt_vol >= 300000
+        and obv_up and macd_ok and ema_ok and rsi_ok
+    )
 
-
-def gold_long(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
-    df1m = fetch_df(symbol, "1m", 100)
-    df5 = fetch_df(symbol, "5m", 120)
-    df15 = fetch_df(symbol, "15m", 150)
-    if df1m is None or df5 is None or df15 is None:
-        return False, None
-    m1 = df1m.iloc[-1]
-    prev3 = df1m.iloc[-4]
-    m5 = df5.iloc[-1]
-    m15 = df15.iloc[-1]
-    m15_prev = df15.iloc[-2]
-
-    vol_ratio = m1.volume / m1.vol_avg if m1.vol_avg > 0 else 0
-    usdt_vol = m1.volume * m1.close
-    change_3m = ((m1.close - prev3.open) / prev3.open) * 100
-    obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-6]
-    macd_up = m15.macd > m15.macd_signal and m15.macd_hist > m15_prev.macd_hist
-    trend_up = m15.ema9 > m15.ema21 and m15.close > m15.ema21
-    body_ok = m5.body_ratio >= 0.40
-    wick_ok = m5.upper_wick <= 0.45
-    rsi_ok = 48 <= m15.rsi <= 86
-
-    score = 0
-    reasons = []
-    if rs >= 72:
-        score += 2; reasons.append("RS cok guclu")
-    if vol_ratio >= 3:
-        score += 3; reasons.append("1m hacim patladi")
-    if usdt_vol >= 300000:
-        score += 2; reasons.append("USDT hacim guclu")
-    if change_3m >= 0.35:
-        score += 2; reasons.append("3m momentum var")
-    if obv_up:
-        score += 3; reasons.append("OBV para girisi")
-    if macd_up:
-        score += 2; reasons.append("MACD pozitif")
-    if trend_up:
-        score += 2; reasons.append("Trend yukari")
-    if body_ok:
-        score += 1; reasons.append("5m govde guclu")
-    if wick_ok:
-        score += 1; reasons.append("Ust fitil saglikli")
-    if rsi_ok:
-        score += 1; reasons.append("RSI uygun")
-    if funding_ok:
-        score += 1; reasons.append("Funding uygun")
-
-    valid = score >= 16 and rs >= 72 and vol_ratio >= 3 and usdt_vol >= 300000 and change_3m >= 0.35 and obv_up and macd_up and trend_up and body_ok and wick_ok
-    return valid, {"score": score, "price": m1.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "change_3m": change_3m, "rsi": m15.rsi, "body": m5.body_ratio, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
+    return valid, {
+        "score": score, "price": m15.close, "rs": rs,
+        "dist_low": dist_low, "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol, "coin_change_15m": coin_change_15m,
+        "btc_change_15m": btc_change, "relative_strength": relative_strength,
+        "rsi": h1.rsi, "body": m5.body_ratio,
+        "reasons": reasons, "btc": btc_text,
+        "funding_rate": funding_rate, "funding_text": funding_text
+    }
 
 
-def safe_short(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok):
+def safe_short(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok):
     df15 = fetch_df(symbol, "15m", 150)
     df1h = fetch_df(symbol, "1h", 150)
+
     if df15 is None or df1h is None:
         return False, None
+
     m15 = df15.iloc[-1]
     m15_prev = df15.iloc[-2]
     h1 = df1h.iloc[-1]
 
-    if dist_low <= 5:
+    if dist_low <= 8:
         return False, None
     if m15.close <= m15.bb_lower * 1.03:
         return False, None
@@ -374,6 +486,7 @@ def safe_short(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_tex
 
     score = 0
     reasons = []
+
     if breakdown:
         score += 4; reasons.append("Destek kirilimi")
     if vol_ratio >= 4:
@@ -392,28 +505,40 @@ def safe_short(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_tex
         score += 1; reasons.append("BTC zayif")
 
     valid = (
-    score >= 17
-    and breakdown
-    and dist_low >= 8
-    and vol_ratio >= 4
-    and usdt_vol >= 300000
-    and trend_down
-    and macd_down
-    and obv_down
-    and red_body
-)
-    return valid, {"score": score, "price": m15.close, "rs": rs, "dist_low": dist_low, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "rsi": h1.rsi, "body": m15.body_ratio, "reasons": reasons, "btc": btc_text, "funding_rate": funding_rate, "funding_text": funding_text}
+        score >= 17 and breakdown and dist_low >= 8
+        and vol_ratio >= 4 and usdt_vol >= 300000
+        and trend_down and macd_down and obv_down and red_body
+    )
+
+    return valid, {
+        "score": score, "price": m15.close, "rs": rs,
+        "dist_low": dist_low, "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol, "rsi": h1.rsi,
+        "body": m15.body_ratio, "reasons": reasons,
+        "btc": btc_text, "funding_rate": funding_rate,
+        "funding_text": funding_text
+    }
 
 
 def make_msg(title, symbol, d, decision):
     extra = ""
     if "dip_price" in d:
-        extra = f"""
+        extra += f"""
 Igne Dibi: {d['dip_price']:.8f}
 Dipten Tepki: %{d['bounce']:.2f}
-Alt Fitil: %{d['lower_wick'] * 100:.1f}
-Toparlanma: %{d['recovery'] * 100:.1f}
 """
+    if "early_price" in d:
+        extra += f"""
+Early Fiyat: {d['early_price']:.8f}
+Early Sonrasi: %{d['profit_from_alert']:.2f}
+"""
+    if "relative_strength" in d:
+        extra += f"""
+Coin 15m: %{d['coin_change_15m']:.2f}
+BTC 15m: %{d['btc_change_15m']:.2f}
+BTCye Gore Guc: %{d['relative_strength']:.2f}
+"""
+
     return f"""
 {title}
 {BOT_NAME}
@@ -437,30 +562,43 @@ Karar:
 """.strip()
 
 
-def analyze(item, btc_ok, btc_text):
+def analyze(item, btc_ok, btc_text, btc_change):
     symbol = item["symbol"]
     rs = item["rs_score"]
     dist_low = item["dist_low"]
     funding_rate, funding_text, funding_ok = get_funding(symbol)
 
     try:
+        ok_confirm, data_confirm = dip_confirm(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok)
+        if ok_confirm and can_send(symbol + "_CONFIRM", COOLDOWN_CONFIRM):
+            send_telegram(make_msg("DIP CONFIRM", symbol, data_confirm, "Dip sinyali guclendi. Para girisi devam ediyor; retest takip."))
+            print("CONFIRM", symbol, data_confirm["score"], flush=True)
+            watchlist.pop(symbol, None)
+            return
+
+        ok_early, data_early = early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok)
+        if ok_early and can_send(symbol + "_EARLY_DIP", COOLDOWN_EARLY_DIP):
+            send_telegram(make_msg("EARLY DIP RADAR", symbol, data_early, "Erken dip alarmi. Direkt long degil; confirm bekle."))
+            watchlist[symbol] = {"time": time.time(), "price": data_early["price"], "dip_price": data_early["dip_price"]}
+            print("EARLY_DIP", symbol, data_early["score"], flush=True)
+            return
+
         checks = [
-            ("EARLY_DIP", COOLDOWN_EARLY_DIP, early_dip_radar, "EARLY DIP RADAR", "Erken dip alarmi. Direkt long degil; 5m/15m kapanis takip."),
             ("FLOW", COOLDOWN_FLOW, money_flow_radar, "PARA GIRISI RADAR", "Para girisi var. Kirilim ve retest takip."),
-            ("GOLD", COOLDOWN_GOLD, gold_long, "GOLD LONG", "Guclu long adayi. FOMO degil; retest bekle."),
             ("SHORT", COOLDOWN_SHORT, safe_short, "SAFE SHORT", "Short adayi. Kirilim sonrasi retest bekle.")
         ]
 
         any_signal = False
         for tag, cooldown, func, title, decision in checks:
-            ok, data = func(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, funding_text, funding_ok)
+            ok, data = func(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok)
             if ok and can_send(symbol + "_" + tag, cooldown):
                 send_telegram(make_msg(title, symbol, data, decision))
                 print(tag, symbol, data["score"], flush=True)
                 any_signal = True
 
         if not any_signal:
-            print(symbol, "RS:", round(rs, 1), "DistLow:", round(dist_low, 2), "Funding:", funding_text, "IC FILTRE", flush=True)
+            print(symbol, "RS:", round(rs, 1), "DistLow:", round(dist_low, 2), "BTC15:", round(btc_change, 2), "Funding:", funding_text, "IC FILTRE", flush=True)
+
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
@@ -472,15 +610,19 @@ def run_bot():
     while True:
         try:
             print("Tarama basladi:", datetime.now(), flush=True)
-            btc_ok, btc_text = btc_status()
-            print("BTC:", btc_text, flush=True)
+            btc_ok, btc_text, btc_change = btc_status()
+            print("BTC:", btc_text, "BTC15:", round(btc_change, 2), flush=True)
+
             universe = build_universe()
-            print("Taranacak coin:", len(universe), flush=True)
+            print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), flush=True)
+
             for item in universe:
-                analyze(item, btc_ok, btc_text)
+                analyze(item, btc_ok, btc_text, btc_change)
                 time.sleep(0.25)
+
             print("Tur bitti. Bekleme:", SLEEP_SECONDS, flush=True)
             time.sleep(SLEEP_SECONDS)
+
         except Exception as e:
             print("Genel hata:", e, flush=True)
             send_telegram(f"BINANCE bot genel hata:\n{e}")
@@ -489,7 +631,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE EARLY DIP BOT AKTIF", 200
+    return "BINANCE EARLY DIP CONFIRM BOT AKTIF", 200
 
 
 if __name__ == "__main__":
