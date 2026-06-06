@@ -433,7 +433,7 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding
         score += 2; reasons.append("BTCden guclu")
 
     valid = (
-        score >= 15 and rs >= 60 and dist_low <= 20
+        score >= 15 and rs >= 60 and dist_low <= 10
         and vol_ratio >= 2.0 and usdt_vol >= 300000
         and obv_up and macd_ok and ema_ok and rsi_ok
     )
