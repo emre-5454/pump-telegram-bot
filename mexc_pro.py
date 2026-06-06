@@ -472,9 +472,9 @@ def momentum_long(m):
         reasons.append("Ust fitil saglikli")
 
     valid = (
-        score >= 15
-        and m["coin_change_15m"] >= 2.5
-        and m["relative_strength"] >= 1.5
+        score >= 14
+        and m["coin_change_15m"] >= 1.2
+        and m["relative_strength"] >= 1.0
         and m["vol_ratio"] >= 2.2
         and m["usdt_vol"] >= 150000
         and m["money_impact"] >= 1.8
