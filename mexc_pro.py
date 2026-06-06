@@ -46,6 +46,12 @@ def can_send(key, cooldown):
     sent[key] = now
     return True
 
+exchange = ccxt.mexc({
+    "enableRateLimit": True,
+    "timeout": 30000,
+    "options": {"defaultType": "swap", "adjustForTimeDifference": True}
+})
+
 
 def rsi(series, length=14):
     delta = series.diff()
