@@ -92,8 +92,12 @@ def add_indicators(df):
 
     candle_range = (high - low).replace(0, np.nan)
     df["body_ratio"] = (close - df["open"]).abs() / candle_range
-    df["upper_wick"] = (high - pd.concat([df["open"], close], axis=1).max(axis=1)) / candle_range
-    df["lower_wick"] = (pd.concat([df["open"], close], axis=1).min(axis=1) - low) / candle_range
+    df["upper_wick"] = (
+        high - pd.concat([df["open"], close], axis=1).max(axis=1)
+    ) / candle_range
+    df["lower_wick"] = (
+        pd.concat([df["open"], close], axis=1).min(axis=1) - low
+    ) / candle_range
     df["recovery_ratio"] = (close - low) / candle_range
 
     df["obv"] = np.where(
@@ -111,7 +115,10 @@ def fetch_df(symbol, timeframe, limit=200):
             data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not data or len(data) < 80:
                 return None
-            df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume"])
+            df = pd.DataFrame(
+                data,
+                columns=["time", "open", "high", "low", "close", "volume"]
+            )
             return add_indicators(df)
         except Exception as e:
             print("Veri hata:", symbol, timeframe, e, flush=True)
@@ -136,18 +143,25 @@ def btc_status():
     df = fetch_df("BTC/USDT:USDT", "15m", 120)
     if df is None:
         return True, "BTC VERI YOK", 0
+
     last = df.iloc[-1]
     btc_change_15m = ((last.close - last.open) / last.open) * 100 if last.open > 0 else 0
     ok = last.close > last.ema21 and last.rsi >= 42 and last.macd >= last.macd_signal
+
     return ok, "BTC DESTEKLI" if ok else "BTC ZAYIF", btc_change_15m
 
 
 def build_universe():
     try:
         markets = exchange.load_markets()
-        symbols = [s for s in markets if s.endswith("/USDT:USDT") and markets[s].get("active", True)]
+        symbols = [
+            s for s in markets
+            if s.endswith("/USDT:USDT") and markets[s].get("active", True)
+        ]
+
         tickers = exchange.fetch_tickers(symbols)
         rows = []
+
         for s in symbols:
             t = tickers.get(s, {})
             qv = t.get("quoteVolume") or 0
@@ -155,26 +169,43 @@ def build_universe():
             last = t.get("last") or 0
             high = t.get("high") or 0
             low = t.get("low") or 0
+
             if qv < 800_000 or last <= 0 or high <= 0 or low <= 0:
                 continue
+
             volatility = ((high - low) / last) * 100
             dist_low = ((last - low) / low) * 100
+
             if volatility < 1:
                 continue
+
             rows.append({
-                "symbol": s, "qv": qv, "pct": pct, "last": last,
-                "high": high, "low": low, "volatility": volatility,
+                "symbol": s,
+                "qv": qv,
+                "pct": pct,
+                "last": last,
+                "high": high,
+                "low": low,
+                "volatility": volatility,
                 "dist_low": dist_low
             })
+
         if not rows:
             return []
+
         df = pd.DataFrame(rows)
         df["pct_rank"] = df["pct"].rank(pct=True) * 100
         df["vol_rank"] = df["qv"].rank(pct=True) * 100
         df["volatility_rank"] = df["volatility"].rank(pct=True) * 100
-        df["rs_score"] = df["pct_rank"] * 0.30 + df["vol_rank"] * 0.45 + df["volatility_rank"] * 0.25
+        df["rs_score"] = (
+            df["pct_rank"] * 0.30 +
+            df["vol_rank"] * 0.45 +
+            df["volatility_rank"] * 0.25
+        )
+
         df = df.sort_values(["rs_score", "qv"], ascending=False).head(MAX_SYMBOLS)
         return df.to_dict("records")
+
     except Exception as e:
         print("Universe hata:", e, flush=True)
         return []
@@ -184,6 +215,7 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     df5 = fetch_df(symbol, "5m", 140)
     df15 = fetch_df(symbol, "15m", 180)
     df1h = fetch_df(symbol, "1h", 180)
+
     if df5 is None or df15 is None or df1h is None:
         return None
 
@@ -194,17 +226,20 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     vol_ratio_5 = m5.volume / m5.vol_avg if m5.vol_avg > 0 else 0
     vol_ratio_15 = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
     vol_ratio = max(vol_ratio_5, vol_ratio_15)
-    usdt_vol = max(m5.volume * m5.close, m15.volume * m15.close)
+
+    usdt_5 = m5.volume * m5.close
+    usdt_15 = m15.volume * m15.close
+    usdt_vol = max(usdt_5, usdt_15)
 
     avg_usdt_5 = m5.vol_avg * m5.close if m5.vol_avg > 0 else 0
     avg_usdt_15 = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
     avg_usdt_vol = max(avg_usdt_5, avg_usdt_15)
-
     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
 
     dip_price = min(m5.low, m15.low)
     price = m5.close
     bounce = ((price - dip_price) / dip_price) * 100 if dip_price > 0 else 0
+
     lower_wick = max(m5.lower_wick, m15.lower_wick)
     recovery = max(m5.recovery_ratio, m15.recovery_ratio)
 
@@ -213,10 +248,14 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
 
     recent_high = df15["high"].iloc[-24:-1].max()
     recent_low = df15["low"].iloc[-24:-1].min()
+
     breakout = m15.close > recent_high * 1.002
     breakdown = m15.close < recent_low * 0.998
 
-    obv_turn = df5["obv"].iloc[-1] > df5["obv"].iloc[-3] or df15["obv"].iloc[-1] > df15["obv"].iloc[-3]
+    obv_turn = (
+        df5["obv"].iloc[-1] > df5["obv"].iloc[-3]
+        or df15["obv"].iloc[-1] > df15["obv"].iloc[-3]
+    )
     obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-6]
     obv_mean = df15["obv"].rolling(20).mean().iloc[-1]
     obv_strong = df15["obv"].iloc[-1] > obv_mean
@@ -228,119 +267,269 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     ema_reclaim = m5.close > m5.ema9 or m15.close > m15.ema21
     trend_up = m15.ema9 >= m15.ema21 or m15.close > m15.ema50
     trend_down = m15.close < m15.ema21 and m15.ema9 < m15.ema21
+
     green_body = m5.close > m5.open and m5.body_ratio >= 0.35
     red_body = m15.close < m15.open and m15.body_ratio >= 0.42
     wick_ok = m5.upper_wick <= 0.55
 
     return {
-        "symbol": symbol, "price": price, "rs": rs, "dist_low": dist_low,
-        "dip_price": dip_price, "bounce": bounce, "lower_wick": lower_wick,
-        "recovery": recovery, "vol_ratio": vol_ratio, "usdt_vol": usdt_vol,"money_impact": money_impact,
-        "coin_change_15m": coin_change_15m, "btc_change_15m": btc_change,
-        "relative_strength": relative_strength, "funding_rate": funding_rate,
-        "funding_text": funding_text, "btc": btc_text, "rsi_15m": m15.rsi,
-        "obv_turn": obv_turn, "obv_up": obv_up, "obv_strong": obv_strong,
-        "rsi_turn": rsi_turn, "macd_turn": macd_turn, "macd_up": macd_up,
-        "ema_reclaim": ema_reclaim, "trend_up": trend_up, "trend_down": trend_down,
-        "green_body": green_body, "red_body": red_body, "wick_ok": wick_ok,
-        "breakout": breakout, "breakdown": breakdown, "funding_ok": funding_ok
+        "symbol": symbol,
+        "price": price,
+        "rs": rs,
+        "dist_low": dist_low,
+        "dip_price": dip_price,
+        "bounce": bounce,
+        "lower_wick": lower_wick,
+        "recovery": recovery,
+        "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "coin_change_15m": coin_change_15m,
+        "btc_change_15m": btc_change,
+        "relative_strength": relative_strength,
+        "funding_rate": funding_rate,
+        "funding_text": funding_text,
+        "btc": btc_text,
+        "rsi_15m": m15.rsi,
+        "obv_turn": obv_turn,
+        "obv_up": obv_up,
+        "obv_strong": obv_strong,
+        "rsi_turn": rsi_turn,
+        "macd_turn": macd_turn,
+        "macd_up": macd_up,
+        "ema_reclaim": ema_reclaim,
+        "trend_up": trend_up,
+        "trend_down": trend_down,
+        "green_body": green_body,
+        "red_body": red_body,
+        "wick_ok": wick_ok,
+        "breakout": breakout,
+        "breakdown": breakdown,
+        "funding_ok": funding_ok
     }
 
 
 def needle_radar(m):
     score, reasons = 0, []
+
     if m["lower_wick"] >= 0.45:
-        score += 4; reasons.append("Buyuk alt igne")
+        score += 4
+        reasons.append("Buyuk alt igne")
+
     if m["recovery"] >= 0.35:
-        score += 3; reasons.append("Igneden toparlanma")
+        score += 3
+        reasons.append("Igneden toparlanma")
+
     if m["vol_ratio"] >= 2.0:
-        score += 3; reasons.append("Igne hacimli")
-    if m["usdt_vol"] >= 30000:
-        score += 2; reasons.append("USDT hacim yeterli")
+        score += 3
+        reasons.append("Igne hacimli")
+
+    if m["usdt_vol"] >= 100000:
+        score += 2
+        reasons.append("USDT hacim guclu")
+
     if m["dist_low"] <= 12:
-        score += 2; reasons.append("24s dibe yakin")
+        score += 2
+        reasons.append("24s dibe yakin")
+
     if m["bounce"] >= 0.5:
-        score += 1; reasons.append("Dipten ilk tepki")
+        score += 1
+        reasons.append("Dipten ilk tepki")
+
+    if m["relative_strength"] >= 0:
+        score += 2
+        reasons.append("BTCden zayif degil")
+
+    if m["money_impact"] >= 1.8:
+        score += 2
+        reasons.append("Para etkisi normalden yuksek")
+
     if m["funding_ok"]:
-        score += 1; reasons.append("Funding uygun")
-    valid = score >= 10 and m["lower_wick"] >= 0.45 and m["vol_ratio"] >= 2.0 and m["usdt_vol"] >= 30000 and m["recovery"] >= 0.35 and m["dist_low"] <= 12
+        score += 1
+        reasons.append("Funding uygun")
+
+    valid = (
+        score >= 12
+        and m["lower_wick"] >= 0.45
+        and m["vol_ratio"] >= 2.0
+        and m["usdt_vol"] >= 100000
+        and m["recovery"] >= 0.35
+        and m["dist_low"] <= 12
+        and m["relative_strength"] >= 0
+        and m["money_impact"] >= 1.8
+    )
+
     return valid, score, reasons
 
 
 def dip_radar(m):
     score, reasons = 0, []
-    if m["dist_low"] <= 10:
-        score += 3; reasons.append("24s dibe yakin")
-    if m["bounce"] >= 1.2:
-        score += 2; reasons.append("Dipten tepki basladi")
-    if m["vol_ratio"] >= 1.8:
-        score += 3; reasons.append("Hacim artiyor")
-    if m["usdt_vol"] >= 50000:
-        score += 2; reasons.append("USDT hacim guclu")
-    if m["obv_turn"]:
-        score += 3; reasons.append("OBV donuyor")
-    if m["rsi_turn"]:
-        score += 2; reasons.append("RSI donuyor")
-    if m["macd_turn"]:
-        score += 2; reasons.append("MACD toparlaniyor")
-    if m["green_body"]:
-        score += 1; reasons.append("Yesil tepki mumu")
-    if m["relative_strength"] >= 1.2:
-         score += 2
-    reasons.append("BTCden guclu")
 
-    valid = score >= 15 and m["dist_low"] <= 10 and m["vol_ratio"] >= 1.8 and m["usdt_vol"] >= 60000 and m["bounce"] >= 1.2 and m["obv_turn"] and m["coin_change_15m"] >= 0.5 and m["relative_strength"] >= 0.8 and m["money_impact"] >= 2.0
+    if m["dist_low"] <= 10:
+        score += 3
+        reasons.append("24s dibe yakin")
+
+    if m["bounce"] >= 1.2:
+        score += 2
+        reasons.append("Dipten tepki basladi")
+
+    if m["vol_ratio"] >= 1.8:
+        score += 3
+        reasons.append("Hacim artiyor")
+
+    if m["usdt_vol"] >= 60000:
+        score += 2
+        reasons.append("USDT hacim guclu")
+
+    if m["obv_turn"]:
+        score += 3
+        reasons.append("OBV donuyor")
+
+    if m["rsi_turn"]:
+        score += 2
+        reasons.append("RSI donuyor")
+
+    if m["macd_turn"]:
+        score += 2
+        reasons.append("MACD toparlaniyor")
+
+    if m["green_body"]:
+        score += 1
+        reasons.append("Yesil tepki mumu")
+
+    if m["relative_strength"] >= 1.2:
+        score += 2
+        reasons.append("BTCden guclu")
+
+    if m["money_impact"] >= 2.0:
+        score += 2
+        reasons.append("Para etkisi guclu")
+
+    valid = (
+        score >= 15
+        and m["dist_low"] <= 10
+        and m["vol_ratio"] >= 1.8
+        and m["usdt_vol"] >= 60000
+        and m["bounce"] >= 1.2
+        and m["obv_turn"]
+        and m["coin_change_15m"] >= 0.5
+        and m["relative_strength"] >= 0.8
+        and m["money_impact"] >= 2.0
+    )
 
     return valid, score, reasons
 
 
 def momentum_long(m):
     score, reasons = 0, []
+
     if m["coin_change_15m"] >= 2.5:
-        score += 3; reasons.append("15m momentum guclu")
+        score += 3
+        reasons.append("15m momentum guclu")
+
     if m["relative_strength"] >= 1.5:
-        score += 4; reasons.append("BTCden net guclu")
+        score += 4
+        reasons.append("BTCden net guclu")
+
     if m["vol_ratio"] >= 2.2:
-        score += 3; reasons.append("Hacim guclu")
+        score += 3
+        reasons.append("Hacim guclu")
+
     if m["usdt_vol"] >= 150000:
-        score += 3; reasons.append("USDT para girisi guclu")
+        score += 3
+        reasons.append("USDT para girisi guclu")
+
+    if m["money_impact"] >= 1.8:
+        score += 2
+        reasons.append("Para etkisi guclu")
+
     if m["obv_up"]:
-        score += 3; reasons.append("OBV para girisi")
+        score += 3
+        reasons.append("OBV para girisi")
+
     if m["obv_strong"]:
-        score += 2; reasons.append("OBV ortalama ustu")
+        score += 2
+        reasons.append("OBV ortalama ustu")
+
     if m["macd_up"]:
-        score += 2; reasons.append("MACD guclu")
+        score += 2
+        reasons.append("MACD guclu")
+
     if m["ema_reclaim"]:
-        score += 1; reasons.append("EMA geri alindi")
+        score += 1
+        reasons.append("EMA geri alindi")
+
     if m["trend_up"]:
-        score += 1; reasons.append("Trend yukari")
+        score += 1
+        reasons.append("Trend yukari")
+
     if m["breakout"]:
-        score += 2; reasons.append("Yeni tepe kirilimi")
+        score += 2
+        reasons.append("Yeni tepe kirilimi")
+
     if m["wick_ok"]:
-        score += 1; reasons.append("Ust fitil saglikli")
-    valid = score >= 15 and m["coin_change_15m"] >= 2.5 and m["relative_strength"] >= 1.5 and m["vol_ratio"] >= 2.2 and m["usdt_vol"] >= 150000 and m["obv_up"] and m["macd_up"] and m["ema_reclaim"] and m["wick_ok"]
+        score += 1
+        reasons.append("Ust fitil saglikli")
+
+    valid = (
+        score >= 15
+        and m["coin_change_15m"] >= 2.5
+        and m["relative_strength"] >= 1.5
+        and m["vol_ratio"] >= 2.2
+        and m["usdt_vol"] >= 150000
+        and m["money_impact"] >= 1.8
+        and m["obv_up"]
+        and m["macd_up"]
+        and m["ema_reclaim"]
+        and m["wick_ok"]
+    )
+
     return valid, score, reasons
 
 
 def momentum_short(m):
     if m["dist_low"] <= 8:
         return False, 0, []
+
     score, reasons = 0, []
+
     if m["breakdown"]:
-        score += 4; reasons.append("Destek kirilimi")
+        score += 4
+        reasons.append("Destek kirilimi")
+
     if m["vol_ratio"] >= 3.5:
-        score += 3; reasons.append("Satis hacmi guclu")
+        score += 3
+        reasons.append("Satis hacmi guclu")
+
     if m["usdt_vol"] >= 150000:
-        score += 2; reasons.append("USDT satis hacmi")
+        score += 2
+        reasons.append("USDT satis hacmi")
+
     if m["trend_down"]:
-        score += 2; reasons.append("Trend asagi")
+        score += 2
+        reasons.append("Trend asagi")
+
     if not m["obv_up"]:
-        score += 2; reasons.append("OBV zayif")
+        score += 2
+        reasons.append("OBV zayif")
+
     if m["red_body"]:
-        score += 2; reasons.append("Guclu kirmizi mum")
+        score += 2
+        reasons.append("Guclu kirmizi mum")
+
     if m["relative_strength"] <= -1:
-        score += 2; reasons.append("BTCden zayif")
-    valid = score >= 13 and m["breakdown"] and m["vol_ratio"] >= 3.5 and m["usdt_vol"] >= 150000 and m["trend_down"] and m["red_body"]
+        score += 2
+        reasons.append("BTCden zayif")
+
+    valid = (
+        score >= 13
+        and m["breakdown"]
+        and m["vol_ratio"] >= 3.5
+        and m["usdt_vol"] >= 150000
+        and m["trend_down"]
+        and m["red_body"]
+    )
+
     return valid, score, reasons
 
 
@@ -366,6 +555,8 @@ BTCye Gore Guc: %{m['relative_strength']:.2f}
 
 Hacim Artisi: {m['vol_ratio']:.2f}x
 USDT Hacim: {int(m['usdt_vol'])} USDT
+Para Etkisi: {m['money_impact']:.2f}x
+
 BTC: {m['btc']}
 Funding: {m['funding_rate']:.6f} / {m['funding_text']}
 
@@ -381,58 +572,92 @@ def collect_candidates(item, btc_text, btc_change):
     symbol = item["symbol"]
     rs = item["rs_score"]
     dist_low = item["dist_low"]
+
     funding_rate, funding_text, funding_ok = get_funding(symbol)
-    m = analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, funding_text, funding_ok)
+    m = analyze_market(
+        symbol, rs, dist_low,
+        btc_text, btc_change,
+        funding_rate, funding_text, funding_ok
+    )
+
     if not m:
         return []
+
     checks = [
         ("NEEDLE", "ğŸš¨ IGNE RADARI", COOLDOWN_NEEDLE, needle_radar, "Likidasyon ignesi olabilir. Takibe al; direkt long degil."),
         ("DIP", "ğŸ”¥ DIP RADAR", COOLDOWN_DIP, dip_radar, "Dipten donus adayi. 5m/15m kapanis takip."),
         ("MOMENTUM", "ğŸš€ MOMENTUM LONG", COOLDOWN_MOMENTUM, momentum_long, "Para girisi guclu. Retest veya devam mumu takip."),
         ("SHORT", "ğŸ”» MOMENTUM SHORT", COOLDOWN_SHORT, momentum_short, "Short adayi. Kirilim sonrasi retest takip.")
     ]
+
     candidates = []
+
     for tag, title, cooldown, func, decision in checks:
         ok, score, reasons = func(m)
         key = symbol + "_" + tag
+
         if ok and can_send(key, cooldown):
             priority = score
+
             if tag == "MOMENTUM":
                 priority += 20
+
             if tag == "NEEDLE":
                 priority += 5
-            candidates.append({"tag": tag, "title": title, "priority": priority, "score": score, "m": m, "reasons": reasons, "decision": decision})
+
+            candidates.append({
+                "tag": tag,
+                "title": title,
+                "priority": priority,
+                "score": score,
+                "m": m,
+                "reasons": reasons,
+                "decision": decision
+            })
+
     if not candidates:
         print(symbol, "RS:", round(rs, 1), "DistLow:", round(dist_low, 2), "IC FILTRE", flush=True)
+
     return candidates
 
 
 def run_bot():
     send_telegram(f"BOT BASLADI: {BOT_NAME}")
     print(BOT_NAME, "basladi", flush=True)
+
     while True:
         try:
             print("Tarama basladi:", datetime.now(), flush=True)
+
             btc_ok, btc_text, btc_change = btc_status()
             print("BTC:", btc_text, "BTC15:", round(btc_change, 2), flush=True)
+
             universe = build_universe()
             print("Taranacak coin:", len(universe), flush=True)
+
             all_candidates = []
+
             for item in universe:
                 try:
                     all_candidates.extend(collect_candidates(item, btc_text, btc_change))
                 except Exception as e:
                     print("Coin analiz hata:", item.get("symbol"), e, flush=True)
+
                 time.sleep(0.20)
+
             all_candidates = sorted(all_candidates, key=lambda x: x["priority"], reverse=True)
             selected = all_candidates[:MAX_SIGNALS_PER_CYCLE]
+
             print("Aday:", len(all_candidates), "Gonderilecek:", len(selected), flush=True)
+
             for c in selected:
                 send_telegram(make_msg(c["title"], c["m"], c["score"], c["reasons"], c["decision"]))
                 print("SIGNAL", c["tag"], c["m"]["symbol"], c["score"], flush=True)
                 time.sleep(1)
+
             print("Tur bitti. Bekleme:", SLEEP_SECONDS, flush=True)
             time.sleep(SLEEP_SECONDS)
+
         except Exception as e:
             print("Genel hata:", e, flush=True)
             send_telegram(f"MEXC bot genel hata:\n{e}")
