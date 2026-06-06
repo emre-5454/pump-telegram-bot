@@ -239,6 +239,7 @@ def dip_reversal_radar(symbol, rs, dist_low, btc_ok, btc_text, funding_rate, fun
         
         valid = (
         score >= 13
+        and rs >= 70
         and dist_low <= 12
         and vol_ratio >= 1.7
         and usdt_vol >= 25000
