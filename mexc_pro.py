@@ -200,7 +200,7 @@ def analyze_market(symbol, rs, dist_low, btc_text, btc_change, funding_rate, fun
     avg_usdt_15 = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
     avg_usdt_vol = max(avg_usdt_5, avg_usdt_15)
 
-     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
 
     dip_price = min(m5.low, m15.low)
     price = m5.close
