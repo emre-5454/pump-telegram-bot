@@ -223,6 +223,12 @@ def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_
     usdt_15 = m15.volume * m15.close
     usdt_vol = max(usdt_5, usdt_15)
 
+    avg_usdt_5 = m5.vol_avg * m5.close if m5.vol_avg > 0 else 0
+    avg_usdt_15 = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    avg_usdt_vol = max(avg_usdt_5, avg_usdt_15)
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
     dip_price = min(m5.low, m15.low)
     price = m5.close
     bounce = ((price - dip_price) / dip_price) * 100 if dip_price > 0 else 0
@@ -270,23 +276,31 @@ def early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_
         score += 1; reasons.append("Yesil tepki mumu")
     if relative_strength >= 0.8:
         score += 2; reasons.append("BTCden guclu")
+    if money_impact >= 1.5:
+        score += 2; reasons.append("Para etkisi normalden yuksek")
+    if volume_power >= 4.0:
+        score += 2; reasons.append("Hacim gucu yuksek")
 
     valid = (
-        score >= 13
+        score >= 15
         and dist_low <= 8
-        and vol_ratio >= 1.7
-        and usdt_vol >= 15000
+        and vol_ratio >= 2.0
+        and usdt_vol >= 100000
         and bounce >= 0.8
         and obv_turn
         and rsi_turn
         and recovery >= 0.35
+        and relative_strength >= 0
+        and money_impact >= 1.5
+        and volume_power >= 3.0
     )
 
     return valid, {
         "score": score, "price": price, "rs": rs,
         "dist_low": dist_low, "dip_price": dip_price,
         "bounce": bounce, "vol_ratio": vol_ratio,
-        "usdt_vol": usdt_vol, "lower_wick": lower_wick,
+        "usdt_vol": usdt_vol, "money_impact": money_impact,
+        "volume_power": volume_power, "lower_wick": lower_wick,
         "recovery": recovery, "coin_change_15m": coin_change_15m,
         "btc_change_15m": btc_change, "relative_strength": relative_strength,
         "reasons": reasons, "btc": btc_text,
@@ -322,6 +336,9 @@ def dip_confirm(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate
 
     vol_ratio = m5.volume / m5.vol_avg if m5.vol_avg > 0 else 0
     usdt_vol = m5.volume * m5.close
+    avg_usdt_vol = m5.vol_avg * m5.close if m5.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
 
     obv_continue = df5["obv"].iloc[-1] > df5["obv"].iloc[-3]
     macd_continue = m5.macd_hist > m5_prev.macd_hist
@@ -355,15 +372,21 @@ def dip_confirm(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate
         score += 1; reasons.append("Yesil devam mumu")
     if relative_strength >= 0.8:
         score += 2; reasons.append("BTCden guclu")
+    if money_impact >= 1.5:
+        score += 2; reasons.append("Para etkisi devam")
+    if volume_power >= 3.0:
+        score += 2; reasons.append("Hacim gucu devam")
 
     valid = (
-        score >= 13
+        score >= 14
         and profit_from_alert >= 0.8
         and bounce_from_dip >= 2.0
         and vol_ratio >= 1.5
         and obv_continue
         and hold_dip
-        and relative_strength >= 0.5
+        and relative_strength >= 0.8
+        and money_impact >= 1.5
+        and volume_power >= 3.0
     )
 
     return valid, {
@@ -371,7 +394,8 @@ def dip_confirm(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate
         "dist_low": dist_low, "dip_price": dip_price,
         "early_price": early_price, "profit_from_alert": profit_from_alert,
         "bounce": bounce_from_dip, "vol_ratio": vol_ratio,
-        "usdt_vol": usdt_vol, "coin_change_15m": coin_change_15m,
+        "usdt_vol": usdt_vol, "money_impact": money_impact,
+        "volume_power": volume_power, "coin_change_15m": coin_change_15m,
         "btc_change_15m": btc_change, "relative_strength": relative_strength,
         "reasons": reasons, "btc": btc_text,
         "funding_rate": funding_rate, "funding_text": funding_text
@@ -393,6 +417,9 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding
 
     vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
     usdt_vol = m15.volume * m15.close
+    avg_usdt_vol = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
 
     obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-6]
     macd_turn = m15.macd_hist > m15_prev.macd_hist
@@ -431,17 +458,29 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding
         score += 1; reasons.append("RSI uygun")
     if relative_strength >= 1.0:
         score += 2; reasons.append("BTCden guclu")
+    if money_impact >= 1.5:
+        score += 2; reasons.append("Para etkisi guclu")
+    if volume_power >= 4.0:
+        score += 2; reasons.append("Hacim gucu yuksek")
+    if m15.bb_width <= 0.10:
+        score += 2; reasons.append("BB sikisma")
+    if m15.bb_width <= 0.06:
+        score += 1; reasons.append("Guclu BB sikisma")
 
     valid = (
-        score >= 15 and rs >= 60 and dist_low <= 10
+        score >= 17 and rs >= 60 and dist_low <= 10
         and vol_ratio >= 2.0 and usdt_vol >= 300000
+        and relative_strength >= 1.0
+        and money_impact >= 1.5
+        and volume_power >= 4.0
         and obv_up and macd_ok and ema_ok and rsi_ok
     )
 
     return valid, {
         "score": score, "price": m15.close, "rs": rs,
         "dist_low": dist_low, "vol_ratio": vol_ratio,
-        "usdt_vol": usdt_vol, "coin_change_15m": coin_change_15m,
+        "usdt_vol": usdt_vol, "money_impact": money_impact,
+        "volume_power": volume_power, "coin_change_15m": coin_change_15m,
         "btc_change_15m": btc_change, "relative_strength": relative_strength,
         "rsi": h1.rsi, "body": m5.body_ratio,
         "reasons": reasons, "btc": btc_text,
@@ -551,6 +590,8 @@ Fiyat: {d['price']:.8f}
 {extra}
 Hacim Artisi: {d['vol_ratio']:.2f}x
 USDT Hacim: {int(d['usdt_vol'])} USDT
+Para Etkisi: {d.get('money_impact', 0):.2f}x
+Hacim Gucu: {d.get('volume_power', 0):.2f}
 BTC: {d['btc']}
 Funding: {d['funding_rate']:.6f} / {d['funding_text']}
 
@@ -578,9 +619,8 @@ def analyze(item, btc_ok, btc_text, btc_change):
 
         ok_early, data_early = early_dip_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding_rate, funding_text, funding_ok)
         if ok_early and can_send(symbol + "_EARLY_DIP", COOLDOWN_EARLY_DIP):
-            send_telegram(make_msg("EARLY DIP RADAR", symbol, data_early, "Erken dip alarmi. Direkt long degil; confirm bekle."))
             watchlist[symbol] = {"time": time.time(), "price": data_early["price"], "dip_price": data_early["dip_price"]}
-            print("EARLY_DIP", symbol, data_early["score"], flush=True)
+            print("EARLY_DIP_WATCH", symbol, data_early["score"], flush=True)
             return
 
         checks = [
