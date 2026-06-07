@@ -24,7 +24,7 @@ COOLDOWN_SAFE = 4 * 60 * 60
 COOLDOWN_DIP = 4 * 60 * 60
 COOLDOWN_SWEEP = 4 * 60 * 60
 
-MIN_EARLY_RS = 70
+MIN_EARLY_RS = 60
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
@@ -315,11 +315,11 @@ def early_radar(symbol, rs):
         score += 1
         reasons.append("USDT hacim yeterli")
 
-    if money_impact >= 1.4:
+    if money_impact >= 1.2:
         score += 2
         reasons.append("Para etkisi guclu")
 
-    if volume_power >= 3.0:
+    if volume_power >= 2.3:
         score += 2
         reasons.append("Hacim gucu guclu")
 
