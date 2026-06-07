@@ -456,11 +456,11 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding
         score += 1; reasons.append("Ust fitil saglikli")
     if rsi_ok:
         score += 1; reasons.append("RSI uygun")
-    if relative_strength >= 1.0:
+    if relative_strength >= 0.5:
         score += 2; reasons.append("BTCden guclu")
-    if money_impact >= 1.5:
+    if money_impact >= 1.3:
         score += 2; reasons.append("Para etkisi guclu")
-    if volume_power >= 4.0:
+    if volume_power >= 3.0:
         score += 2; reasons.append("Hacim gucu yuksek")
     if m15.bb_width <= 0.10:
         score += 2; reasons.append("BB sikisma")
@@ -468,11 +468,11 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding
         score += 1; reasons.append("Guclu BB sikisma")
 
     valid = (
-        score >= 17 and rs >= 60 and dist_low <= 10
+        score >= 15 and rs >= 60 and dist_low <= 10
         and vol_ratio >= 2.0 and usdt_vol >= 300000
-        and relative_strength >= 1.0
-        and money_impact >= 1.5
-        and volume_power >= 4.0
+        and relative_strength >= 0.5
+        and money_impact >= 1.3
+        and volume_power >= 3.0
         and obv_up and macd_ok and ema_ok and rsi_ok
     )
 
