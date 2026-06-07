@@ -468,11 +468,11 @@ def money_flow_radar(symbol, rs, dist_low, btc_ok, btc_text, btc_change, funding
         score += 1; reasons.append("Guclu BB sikisma")
 
     valid = (
-        score >= 15 and rs >= 60 and dist_low <= 10
-        and vol_ratio >= 2.0 and usdt_vol >= 300000
-        and relative_strength >= 0.5
-        and money_impact >= 1.3
-        and volume_power >= 3.0
+        score >= 13 and rs >= 55 and dist_low <= 12
+        and vol_ratio >= 1.7 and usdt_vol >= 300000
+        and relative_strength >= 0.3
+        and money_impact >= 1.2
+        and volume_power >= 2.5
         and obv_up and macd_ok and ema_ok and rsi_ok
     )
 
