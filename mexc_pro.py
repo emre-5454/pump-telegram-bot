@@ -13,7 +13,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "MEXC RS EARLY RADAR + SAFE LONG BOT + WATCH ENGINE"
+BOT_NAME = "MEXC MULTI DNA RADAR + WATCH ENGINE"
 
 # Biraz gevsetildi
 MAX_SYMBOLS = 160
@@ -359,17 +359,23 @@ def early_radar(symbol, rs):
         score += 1
         reasons.append("Guclu BB sikisma")
 
+    # EARLY DNA:
+    # Burada amac hizlanan coini erken yakalamak.
+    # OBV ve MACD guzel puan verir ama zorunlu degil.
     valid = (
-        score >= 9
-        and rs >= MIN_EARLY_RS
-        and vol_ratio >= 1.6
+        score >= 8
+        and rs >= 50
+        and vol_ratio >= 1.5
         and usdt_vol >= 25000
         and money_impact >= 1.2
-        and volume_power >= 2.3
-        and obv_up
-        and macd_turn
-        and 42 <= h1.rsi <= 74
-        and dist_from_low <= 22
+        and dist_from_low <= 28
+        and 38 <= h1.rsi <= 78
+        and (
+            volume_power >= 2.3
+            or bb_expanding
+            or bb_squeeze
+            or obv_up
+        )
     )
 
     return valid, {
@@ -426,17 +432,17 @@ def safe_long(symbol, rs, btc_ok, funding):
 
     score = 0
 
-    if rs >= 75:
+    if rs >= 65:
         score += 12
-    if vol_ratio >= 2.5:
+    if vol_ratio >= 2.0:
         score += 15
     if usdt_vol >= 30000:
         score += 10
-    if money_impact >= 1.5:
+    if money_impact >= 1.2:
         score += 8
-    if volume_power >= 3.5:
+    if volume_power >= 2.8:
         score += 8
-    if change_3m >= 0.25:
+    if change_3m >= 0.20:
         score += 10
     if trend_up:
         score += 10
@@ -457,15 +463,23 @@ def safe_long(symbol, rs, btc_ok, funding):
 
     confidence = max(0, min(100, score))
 
+    # SAFE LONG DNA:
+    # Burada momentum onayi aranir.
+    # Breakout guzel ama tek zorunlu kapÄ± degil; hacim gucu da momentum onayi sayilir.
     valid = (
         confidence >= MIN_SAFE_CONFIDENCE
-        and vol_ratio >= 2.5
+        and vol_ratio >= 2.0
         and usdt_vol >= 30000
-        and money_impact >= 1.5
-        and change_3m >= 0.25
+        and money_impact >= 1.2
+        and volume_power >= 2.8
+        and change_3m >= 0.20
         and trend_up
         and macd_bull
-        and strong_breakout
+        and (
+            strong_breakout
+            or volume_power >= 3.5
+            or change_3m >= 0.45
+        )
     )
 
     price = m1.close
@@ -542,11 +556,11 @@ def big_dip_radar(symbol, rs):
         score += 1
         reasons.append("USDT hacim guclu")
 
-    if money_impact >= 1.4:
+    if money_impact >= 1.2:
         score += 2
         reasons.append("Para etkisi guclu")
 
-    if volume_power >= 3.0:
+    if volume_power >= 2.2:
         score += 2
         reasons.append("Hacim gucu guclu")
 
@@ -570,13 +584,23 @@ def big_dip_radar(symbol, rs):
         score += 1
         reasons.append("RS fena degil")
 
+    # DIP DNA:
+    # Burada asil amac dip/destek tepkisini yakalamak.
+    # Para gucu destekler ama Early gibi zorunlu ana kapÄ± degil.
     valid = (
-        score >= 9
-        and bb_touch
-        and vol_ratio >= 1.8
-        and money_impact >= 1.4
-        and obv_up
+        score >= 8
+        and (
+            bb_touch
+            or h1.lower_wick >= 0.30
+        )
+        and vol_ratio >= 1.3
+        and usdt_vol >= 20000
         and rsi_turn
+        and (
+            obv_up
+            or macd_turn
+            or money_impact >= 1.2
+        )
     )
 
     return valid, {
@@ -782,15 +806,18 @@ def is_watch_candidate(d):
     if not d:
         return False
 
+    # WATCH DNA:
+    # Telegram'a atmadan iceride takip eder.
+    # Tek amac: "uyaniyor olabilir" adayini cop etmemek.
     return (
-        d["score"] >= 7
-        and d["rs"] >= 50
-        and d["usdt_vol"] >= 20000
-        and d["dist_from_low"] <= 28
+        d["score"] >= 6
+        and d["rs"] >= 40
+        and d["usdt_vol"] >= 15000
+        and d["dist_from_low"] <= 32
         and (
-            d["vol_ratio"] >= 1.3
-            or d["money_impact"] >= 1.1
-            or d["volume_power"] >= 1.8
+            d["vol_ratio"] >= 1.2
+            or d["money_impact"] >= 1.05
+            or d["volume_power"] >= 1.5
             or d["bb_expanding"]
         )
     )
@@ -887,11 +914,11 @@ def watch_confirm(symbol, d):
         reasons.append("RSI uygun")
 
     valid = (
-        confirm_score >= 7
-        and price_gain >= 0.6
-        and d["vol_ratio"] >= 1.5
-        and d["money_impact"] >= 1.2
-        and d["volume_power"] >= 2.0
+        confirm_score >= 6
+        and price_gain >= 0.5
+        and d["vol_ratio"] >= 1.4
+        and d["money_impact"] >= 1.1
+        and d["volume_power"] >= 1.8
     )
 
     if not valid:
