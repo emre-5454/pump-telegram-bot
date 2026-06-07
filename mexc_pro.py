@@ -13,7 +13,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "MEXC MULTI DNA RADAR + WATCH ENGINE"
+BOT_NAME = "MEXC MONEY CONTINUE + MULTI DNA BOT"
 
 # Biraz gevsetildi
 MAX_SYMBOLS = 160
@@ -24,7 +24,10 @@ COOLDOWN_SAFE = 4 * 60 * 60
 COOLDOWN_DIP = 4 * 60 * 60
 COOLDOWN_SWEEP = 4 * 60 * 60
 COOLDOWN_WATCH_CONFIRM = 90 * 60
-WATCH_EXPIRE_SECONDS = 30 * 60
+COOLDOWN_MONEY_CONTINUE = 45 * 60
+COOLDOWN_MOMENTUM_CONTINUE = 60 * 60
+WATCH_EXPIRE_SECONDS = 45 * 60
+MONEY_STATE_EXPIRE_SECONDS = 120 * 60
 
 MIN_EARLY_RS = 60
 MIN_SAFE_CONFIDENCE = 62
@@ -35,7 +38,10 @@ sent_safe = {}
 sent_dip = {}
 sent_sweep = {}
 sent_watch_confirm = {}
+sent_money_continue = {}
+sent_momentum_continue = {}
 watchlist = {}
+money_state = {}
 
 exchange = ccxt.mexc({
     "enableRateLimit": True,
@@ -390,6 +396,11 @@ def early_radar(symbol, rs):
         "dist_from_low": dist_from_low,
         "bb_width": bb_now,
         "bb_expanding": bb_expanding,
+        "obv_up": obv_up,
+        "macd_turn": macd_turn,
+        "macd_cross_near": macd_cross_near,
+        "bb_squeeze": bb_squeeze,
+        "bb_strong_squeeze": bb_strong_squeeze,
         "reasons": reasons,
         "df15": df15,
         "df1h": df1h
@@ -465,7 +476,7 @@ def safe_long(symbol, rs, btc_ok, funding):
 
     # SAFE LONG DNA:
     # Burada momentum onayi aranir.
-    # Breakout guzel ama tek zorunlu kapÄ± degil; hacim gucu da momentum onayi sayilir.
+    # Breakout guzel ama tek zorunlu kapÃ„Â± degil; hacim gucu da momentum onayi sayilir.
     valid = (
         confidence >= MIN_SAFE_CONFIDENCE
         and vol_ratio >= 2.0
@@ -586,7 +597,7 @@ def big_dip_radar(symbol, rs):
 
     # DIP DNA:
     # Burada asil amac dip/destek tepkisini yakalamak.
-    # Para gucu destekler ama Early gibi zorunlu ana kapÄ± degil.
+    # Para gucu destekler ama Early gibi zorunlu ana kapÃ„Â± degil.
     valid = (
         score >= 8
         and (
@@ -848,6 +859,7 @@ def add_watch(symbol, d):
         "max_score": d["score"],
         "start_money_impact": d["money_impact"],
         "last_money_impact": d["money_impact"],
+        "start_volume_power": d["volume_power"],
         "last_volume_power": d["volume_power"],
         "rs": d["rs"]
     }
@@ -997,6 +1009,373 @@ Coin uyandi ve guclendi.
 Direkt FOMO degil; 5m/15m retest veya devam mumu takip.
 """.strip()
 
+
+def update_money_state(symbol, d, stage):
+    if not d:
+        return
+
+    now = time.time()
+    old = money_state.get(symbol)
+
+    if not old:
+        money_state[symbol] = {
+            "time": now,
+            "last_time": now,
+            "first_stage": stage,
+            "last_stage": stage,
+            "first_price": d["price"],
+            "last_price": d["price"],
+            "max_price": d["price"],
+            "first_money_impact": d.get("money_impact", 0),
+            "last_money_impact": d.get("money_impact", 0),
+            "max_money_impact": d.get("money_impact", 0),
+            "first_volume_power": d.get("volume_power", 0),
+            "last_volume_power": d.get("volume_power", 0),
+            "max_volume_power": d.get("volume_power", 0),
+            "first_score": d.get("score", 0),
+            "last_score": d.get("score", 0),
+            "max_score": d.get("score", 0),
+            "count": 1
+        }
+        return
+
+    old["last_time"] = now
+    old["last_stage"] = stage
+    old["last_price"] = d["price"]
+    old["max_price"] = max(old["max_price"], d["price"])
+    old["last_money_impact"] = d.get("money_impact", 0)
+    old["max_money_impact"] = max(old["max_money_impact"], d.get("money_impact", 0))
+    old["last_volume_power"] = d.get("volume_power", 0)
+    old["max_volume_power"] = max(old["max_volume_power"], d.get("volume_power", 0))
+    old["last_score"] = d.get("score", 0)
+    old["max_score"] = max(old["max_score"], d.get("score", 0))
+    old["count"] += 1
+
+
+def cleanup_money_state():
+    now = time.time()
+    expired = []
+
+    for symbol, s in money_state.items():
+        if now - s["time"] > MONEY_STATE_EXPIRE_SECONDS:
+            expired.append(symbol)
+
+    for symbol in expired:
+        money_state.pop(symbol, None)
+        print("MONEY STATE SILINDI:", symbol, flush=True)
+
+
+def money_continue_signal(symbol, d):
+    if symbol not in money_state or not d:
+        return False, None
+
+    s = money_state[symbol]
+    age = time.time() - s["time"]
+
+    if age < 5 * 60:
+        return False, None
+
+    first_price = s["first_price"]
+    price_gain = ((d["price"] - first_price) / first_price) * 100 if first_price > 0 else 0
+
+    first_money = s["first_money_impact"] if s["first_money_impact"] > 0 else 0.01
+    first_power = s["first_volume_power"] if s["first_volume_power"] > 0 else 0.01
+
+    money_now = d.get("money_impact", 0)
+    power_now = d.get("volume_power", 0)
+
+    money_growth = money_now / first_money
+    power_growth = power_now / first_power
+    score_growth = d.get("score", 0) - s.get("first_score", 0)
+
+    cont_score = 0
+    reasons = []
+
+    if price_gain >= 0.8:
+        cont_score += 2
+        reasons.append("Ilk sinyalden sonra fiyat yukari")
+
+    if money_now >= 1.4:
+        cont_score += 2
+        reasons.append("Para etkisi guclu devam")
+
+    if power_now >= 2.8:
+        cont_score += 2
+        reasons.append("Hacim gucu devam")
+
+    if money_growth >= 1.15:
+        cont_score += 2
+        reasons.append("Para etkisi ilk sinyale gore artti")
+
+    if power_growth >= 1.15:
+        cont_score += 2
+        reasons.append("Hacim gucu ilk sinyale gore artti")
+
+    if score_growth >= 1:
+        cont_score += 1
+        reasons.append("Radar skoru iyilesti")
+
+    if d.get("obv_up", False):
+        cont_score += 1
+        reasons.append("OBV para girisi destekliyor")
+
+    if d.get("macd_turn", False) or d.get("macd_cross_near", False):
+        cont_score += 1
+        reasons.append("MACD toparlaniyor")
+
+    valid = (
+        cont_score >= 7
+        and price_gain >= 0.5
+        and money_now >= 1.2
+        and power_now >= 2.0
+        and (
+            money_growth >= 1.10
+            or power_growth >= 1.10
+            or score_growth >= 2
+        )
+    )
+
+    if not valid:
+        return False, None
+
+    out = dict(d)
+    out["continue_score"] = cont_score
+    out["continue_reasons"] = reasons
+    out["first_price"] = first_price
+    out["price_gain_from_first"] = price_gain
+    out["first_money_impact"] = s["first_money_impact"]
+    out["money_growth"] = money_growth
+    out["first_volume_power"] = s["first_volume_power"]
+    out["power_growth"] = power_growth
+    out["age_min"] = age / 60
+    return True, out
+
+
+def momentum_continue_signal(symbol, d):
+    if symbol not in money_state or not d:
+        return False, None
+
+    s = money_state[symbol]
+    age = time.time() - s["time"]
+
+    if age < 8 * 60:
+        return False, None
+
+    first_price = s["first_price"]
+    price_gain = ((d["price"] - first_price) / first_price) * 100 if first_price > 0 else 0
+
+    first_money = s["first_money_impact"] if s["first_money_impact"] > 0 else 0.01
+    first_power = s["first_volume_power"] if s["first_volume_power"] > 0 else 0.01
+
+    money_now = d.get("money_impact", 0)
+    power_now = d.get("volume_power", 0)
+
+    money_growth = money_now / first_money
+    power_growth = power_now / first_power
+
+    mom_score = 0
+    reasons = []
+
+    if price_gain >= 1.8:
+        mom_score += 3
+        reasons.append("Ilk sinyalden sonra guclu fiyat hareketi")
+
+    if money_now >= 1.6:
+        mom_score += 2
+        reasons.append("Para etkisi yuksek")
+
+    if power_now >= 3.2:
+        mom_score += 2
+        reasons.append("Hacim gucu yuksek")
+
+    if money_growth >= 1.20:
+        mom_score += 2
+        reasons.append("Para etkisi buyuyor")
+
+    if power_growth >= 1.25:
+        mom_score += 2
+        reasons.append("Hacim gucu buyuyor")
+
+    if d.get("rsi", 0) >= 55 and d.get("rsi", 0) <= 78:
+        mom_score += 1
+        reasons.append("RSI momentum bolgesinde")
+
+    if d.get("obv_up", False):
+        mom_score += 1
+        reasons.append("OBV destekli")
+
+    if d.get("macd_turn", False) or d.get("macd_cross_near", False):
+        mom_score += 1
+        reasons.append("MACD destekli")
+
+    if d.get("bb_expanding", False):
+        mom_score += 1
+        reasons.append("Bollinger aciliyor")
+
+    valid = (
+        mom_score >= 8
+        and price_gain >= 1.5
+        and money_now >= 1.4
+        and power_now >= 2.8
+        and (
+            money_growth >= 1.15
+            or power_growth >= 1.20
+        )
+    )
+
+    if not valid:
+        return False, None
+
+    out = dict(d)
+    out["momentum_score"] = mom_score
+    out["momentum_reasons"] = reasons
+    out["first_price"] = first_price
+    out["price_gain_from_first"] = price_gain
+    out["first_money_impact"] = s["first_money_impact"]
+    out["money_growth"] = money_growth
+    out["first_volume_power"] = s["first_volume_power"]
+    out["power_growth"] = power_growth
+    out["age_min"] = age / 60
+    return True, out
+
+
+def format_money_continue(symbol, d, funding, btc_status):
+    return f"""
+{BOT_NAME}
+
+Mod: MONEY CONTINUE
+Coin: {symbol}
+
+Ilk para girisinden sonra para devam ediyor.
+
+Skor:
+{d['continue_score']}/12
+
+Ilk Fiyat:
+{d['first_price']:.8f}
+
+Simdiki Fiyat:
+{d['price']:.8f}
+
+Ilk Sinyalden Sonra:
+%{d['price_gain_from_first']:.2f}
+
+Sure:
+{d['age_min']:.1f} dk
+
+RS Skoru:
+{d['rs']:.1f}/100
+
+Radar Skoru:
+{d['score']}/18
+
+Hacim Artisi:
+{d['vol_ratio']:.2f}x
+
+USDT Hacim:
+{int(d['usdt_vol'])} USDT
+
+Para Etkisi:
+{d['money_impact']:.2f}x
+
+Ilk Para Etkisi:
+{d['first_money_impact']:.2f}x
+
+Para Buyume:
+{d['money_growth']:.2f}x
+
+Hacim Gucu:
+{d['volume_power']:.2f}
+
+Ilk Hacim Gucu:
+{d['first_volume_power']:.2f}
+
+Hacim Gucu Buyume:
+{d['power_growth']:.2f}x
+
+RSI:
+{d['rsi']:.2f}
+
+BTC:
+{btc_status}
+
+Funding:
+{funding['rate']:.6f}
+{funding['status']}
+
+Sebep:
+{", ".join(d['continue_reasons'])}
+
+Karar:
+Ayni coine para girmeye devam ediyor.
+Bu ilk EARLY sinyalden daha onemli takip sinyalidir.
+Retest ve 5m/15m kapanis bekle.
+""".strip()
+
+
+def format_momentum_continue(symbol, d, funding, btc_status):
+    return f"""
+{BOT_NAME}
+
+Mod: MOMENTUM CONTINUE
+Coin: {symbol}
+
+Para devam etti ve momentum gucleniyor.
+
+Skor:
+{d['momentum_score']}/14
+
+Ilk Fiyat:
+{d['first_price']:.8f}
+
+Simdiki Fiyat:
+{d['price']:.8f}
+
+Ilk Sinyalden Sonra:
+%{d['price_gain_from_first']:.2f}
+
+Sure:
+{d['age_min']:.1f} dk
+
+RS Skoru:
+{d['rs']:.1f}/100
+
+Hacim Artisi:
+{d['vol_ratio']:.2f}x
+
+USDT Hacim:
+{int(d['usdt_vol'])} USDT
+
+Para Etkisi:
+{d['money_impact']:.2f}x
+
+Para Buyume:
+{d['money_growth']:.2f}x
+
+Hacim Gucu:
+{d['volume_power']:.2f}
+
+Hacim Gucu Buyume:
+{d['power_growth']:.2f}x
+
+RSI:
+{d['rsi']:.2f}
+
+BTC:
+{btc_status}
+
+Funding:
+{funding['rate']:.6f}
+{funding['status']}
+
+Sebep:
+{", ".join(d['momentum_reasons'])}
+
+Karar:
+Coin artik sadece uyaniyor degil, para devam ederek hareketi surduruyor.
+FOMO degil; retest / devam mumu ile riskli bolge takip.
+""".strip()
+
 def analyze(item, btc_ok, btc_status):
     symbol = item["symbol"]
     rs = item["rs_score"]
@@ -1005,22 +1384,42 @@ def analyze(item, btc_ok, btc_status):
     try:
         early_ok, early_data = early_radar(symbol, rs)
 
+        # 1) Once para devam / momentum devam kontrolu
+        money_ok, money_data = money_continue_signal(symbol, early_data)
+        if money_ok and can_send(sent_money_continue, symbol + "_MONEY_CONTINUE", COOLDOWN_MONEY_CONTINUE):
+            send_telegram(format_money_continue(symbol, money_data, funding, btc_status))
+            update_money_state(symbol, early_data, "MONEY_CONTINUE")
+            print("MONEY_CONTINUE:", symbol, money_data["continue_score"], flush=True)
+            return
+
+        momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
+        if momentum_ok and can_send(sent_momentum_continue, symbol + "_MOMENTUM_CONTINUE", COOLDOWN_MOMENTUM_CONTINUE):
+            send_telegram(format_momentum_continue(symbol, momentum_data, funding, btc_status))
+            update_money_state(symbol, early_data, "MOMENTUM_CONTINUE")
+            print("MOMENTUM_CONTINUE:", symbol, momentum_data["momentum_score"], flush=True)
+            return
+
+        # 2) Watch confirm
         watch_ok, watch_data = watch_confirm(symbol, early_data)
         if watch_ok and can_send(sent_watch_confirm, symbol + "_WATCH_CONFIRM", COOLDOWN_WATCH_CONFIRM):
             send_telegram(format_watch_confirm(symbol, watch_data, funding, btc_status))
+            update_money_state(symbol, early_data, "WATCH_CONFIRM")
             print("WATCH_CONFIRM:", symbol, watch_data["watch_score"], flush=True)
-            watchlist.pop(symbol, None)
             return
 
+        # 3) Ilk early radar
         if early_ok and can_send(sent_early, symbol + "_EARLY", COOLDOWN_EARLY):
             send_telegram(format_early(symbol, early_data, funding, btc_status))
+            update_money_state(symbol, early_data, "EARLY")
             print("EARLY:", symbol, round(rs, 1), flush=True)
-            watchlist.pop(symbol, None)
             return
 
+        # 4) Early tam gecmediyse watch'a al
         if is_watch_candidate(early_data):
             add_watch(symbol, early_data)
+            update_money_state(symbol, early_data, "WATCH")
 
+        # 5) Safe Long
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
         if safe_ok and can_send(sent_safe, symbol + "_SAFE", COOLDOWN_SAFE):
             send_telegram(format_safe(symbol, safe_data, funding, btc_status))
@@ -1028,6 +1427,7 @@ def analyze(item, btc_ok, btc_status):
             watchlist.pop(symbol, None)
             return
 
+        # 6) Dip radar
         dip_ok, dip_data = big_dip_radar(symbol, rs)
         if dip_ok and can_send(sent_dip, symbol + "_DIP", COOLDOWN_DIP):
             send_telegram(format_dip(symbol, dip_data, funding, btc_status))
@@ -1041,6 +1441,7 @@ def analyze(item, btc_ok, btc_status):
                 "RS:", round(rs, 1),
                 "Funding:", funding["status"],
                 "Watch:", "VAR" if symbol in watchlist else "YOK",
+                "MoneyState:", "VAR" if symbol in money_state else "YOK",
                 "IC FILTRE",
                 flush=True
             )
@@ -1060,9 +1461,10 @@ def run_bot():
             print("BTC:", btc_status, flush=True)
 
             cleanup_watchlist()
+            cleanup_money_state()
 
             universe = build_universe()
-            print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), flush=True)
+            print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), flush=True)
 
             for item in universe:
                 analyze(item, btc_ok, btc_status)
