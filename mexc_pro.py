@@ -13,7 +13,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
-BOT_NAME = "MEXC RS EARLY RADAR + SAFE LONG BOT"
+BOT_NAME = "MEXC RS EARLY RADAR + SAFE LONG BOT + WATCH ENGINE"
 
 # Biraz gevsetildi
 MAX_SYMBOLS = 160
@@ -23,6 +23,8 @@ COOLDOWN_EARLY = 3 * 60 * 60
 COOLDOWN_SAFE = 4 * 60 * 60
 COOLDOWN_DIP = 4 * 60 * 60
 COOLDOWN_SWEEP = 4 * 60 * 60
+COOLDOWN_WATCH_CONFIRM = 90 * 60
+WATCH_EXPIRE_SECONDS = 30 * 60
 
 MIN_EARLY_RS = 60
 MIN_SAFE_CONFIDENCE = 62
@@ -32,6 +34,8 @@ sent_early = {}
 sent_safe = {}
 sent_dip = {}
 sent_sweep = {}
+sent_watch_confirm = {}
+watchlist = {}
 
 exchange = ccxt.mexc({
     "enableRateLimit": True,
@@ -360,7 +364,8 @@ def early_radar(symbol, rs):
         and rs >= MIN_EARLY_RS
         and vol_ratio >= 1.6
         and usdt_vol >= 25000
-        and money_impact >= 1.4
+        and money_impact >= 1.2
+        and volume_power >= 2.3
         and obv_up
         and macd_turn
         and 42 <= h1.rsi <= 74
@@ -772,6 +777,199 @@ Dip radar.
 """.strip()
 
 
+
+def is_watch_candidate(d):
+    if not d:
+        return False
+
+    return (
+        d["score"] >= 7
+        and d["rs"] >= 50
+        and d["usdt_vol"] >= 20000
+        and d["dist_from_low"] <= 28
+        and (
+            d["vol_ratio"] >= 1.3
+            or d["money_impact"] >= 1.1
+            or d["volume_power"] >= 1.8
+            or d["bb_expanding"]
+        )
+    )
+
+
+def add_watch(symbol, d):
+    now = time.time()
+    old = watchlist.get(symbol)
+
+    if old:
+        old["last_seen"] = now
+        old["max_score"] = max(old["max_score"], d["score"])
+        old["max_price"] = max(old["max_price"], d["price"])
+        old["last_price"] = d["price"]
+        old["last_score"] = d["score"]
+        old["last_money_impact"] = d["money_impact"]
+        old["last_volume_power"] = d["volume_power"]
+        return
+
+    watchlist[symbol] = {
+        "time": now,
+        "last_seen": now,
+        "start_price": d["price"],
+        "last_price": d["price"],
+        "max_price": d["price"],
+        "start_score": d["score"],
+        "last_score": d["score"],
+        "max_score": d["score"],
+        "start_money_impact": d["money_impact"],
+        "last_money_impact": d["money_impact"],
+        "last_volume_power": d["volume_power"],
+        "rs": d["rs"]
+    }
+
+    print("WATCH EKLENDI:", symbol, "Skor:", d["score"], "RS:", round(d["rs"], 1), flush=True)
+
+
+def cleanup_watchlist():
+    now = time.time()
+    expired = []
+
+    for symbol, w in watchlist.items():
+        if now - w["time"] > WATCH_EXPIRE_SECONDS:
+            expired.append(symbol)
+
+    for symbol in expired:
+        watchlist.pop(symbol, None)
+        print("WATCH SILINDI:", symbol, "sure doldu", flush=True)
+
+
+def watch_confirm(symbol, d):
+    if symbol not in watchlist or not d:
+        return False, None
+
+    w = watchlist[symbol]
+    age = time.time() - w["time"]
+
+    if age > WATCH_EXPIRE_SECONDS:
+        watchlist.pop(symbol, None)
+        return False, None
+
+    price_gain = ((d["price"] - w["start_price"]) / w["start_price"]) * 100 if w["start_price"] > 0 else 0
+    score_gain = d["score"] - w["start_score"]
+
+    confirm_score = 0
+    reasons = []
+
+    if price_gain >= 0.8:
+        confirm_score += 2
+        reasons.append("Watch sonrasi fiyat yukari")
+
+    if score_gain >= 2:
+        confirm_score += 2
+        reasons.append("Radar skoru guclendi")
+
+    if d["vol_ratio"] >= 1.6:
+        confirm_score += 2
+        reasons.append("Hacim guclendi")
+
+    if d["money_impact"] >= 1.2:
+        confirm_score += 2
+        reasons.append("Para etkisi guclendi")
+
+    if d["volume_power"] >= 2.3:
+        confirm_score += 2
+        reasons.append("Hacim gucu guclendi")
+
+    if d["bb_expanding"]:
+        confirm_score += 1
+        reasons.append("Bollinger aciliyor")
+
+    if 42 <= d["rsi"] <= 78:
+        confirm_score += 1
+        reasons.append("RSI uygun")
+
+    valid = (
+        confirm_score >= 7
+        and price_gain >= 0.6
+        and d["vol_ratio"] >= 1.5
+        and d["money_impact"] >= 1.2
+        and d["volume_power"] >= 2.0
+    )
+
+    if not valid:
+        return False, None
+
+    out = dict(d)
+    out["watch_score"] = confirm_score
+    out["watch_reasons"] = reasons
+    out["watch_age_min"] = age / 60
+    out["watch_start_price"] = w["start_price"]
+    out["watch_price_gain"] = price_gain
+    return True, out
+
+
+def format_watch_confirm(symbol, d, funding, btc_status):
+    return f"""
+{BOT_NAME}
+
+Mod: WATCH CONFIRM
+Coin: {symbol}
+
+Once watchlist'e alindi.
+Simdi guclenme basladi.
+
+RS Skoru:
+{d['rs']:.1f}/100
+
+Watch Skoru:
+{d['watch_score']}/12
+
+Radar Skoru:
+{d['score']}/18
+
+Watch Suresi:
+{d['watch_age_min']:.1f} dk
+
+Ilk Watch Fiyati:
+{d['watch_start_price']:.8f}
+
+Simdiki Fiyat:
+{d['price']:.8f}
+
+Watch Sonrasi:
+%{d['watch_price_gain']:.2f}
+
+Hacim Artisi:
+{d['vol_ratio']:.2f}x
+
+USDT Hacim:
+{int(d['usdt_vol'])} USDT
+
+Para Etkisi:
+{d['money_impact']:.2f}x
+
+Hacim Gucu:
+{d['volume_power']:.2f}
+
+RSI:
+{d['rsi']:.2f}
+
+BB Width:
+{d['bb_width']:.4f}
+
+BTC:
+{btc_status}
+
+Funding:
+{funding['rate']:.6f}
+{funding['status']}
+
+Sebep:
+{", ".join(d['watch_reasons'])}
+
+Karar:
+Coin uyandi ve guclendi.
+Direkt FOMO degil; 5m/15m retest veya devam mumu takip.
+""".strip()
+
 def analyze(item, btc_ok, btc_status):
     symbol = item["symbol"]
     rs = item["rs_score"]
@@ -779,32 +977,49 @@ def analyze(item, btc_ok, btc_status):
 
     try:
         early_ok, early_data = early_radar(symbol, rs)
+
+        watch_ok, watch_data = watch_confirm(symbol, early_data)
+        if watch_ok and can_send(sent_watch_confirm, symbol + "_WATCH_CONFIRM", COOLDOWN_WATCH_CONFIRM):
+            send_telegram(format_watch_confirm(symbol, watch_data, funding, btc_status))
+            print("WATCH_CONFIRM:", symbol, watch_data["watch_score"], flush=True)
+            watchlist.pop(symbol, None)
+            return
+
         if early_ok and can_send(sent_early, symbol + "_EARLY", COOLDOWN_EARLY):
             send_telegram(format_early(symbol, early_data, funding, btc_status))
             print("EARLY:", symbol, round(rs, 1), flush=True)
+            watchlist.pop(symbol, None)
+            return
+
+        if is_watch_candidate(early_data):
+            add_watch(symbol, early_data)
 
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
         if safe_ok and can_send(sent_safe, symbol + "_SAFE", COOLDOWN_SAFE):
             send_telegram(format_safe(symbol, safe_data, funding, btc_status))
             print("SAFE:", symbol, safe_data["confidence"], flush=True)
+            watchlist.pop(symbol, None)
+            return
 
         dip_ok, dip_data = big_dip_radar(symbol, rs)
         if dip_ok and can_send(sent_dip, symbol + "_DIP", COOLDOWN_DIP):
             send_telegram(format_dip(symbol, dip_data, funding, btc_status))
             print("DIP:", symbol, round(rs, 1), flush=True)
+            watchlist.pop(symbol, None)
+            return
 
         if not early_ok and not safe_ok and not dip_ok:
             print(
                 symbol,
                 "RS:", round(rs, 1),
                 "Funding:", funding["status"],
+                "Watch:", "VAR" if symbol in watchlist else "YOK",
                 "IC FILTRE",
                 flush=True
             )
 
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
-
 
 def run_bot():
     send_telegram(f"{BOT_NAME} BASLADI. RS Skoru + EARLY RADAR aktif.")
@@ -817,8 +1032,10 @@ def run_bot():
             btc_ok, btc_status = btc_filter()
             print("BTC:", btc_status, flush=True)
 
+            cleanup_watchlist()
+
             universe = build_universe()
-            print("Taranacak coin:", len(universe), flush=True)
+            print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), flush=True)
 
             for item in universe:
                 analyze(item, btc_ok, btc_status)
