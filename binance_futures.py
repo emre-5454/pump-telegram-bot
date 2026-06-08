@@ -13,18 +13,19 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8937020446:AAEmdROw4hfDYArdz4eJ47oGHAT_9u4HhIM"
 CHAT_ID = "7553607277"
 
-BOT_NAME = "BINANCE FUTURES EARLY + MONEY CONTINUE BOT"
+BOT_NAME = "BINANCE FUTURES RADAR MANAGER BOT"
 
 MAX_SYMBOLS = 160
-SLEEP_SECONDS = 30
+SLEEP_SECONDS = 45
 
-COOLDOWN_EARLY = 45 * 60
-COOLDOWN_SAFE = 60 * 60
-COOLDOWN_DIP = 60 * 60
-COOLDOWN_MONEY_CONTINUE = 45 * 60
+COOLDOWN_EARLY = 120 * 60
+COOLDOWN_SAFE = 90 * 60
+COOLDOWN_DIP = 120 * 60
+COOLDOWN_MONEY_CONTINUE = 60 * 60
+COOLDOWN_MOMENTUM_CONTINUE = 75 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
 
-MIN_EARLY_RS = 65
+MIN_EARLY_RS = 72
 MIN_SAFE_CONFIDENCE = 68
 MAX_RISK_PCT = 4.5
 
@@ -32,6 +33,7 @@ sent_early = {}
 sent_safe = {}
 sent_dip = {}
 sent_money_continue = {}
+sent_momentum_continue = {}
 money_state = {}
 
 exchange = ccxt.binanceusdm({
@@ -370,7 +372,9 @@ def early_radar(symbol, rs):
     )
 
     return valid, {
+        "module": "EARLY",
         "score": score,
+        "priority": 10,
         "price": h1.close,
         "rs": rs,
         "vol_ratio_1h": vol_ratio_1h,
@@ -410,6 +414,9 @@ def safe_long(symbol, rs, btc_ok, funding):
 
     vol_ratio = m1.volume / m1.vol_avg if m1.vol_avg > 0 else 0
     usdt_vol = m1.volume * m1.close
+    avg_usdt_vol = m1.vol_avg * m1.close if m1.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
     change_3m = ((m1.close - prev3.open) / prev3.open) * 100 if prev3.open > 0 else 0
 
     trend_up = t15.ema9 > t15.ema21
@@ -419,6 +426,8 @@ def safe_long(symbol, rs, btc_ok, funding):
     if rs >= 70: score += 12
     if vol_ratio >= 2.2: score += 15
     if usdt_vol >= 30000: score += 10
+    if money_impact >= 1.2: score += 8
+    if volume_power >= 2.8: score += 8
     if change_3m >= 0.25: score += 10
     if trend_up: score += 10
     if macd_bull: score += 10
@@ -434,11 +443,18 @@ def safe_long(symbol, rs, btc_ok, funding):
     valid = (
         confidence >= MIN_SAFE_CONFIDENCE
         and vol_ratio >= 2.2
-        and usdt_vol >= 25000
+        and usdt_vol >= 30000
+        and money_impact >= 1.2
+        and volume_power >= 2.8
         and change_3m >= 0.20
         and trend_up
         and macd_bull
-        and strong_breakout
+        and 48 <= t15.rsi <= 82
+        and (
+            strong_breakout
+            or volume_power >= 3.5
+            or change_3m >= 0.45
+        )
     )
 
     price = m1.close
@@ -453,11 +469,16 @@ def safe_long(symbol, rs, btc_ok, funding):
         return False, None
 
     return valid, {
+        "module": "SAFE",
+        "score": confidence,
+        "priority": 40,
         "price": price,
         "confidence": confidence,
         "rs": rs,
         "vol_ratio": vol_ratio,
         "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
         "change_3m": change_3m,
         "rsi15": t15.rsi,
         "trend_up": trend_up,
@@ -486,12 +507,27 @@ def big_dip_radar(symbol, rs):
     h4_prev = df4h.iloc[-2]
 
     bb_touch = h4.low <= h4.bb_lower or h4_prev.low <= h4_prev.bb_lower
+    near_1h_lower_bb = h1.low <= h1.bb_lower * 1.015
+
+    # Sahte dip eleme: yukari trenddeki normal fitil DIP sayilmaz
+    if h1.rsi > 45 and not bb_touch:
+        return False, None
+
+    if h1.close > h1.ema21 and h1.rsi > 50:
+        return False, None
+
     vol_ratio = h1.volume / h1.vol_avg if h1.vol_avg > 0 else 0
     usdt_vol = h1.volume * h1.close
+    avg_usdt_vol = h1.vol_avg * h1.close if h1.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
 
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
-    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 72
+    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 55
     macd_turn = h1.macd > h1_prev.macd
+
+    low_24h = df1h["low"].tail(24).min()
+    dist_from_low = ((h1.close - low_24h) / low_24h) * 100 if low_24h > 0 else 999
 
     score = 0
     reasons = []
@@ -499,17 +535,29 @@ def big_dip_radar(symbol, rs):
     if bb_touch:
         score += 3
         reasons.append("4H alt Bollinger tepki")
-    if vol_ratio >= 1.8:
+    if near_1h_lower_bb:
+        score += 2
+        reasons.append("1H alt Bollinger yakin")
+    if vol_ratio >= 1.5:
         score += 2
         reasons.append("1H hacim artisi")
-    if usdt_vol >= 30000:
-        score += 1
+    if usdt_vol >= 50000:
+        score += 2
         reasons.append("USDT hacim guclu")
-    if h1.lower_wick >= 0.32:
+    if money_impact >= 1.2:
+        score += 2
+        reasons.append("Para etkisi guclu")
+    if volume_power >= 2.2:
+        score += 2
+        reasons.append("Hacim gucu guclu")
+    if h1.lower_wick >= 0.45:
         score += 2
         reasons.append("Alt fitil")
+    if h1.rsi <= 35:
+        score += 3
+        reasons.append("RSI asiri satim")
     if obv_up:
-        score += 2
+        score += 1
         reasons.append("OBV yukari")
     if rsi_turn:
         score += 2
@@ -517,23 +565,44 @@ def big_dip_radar(symbol, rs):
     if macd_turn:
         score += 1
         reasons.append("MACD toparlaniyor")
-    if rs >= 65:
-        score += 1
-        reasons.append("RS fena degil")
+    if dist_from_low <= 8:
+        score += 2
+        reasons.append("24s dip bolgesine yakin")
 
-    valid = score >= 9 and bb_touch and vol_ratio >= 1.8 and obv_up and rsi_turn
+    valid = (
+        score >= 10
+        and vol_ratio >= 1.5
+        and usdt_vol >= 50000
+        and h1.lower_wick >= 0.45
+        and (
+            bb_touch
+            or near_1h_lower_bb
+            or h1.rsi <= 35
+            or dist_from_low <= 8
+        )
+        and (
+            rsi_turn
+            or obv_up
+            or macd_turn
+            or money_impact >= 1.2
+        )
+    )
 
     return valid, {
+        "module": "DIP",
         "score": score,
+        "priority": 20,
         "price": h1.close,
         "rs": rs,
         "vol_ratio": vol_ratio,
         "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
         "rsi": h1.rsi,
         "lower_wick": h1.lower_wick,
+        "dist_from_low": dist_from_low,
         "reasons": reasons
     }
-
 
 def update_money_state(symbol, d, stage):
     if not d:
@@ -641,6 +710,9 @@ def money_continue_signal(symbol, d):
         return False, None
 
     out = dict(d)
+    out["module"] = "MONEY"
+    out["score"] = cont_score
+    out["priority"] = 30
     out["continue_score"] = cont_score
     out["continue_reasons"] = reasons
     out["first_price"] = first_price
@@ -652,6 +724,83 @@ def money_continue_signal(symbol, d):
     out["age_min"] = age / 60
     return True, out
 
+
+
+def momentum_continue_signal(symbol, d):
+    if symbol not in money_state or not d:
+        return False, None
+
+    s = money_state[symbol]
+    age = time.time() - s["time"]
+
+    if age < 8 * 60:
+        return False, None
+
+    first_price = s["first_price"]
+    price_gain = ((d["price"] - first_price) / first_price) * 100 if first_price > 0 else 0
+
+    first_money = s["first_money_impact"] if s["first_money_impact"] > 0 else 0.01
+    first_power = s["first_volume_power"] if s["first_volume_power"] > 0 else 0.01
+
+    money_now = d.get("money_impact", 0)
+    power_now = d.get("volume_power", 0)
+
+    money_growth = money_now / first_money
+    power_growth = power_now / first_power
+
+    mom_score = 0
+    reasons = []
+
+    if price_gain >= 1.5:
+        mom_score += 3
+        reasons.append("Ilk sinyalden sonra fiyat guclendi")
+    if money_now >= 1.5:
+        mom_score += 2
+        reasons.append("Para etkisi yuksek")
+    if power_now >= 3.0:
+        mom_score += 2
+        reasons.append("Hacim gucu yuksek")
+    if money_growth >= 1.15:
+        mom_score += 2
+        reasons.append("Para etkisi buyuyor")
+    if power_growth >= 1.20:
+        mom_score += 2
+        reasons.append("Hacim gucu buyuyor")
+    if 52 <= d.get("rsi", 0) <= 82:
+        mom_score += 1
+        reasons.append("RSI momentum bolgesinde")
+    if d.get("bb_expanding", False):
+        mom_score += 1
+        reasons.append("Bollinger aciliyor")
+
+    valid = (
+        mom_score >= 8
+        and price_gain >= 1.2
+        and money_now >= 1.4
+        and power_now >= 2.8
+        and (
+            money_growth >= 1.12
+            or power_growth >= 1.18
+        )
+    )
+
+    if not valid:
+        return False, None
+
+    out = dict(d)
+    out["module"] = "MOMENTUM"
+    out["score"] = mom_score
+    out["priority"] = 35
+    out["momentum_score"] = mom_score
+    out["momentum_reasons"] = reasons
+    out["first_price"] = first_price
+    out["price_gain_from_first"] = price_gain
+    out["first_money_impact"] = s["first_money_impact"]
+    out["money_growth"] = money_growth
+    out["first_volume_power"] = s["first_volume_power"]
+    out["power_growth"] = power_growth
+    out["age_min"] = age / 60
+    return True, out
 
 def format_early(symbol, d, funding, btc_status):
     return f"""
@@ -905,44 +1054,200 @@ Dip radar.
 """.strip()
 
 
+def format_signal(symbol, d, funding, btc_status, support_modules=None):
+    support_modules = support_modules or []
+    module = d.get("module", "UNKNOWN")
+
+    if module == "SAFE":
+        title = "SAFE LONG"
+        body = f"""
+Guven: {d['confidence']}/100
+Giris: {d['entry']:.8f}
+Stop: {d['stop']:.8f}
+TP1: {d['tp1']:.8f}
+TP2: {d['tp2']:.8f}
+TP3: {d['tp3']:.8f}
+Risk: %{d['risk_pct']:.2f}
+
+3m Degisim: %{d['change_3m']:.2f}
+15m RSI: {d['rsi15']:.2f}
+15m Trend: {"YUKARI" if d['trend_up'] else "ZAYIF"}
+15m MACD: {"YUKARI" if d['macd_bull'] else "ZAYIF"}
+5m Breakout: {"GUCLU" if d['strong_breakout'] else "ZAYIF"}
+"""
+        decision = "Onayli long adayi. Stop sart, FOMO yok."
+
+    elif module == "MOMENTUM":
+        title = "MOMENTUM CONTINUE"
+        body = f"""
+Ilk Fiyat: {d['first_price']:.8f}
+Simdiki Fiyat: {d['price']:.8f}
+Ilk Sinyalden Sonra: %{d['price_gain_from_first']:.2f}
+Sure: {d['age_min']:.1f} dk
+Para Buyume: {d['money_growth']:.2f}x
+Hacim Gucu Buyume: {d['power_growth']:.2f}x
+"""
+        decision = "Para devam etti ve momentum guclendi. Retest / devam mumu takip."
+
+    elif module == "MONEY":
+        title = "MONEY CONTINUE"
+        body = f"""
+Ilk Fiyat: {d['first_price']:.8f}
+Simdiki Fiyat: {d['price']:.8f}
+Ilk Sinyalden Sonra: %{d['price_gain_from_first']:.2f}
+Sure: {d['age_min']:.1f} dk
+Ilk Para Etkisi: {d['first_money_impact']:.2f}x
+Para Buyume: {d['money_growth']:.2f}x
+Ilk Hacim Gucu: {d['first_volume_power']:.2f}
+Hacim Gucu Buyume: {d['power_growth']:.2f}x
+"""
+        decision = "Ayni coine para girmeye devam ediyor."
+
+    elif module == "DIP":
+        title = "BIG DIP RADAR"
+        body = f"""
+Dip Skoru: {d['score']}/18
+Alt Fitil: %{d['lower_wick'] * 100:.1f}
+24s Dipten Uzaklik: %{d.get('dist_from_low', 0):.2f}
+"""
+        decision = "Dip radar. 5m/15m retest ve kirilim bekle."
+
+    else:
+        title = "EARLY RADAR"
+        body = f"""
+Radar Skoru: {d['score']}/18
+1H Hacim Artisi: {d['vol_ratio_1h']:.2f}x
+15m Hacim Artisi: {d['vol_ratio_15m']:.2f}x
+1H USDT Hacim: {int(d['usdt_vol_1h'])} USDT
+15m USDT Hacim: {int(d['usdt_vol_15m'])} USDT
+24s Dipten Uzaklik: %{d['dist_from_low']:.2f}
+Bollinger: {"Aciliyor" if d['bb_expanding'] else "Henuz zayif"}
+"""
+        decision = "Takibe al. 5m/15m kirilim gelmeden direkt long degil."
+
+    reasons = d.get("reasons") or d.get("continue_reasons") or d.get("momentum_reasons") or []
+    support_text = ", ".join(support_modules) if support_modules else "YOK"
+
+    return f"""
+{BOT_NAME}
+
+Mod: {title}
+Coin: {symbol}
+
+RS Skoru: {d.get('rs', 0):.1f}/100
+Skor: {d.get('score', 0)}
+Fiyat: {d.get('price', 0):.8f}
+
+Hacim Artisi: {d.get('vol_ratio', d.get('vol_ratio_1h', 0)):.2f}x
+USDT Hacim: {int(d.get('usdt_vol', d.get('usdt_vol_1h', 0)))} USDT
+Para Etkisi: {d.get('money_impact', 0):.2f}x
+Hacim Gucu: {d.get('volume_power', 0):.2f}
+RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
+
+{body}
+
+BTC: {btc_status}
+Funding: {funding['rate']:.6f}
+{funding['status']}
+
+Ek Gecen Radarlar:
+{support_text}
+
+Sebep:
+{", ".join(reasons)}
+
+Karar:
+Radar Manager tum filtreleri taradi. En guclu sonuc bu mesajdir.
+{decision}
+""".strip()
+
+
+def select_best_signal(signals):
+    if not signals:
+        return None
+
+    return sorted(
+        signals,
+        key=lambda x: (x.get("priority", 0), x.get("score", 0)),
+        reverse=True
+    )[0]
+
+
+def send_selected_signal(symbol, signals, funding, btc_status):
+    if not signals:
+        return False
+
+    best = select_best_signal(signals)
+    support = [s["module"] for s in signals if s["module"] != best["module"]]
+
+    cooldown_map = {
+        "SAFE": (sent_safe, COOLDOWN_SAFE),
+        "MOMENTUM": (sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE),
+        "MONEY": (sent_money_continue, COOLDOWN_MONEY_CONTINUE),
+        "DIP": (sent_dip, COOLDOWN_DIP),
+        "EARLY": (sent_early, COOLDOWN_EARLY),
+    }
+
+    cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
+    key = symbol + "_" + best["module"]
+
+    if can_send(cache, key, cooldown):
+        send_telegram(format_signal(symbol, best, funding, btc_status, support))
+        print("SEND:", symbol, best["module"], "Score:", best.get("score"), "Support:", support, flush=True)
+        return True
+
+    print("COOLDOWN:", symbol, best["module"], "Support:", support, flush=True)
+    return False
+
+
 def analyze(item, btc_ok, btc_status):
     symbol = item["symbol"]
     rs = item["rs_score"]
     funding = get_funding(symbol)
 
     try:
+        signals = []
+
         early_ok, early_data = early_radar(symbol, rs)
-
         money_ok, money_data = money_continue_signal(symbol, early_data)
-        if money_ok and can_send(sent_money_continue, symbol + "_MONEY_CONTINUE", COOLDOWN_MONEY_CONTINUE):
-            send_telegram(format_money_continue(symbol, money_data, funding, btc_status))
-            update_money_state(symbol, early_data, "MONEY_CONTINUE")
-            print("MONEY_CONTINUE:", symbol, money_data["continue_score"], flush=True)
-            return
-
-        if early_ok and can_send(sent_early, symbol + "_EARLY", COOLDOWN_EARLY):
-            send_telegram(format_early(symbol, early_data, funding, btc_status))
-            update_money_state(symbol, early_data, "EARLY")
-            print("EARLY:", symbol, round(rs, 1), flush=True)
-            return
-
+        momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
-        if safe_ok and can_send(sent_safe, symbol + "_SAFE", COOLDOWN_SAFE):
-            send_telegram(format_safe(symbol, safe_data, funding, btc_status))
-            print("SAFE:", symbol, safe_data["confidence"], flush=True)
-            return
-
         dip_ok, dip_data = big_dip_radar(symbol, rs)
-        if dip_ok and can_send(sent_dip, symbol + "_DIP", COOLDOWN_DIP):
-            send_telegram(format_dip(symbol, dip_data, funding, btc_status))
-            print("DIP:", symbol, round(rs, 1), flush=True)
-            return
 
-        if not early_ok and not safe_ok and not dip_ok:
+        if early_ok:
+            signals.append(early_data)
+
+        if money_ok:
+            signals.append(money_data)
+
+        if momentum_ok:
+            signals.append(momentum_data)
+
+        if safe_ok:
+            signals.append(safe_data)
+
+        if dip_ok:
+            signals.append(dip_data)
+
+        if signals:
+            sent = send_selected_signal(symbol, signals, funding, btc_status)
+
+            if early_data:
+                update_money_state(symbol, early_data, "RADAR_MANAGER")
+
+            if sent:
+                return
+
+        else:
             print(
                 symbol,
                 "RS:", round(rs, 1),
                 "Funding:", funding["status"],
+                "Early:", early_ok,
+                "Money:", money_ok,
+                "Momentum:", momentum_ok,
+                "Safe:", safe_ok,
+                "Dip:", dip_ok,
                 "MoneyState:", "VAR" if symbol in money_state else "YOK",
                 "IC FILTRE",
                 flush=True
@@ -951,9 +1256,8 @@ def analyze(item, btc_ok, btc_status):
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
-
 def run_bot():
-    send_telegram(f"{BOT_NAME} BASLADI. Binance Futures EARLY RADAR aktif.")
+    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif.")
     print(BOT_NAME, "BASLADI", flush=True)
 
     while True:
@@ -983,7 +1287,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES EARLY MONEY CONTINUE Bot Aktif", 200
+    return "BINANCE FUTURES RADAR MANAGER Bot Aktif", 200
 
 
 if __name__ == "__main__":
