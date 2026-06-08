@@ -1216,12 +1216,16 @@ def analyze(item, btc_ok, btc_status):
     try:
         signals = []
 
-        early_ok, early_data = early_radar(symbol, rs)
-        money_ok, money_data = money_continue_signal(symbol, early_data)
-        momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
-        safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
-        dip_ok, dip_data = big_dip_radar(symbol, rs)
+       early_ok, early_data = early_radar(symbol, rs)
 
+if early_data:
+    update_money_state(symbol, early_data, "RADAR_DATA")
+
+money_ok, money_data = money_continue_signal(symbol, early_data)
+momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
+
+safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
+dip_ok, dip_data = big_dip_radar(symbol, rs)
         if early_ok:
             signals.append(early_data)
 
