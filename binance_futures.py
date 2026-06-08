@@ -302,9 +302,9 @@ def early_radar(symbol, rs):
     if dist_from_low > 15:
         score -= 2
 
-   # Artık early sayılmayacak kadar uzak
-   if dist_from_low > 25:
-       return False, None
+    # Artık early sayılmayacak kadar uzak
+    if dist_from_low > 25:
+        return False, None
 
     bb_now = df1h["bb_width"].iloc[-1]
     bb_prev = df1h["bb_width"].iloc[-6]
