@@ -28,7 +28,7 @@ COOLDOWN_MOMENTUM_CONTINUE = 60 * 60
 WATCH_EXPIRE_SECONDS = 45 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
 
-MIN_EARLY_RS = 60
+MIN_EARLY_RS = 65
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
@@ -236,7 +236,7 @@ def early_radar(symbol, rs):
         score += 2; reasons.append("BB sikisma")
     if bb_strong_squeeze:
         score += 1; reasons.append("Guclu BB sikisma")
-    valid = score >= 8 and rs >= 50 and vol_ratio >= 1.5 and usdt_vol >= 25000 and money_impact >= 1.2 and dist_from_low <= 28 and 38 <= h1.rsi <= 78 and (volume_power >= 2.3 or bb_expanding or bb_squeeze or obv_up)
+    valid = score >= 10 and rs >= 50 and vol_ratio >= 1.5 and usdt_vol >= 25000 and money_impact >= 1.2 and dist_from_low <= 22 and 38 <= h1.rsi <= 78 and (volume_power >= 2.3 or bb_expanding or bb_squeeze or obv_up)
     return valid, {"module":"EARLY","score":score,"priority":10,"price":h1.close,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"rsi":h1.rsi,"dist_from_low":dist_from_low,"bb_width":bb_now,"bb_expanding":bb_expanding,"obv_up":obv_up,"macd_turn":macd_turn,"macd_cross_near":macd_cross_near,"bb_squeeze":bb_squeeze,"bb_strong_squeeze":bb_strong_squeeze,"reasons":reasons}
 
 
