@@ -318,8 +318,8 @@ if h1.close > h1.bb_middle and h1.rsi > 50:
 
 rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
 macd_turn = h1.macd > h1_prev.macd
- score = 0
-    reasons = []
+score = 0
+reasons = []
     if bb_touch: score += 3; reasons.append("4H alt Bollinger tepki")
     if vol_ratio >= 1.5: score += 2; reasons.append("1H hacim patlamasi")
     if usdt_vol >= 100000: score += 2; reasons.append("USDT hacim guclu")
