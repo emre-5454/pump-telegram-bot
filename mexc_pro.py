@@ -310,16 +310,16 @@ def big_dip_radar(symbol, rs):
     volume_power = money_impact * vol_ratio
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
 
-if h1.rsi > 45:
+    if h1.rsi > 45:
     return False, None
 
-if h1.close > h1.bb_middle and h1.rsi > 50:
+    if h1.close > h1.bb_middle and h1.rsi > 50:
     return False, None
 
-rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
-macd_turn = h1.macd > h1_prev.macd
-score = 0
-reasons = []
+    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
+    macd_turn = h1.macd > h1_prev.macd
+    score = 0
+    reasons = []
     if bb_touch: score += 3; reasons.append("4H alt Bollinger tepki")
     if vol_ratio >= 1.5: score += 2; reasons.append("1H hacim patlamasi")
     if usdt_vol >= 100000: score += 2; reasons.append("USDT hacim guclu")
