@@ -311,10 +311,10 @@ def big_dip_radar(symbol, rs):
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
 
     if h1.rsi > 45:
-    return False, None
+        return False, None
 
     if h1.close > h1.bb_middle and h1.rsi > 50:
-    return False, None
+        return False, None
 
     rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
     macd_turn = h1.macd > h1_prev.macd
