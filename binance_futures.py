@@ -18,7 +18,7 @@ BOT_NAME = "BINANCE FUTURES RADAR MANAGER BOT"
 MAX_SYMBOLS = 160
 SLEEP_SECONDS = 45
 
-COOLDOWN_EARLY = 120 * 60
+COOLDOWN_EARLY = 180 * 60
 COOLDOWN_SAFE = 90 * 60
 COOLDOWN_DIP = 120 * 60
 COOLDOWN_MONEY_CONTINUE = 60 * 60
@@ -363,7 +363,7 @@ def early_radar(symbol, rs):
         reasons.append("15m EMA21 ustu")
 
     valid = (
-        score >= 11
+        score >= 13
         and rs >= MIN_EARLY_RS
         and (vol_ratio_1h >= 1.3 or vol_ratio_15m >= 1.4)
         and (usdt_vol_1h >= 25000 or usdt_vol_15m >= 12000)
@@ -376,7 +376,7 @@ def early_radar(symbol, rs):
             or bb_expanding
         )
         and 42 <= h1.rsi <= 85
-        and dist_from_low <= 35
+        and dist_from_low <= 23
     )
 
     return valid, {
