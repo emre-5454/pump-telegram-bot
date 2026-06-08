@@ -298,13 +298,14 @@ def early_radar(symbol, rs):
     score = 0
     reasons = []
 
-    # Dipten çok uzaklaşmış coinleri cezalandır
+    # Dipten Ã§ok uzaklaÅŸmÄ±ÅŸ coinleri cezalandÄ±r
     if dist_from_low > 15:
         score -= 2
 
-    # Artık early sayılmayacak kadar uzak
+    # ArtÄ±k early sayÄ±lmayacak kadar uzaksa EARLY puanÄ± dÃ¼ÅŸer.
+    # Ama None dÃ¶nmÃ¼yoruz; MoneyState / Money Continue iÃ§in radar verisi lazÄ±m.
     if dist_from_low > 25:
-        return False, None
+        score -= 3
 
     bb_now = df1h["bb_width"].iloc[-1]
     bb_prev = df1h["bb_width"].iloc[-6]
@@ -376,7 +377,7 @@ def early_radar(symbol, rs):
             or bb_expanding
         )
         and 42 <= h1.rsi <= 85
-        and dist_from_low <= 23
+        and dist_from_low <= 18
     )
 
     return valid, {
@@ -498,7 +499,8 @@ def safe_long(symbol, rs, btc_ok, funding):
         "tp1": price + risk * 1.5,
         "tp2": price + risk * 2.0,
         "tp3": price + risk * 3.0,
-        "risk_pct": risk_pct
+        "risk_pct": risk_pct,
+        "reasons": ["Trend yukari", "MACD yukari", "Momentum onayi"]
     }
 
 
@@ -1216,16 +1218,17 @@ def analyze(item, btc_ok, btc_status):
     try:
         signals = []
 
-       early_ok, early_data = early_radar(symbol, rs)
+        early_ok, early_data = early_radar(symbol, rs)
 
-if early_data:
-    update_money_state(symbol, early_data, "RADAR_DATA")
+        # EARLY mesajÄ± gelmese bile radar datasÄ± oluÅŸtuysa MoneyState baÅŸlasÄ±n.
+        if early_data:
+            update_money_state(symbol, early_data, "RADAR_DATA")
 
-money_ok, money_data = money_continue_signal(symbol, early_data)
-momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
+        money_ok, money_data = money_continue_signal(symbol, early_data)
+        momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
+        safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
+        dip_ok, dip_data = big_dip_radar(symbol, rs)
 
-safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
-dip_ok, dip_data = big_dip_radar(symbol, rs)
         if early_ok:
             signals.append(early_data)
 
@@ -1243,10 +1246,6 @@ dip_ok, dip_data = big_dip_radar(symbol, rs)
 
         if signals:
             sent = send_selected_signal(symbol, signals, funding, btc_status)
-
-            if early_data:
-                update_money_state(symbol, early_data, "RADAR_MANAGER")
-
             if sent:
                 return
 
