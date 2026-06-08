@@ -304,7 +304,7 @@ def early_radar(symbol, rs):
         score += 3
         reasons.append("RS guclu")
 
-    if vol_ratio_1h >= 1.3:
+    if vol_ratio_1h >= 1.5:
         score += 2
         reasons.append("1H hacim uyaniyor")
 
@@ -316,11 +316,11 @@ def early_radar(symbol, rs):
         score += 1
         reasons.append("USDT hacim yeterli")
 
-    if money_impact >= 1.1:
+    if money_impact >= 1.4:
         score += 2
         reasons.append("Para etkisi guclu")
 
-    if volume_power >= 2.0:
+    if volume_power >= 2.8:
         score += 2
         reasons.append("Hacim gucu guclu")
 
@@ -353,11 +353,11 @@ def early_radar(symbol, rs):
         reasons.append("15m EMA21 ustu")
 
     valid = (
-        score >= 8
+        score >= 11
         and rs >= MIN_EARLY_RS
         and (vol_ratio_1h >= 1.3 or vol_ratio_15m >= 1.4)
         and (usdt_vol_1h >= 25000 or usdt_vol_15m >= 12000)
-        and money_impact >= 1.1
+        and money_impact >= 1.4
         and (
             obv_up_1h
             or obv_up_15m
