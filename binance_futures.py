@@ -295,12 +295,20 @@ def early_radar(symbol, rs):
     low_24h = df1h["low"].tail(24).min()
     dist_from_low = ((h1.close - low_24h) / low_24h) * 100 if low_24h > 0 else 999
 
+    score = 0
+    reasons = []
+
+    # Dipten çok uzaklaşmış coinleri cezalandır
+    if dist_from_low > 15:
+        score -= 2
+
+   # Artık early sayılmayacak kadar uzak
+   if dist_from_low > 25:
+       return False, None
+
     bb_now = df1h["bb_width"].iloc[-1]
     bb_prev = df1h["bb_width"].iloc[-6]
     bb_expanding = bb_now > bb_prev
-
-    score = 0
-    reasons = []
 
     if rs >= MIN_EARLY_RS:
         score += 3
