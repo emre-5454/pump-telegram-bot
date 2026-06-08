@@ -311,8 +311,8 @@ def big_dip_radar(symbol, rs):
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
     # SAHTE DIP ELEME
 
-      if h1.rsi > 45:
-       return False, None
+    if h1.rsi > 45:
+         return False, None
 
      if h1.close > h1.bb_middle and h1.rsi > 50:
      return False, None
