@@ -309,21 +309,28 @@ def big_dip_radar(symbol, rs):
     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
     volume_power = money_impact * vol_ratio
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
-    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
-    macd_turn = h1.macd > h1_prev.macd
-    score = 0
+    # SAHTE DIP ELEME
+
+      if h1.rsi > 45:
+       return False, None
+
+     if h1.close > h1.bb_middle and h1.rsi > 50:
+     return False, None
+     rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
+     macd_turn = h1.macd > h1_prev.macd
+ score = 0
     reasons = []
     if bb_touch: score += 3; reasons.append("4H alt Bollinger tepki")
-    if vol_ratio >= 1.8: score += 2; reasons.append("1H hacim patlamasi")
-    if usdt_vol >= 30000: score += 1; reasons.append("USDT hacim guclu")
+    if vol_ratio >= 1.5: score += 2; reasons.append("1H hacim patlamasi")
+    if usdt_vol >= 100000: score += 2; reasons.append("USDT hacim guclu")
     if money_impact >= 1.2: score += 2; reasons.append("Para etkisi guclu")
     if volume_power >= 2.2: score += 2; reasons.append("Hacim gucu guclu")
-    if h1.lower_wick >= 0.30: score += 2; reasons.append("Alt fitil")
-    if obv_up: score += 2; reasons.append("OBV yukari")
+    if h1.lower_wick >= 0.60: score += 2; reasons.append("Alt fitil")
+    if obv_up: score += 1; reasons.append("OBV yukari")
     if rsi_turn: score += 2; reasons.append("RSI dipten donuyor")
     if macd_turn: score += 1; reasons.append("MACD toparlaniyor")
-    if rs >= 65: score += 1; reasons.append("RS fena degil")
-    valid = score >= 8 and (bb_touch or h1.lower_wick >= 0.30) and vol_ratio >= 1.3 and usdt_vol >= 20000 and rsi_turn and (obv_up or macd_turn or money_impact >= 1.2)
+    if rs >= 50: score += 1; reasons.append("RS fena degil")
+    valid = score >= 10 and (bb_touch or h1.lower_wick >= 0.30) and vol_ratio >= 1.3 and usdt_vol >= 20000 and rsi_turn and (obv_up or macd_turn or money_impact >= 1.2)
     return valid, {"module":"DIP","score":score,"priority":20,"price":h1.close,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"rsi":h1.rsi,"lower_wick":h1.lower_wick,"reasons":reasons}
 
 
