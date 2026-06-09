@@ -12,6 +12,7 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8937020446:AAEmdROw4hfDYArdz4eJ47oGHAT_9u4HhIM"
 CHAT_ID = "7553607277"
+
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
 BOT_NAME = "BINANCE FUTURES RADAR MANAGER BOT"
@@ -22,6 +23,7 @@ SLEEP_SECONDS = 45
 COOLDOWN_EARLY = 180 * 60
 COOLDOWN_SAFE = 90 * 60
 COOLDOWN_DIP = 120 * 60
+COOLDOWN_SWEEP_WATCH = 120 * 60
 COOLDOWN_MONEY_CONTINUE = 120 * 60
 COOLDOWN_MOMENTUM_CONTINUE = 150 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
@@ -33,6 +35,7 @@ MAX_RISK_PCT = 4.5
 sent_early = {}
 sent_safe = {}
 sent_dip = {}
+sent_sweep_watch = {}
 sent_money_continue = {}
 sent_momentum_continue = {}
 money_state = {}
@@ -99,6 +102,7 @@ def indicators(df):
 
     basis = close.rolling(20).mean()
     dev = close.rolling(20).std()
+    df["bb_middle"] = basis
     df["bb_upper"] = basis + dev * 2
     df["bb_lower"] = basis - dev * 2
     df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / basis.replace(0, np.nan)
@@ -111,6 +115,8 @@ def indicators(df):
     df["lower_wick"] = (
         pd.concat([df["open"], close], axis=1).min(axis=1) - low
     ) / candle_range
+
+    df["recovery_ratio"] = (close - low) / candle_range
 
     df["obv"] = np.where(
         close > close.shift(1),
@@ -300,12 +306,12 @@ def early_radar(symbol, rs):
     score = 0
     reasons = []
 
-    # Dipten Ã§ok uzaklaÅŸmÄ±ÅŸ coinleri cezalandÄ±r
+    # Dipten ÃƒÂ§ok uzaklaÃ…Å¸mÃ„Â±Ã…Å¸ coinleri cezalandÃ„Â±r
     if dist_from_low > 15:
         score -= 2
 
-    # ArtÄ±k early sayÄ±lmayacak kadar uzaksa EARLY puanÄ± dÃ¼ÅŸer.
-    # Ama None dÃ¶nmÃ¼yoruz; MoneyState / Money Continue iÃ§in radar verisi lazÄ±m.
+    # ArtÃ„Â±k early sayÃ„Â±lmayacak kadar uzaksa EARLY puanÃ„Â± dÃƒÂ¼Ã…Å¸er.
+    # Ama None dÃƒÂ¶nmÃƒÂ¼yoruz; MoneyState / Money Continue iÃƒÂ§in radar verisi lazÃ„Â±m.
     if dist_from_low > 25:
         score -= 3
 
@@ -615,6 +621,133 @@ def big_dip_radar(symbol, rs):
         "dist_from_low": dist_from_low,
         "reasons": reasons
     }
+
+
+def liquidity_sweep_watch(symbol, rs):
+    """
+    15m alt Bollinger disina igne + alt fitil + bant icine donus radari.
+    Bu direkt long sinyali degildir; izleme sinyalidir.
+    """
+    df15 = fetch_df(symbol, "15m", 140)
+    df1h = fetch_df(symbol, "1h", 100)
+
+    if df15 is None or df1h is None:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    m15_prev = df15.iloc[-2]
+    h1 = df1h.iloc[-1]
+
+    vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
+    usdt_vol = m15.volume * m15.close
+    avg_usdt_vol = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    low_24h = df15["low"].tail(96).min()
+    dist_from_low = ((m15.close - low_24h) / low_24h) * 100 if low_24h > 0 else 999
+
+    sweep_now = m15.low < m15.bb_lower and m15.close > m15.bb_lower
+    sweep_prev = m15_prev.low < m15_prev.bb_lower and m15_prev.close > m15_prev.bb_lower
+    sweep = sweep_now or sweep_prev
+
+    lower_wick = max(m15.lower_wick, m15_prev.lower_wick)
+    recovery = max(m15.recovery_ratio, m15_prev.recovery_ratio)
+
+    obv_turn = df15["obv"].iloc[-1] > df15["obv"].iloc[-4]
+    rsi_turn = m15.rsi > m15_prev.rsi and 28 <= m15.rsi <= 58
+    macd_turn = m15.macd > m15_prev.macd
+    green_reclaim = m15.close > m15.open and m15.close > m15_prev.close
+
+    if dist_from_low > 12:
+        return False, None
+
+    if m15.rsi > 62:
+        return False, None
+
+    if h1.close > h1.ema21 and h1.rsi > 60 and not sweep:
+        return False, None
+
+    score = 0
+    reasons = []
+
+    if sweep:
+        score += 4
+        reasons.append("15m alt Bollinger disi igne ve geri alis")
+    if lower_wick >= 0.40:
+        score += 3
+        reasons.append("Guclu alt fitil")
+    if recovery >= 0.55:
+        score += 2
+        reasons.append("Mum bant icine toparladi")
+    if vol_ratio >= 1.3:
+        score += 2
+        reasons.append("15m hacim artisi")
+    if usdt_vol >= 30000:
+        score += 1
+        reasons.append("USDT hacim yeterli")
+    if money_impact >= 1.15:
+        score += 2
+        reasons.append("Para etkisi basliyor")
+    if volume_power >= 2.0:
+        score += 2
+        reasons.append("Hacim gucu destekli")
+    if obv_turn:
+        score += 2
+        reasons.append("OBV yukari dondu")
+    if rsi_turn:
+        score += 2
+        reasons.append("RSI dipten donuyor")
+    if macd_turn:
+        score += 1
+        reasons.append("MACD toparlaniyor")
+    if green_reclaim:
+        score += 2
+        reasons.append("Yesil geri alis mumu")
+    if rs >= 65:
+        score += 1
+        reasons.append("RS destekli")
+
+    valid = (
+        score >= 10
+        and sweep
+        and lower_wick >= 0.35
+        and recovery >= 0.45
+        and vol_ratio >= 1.25
+        and usdt_vol >= 25000
+        and money_impact >= 1.10
+        and 28 <= m15.rsi <= 62
+        and dist_from_low <= 12
+        and (
+            obv_turn
+            or rsi_turn
+            or macd_turn
+            or green_reclaim
+        )
+    )
+
+    return valid, {
+        "module": "SWEEP",
+        "score": score,
+        "priority": 27,
+        "price": m15.close,
+        "rs": rs,
+        "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
+        "rsi": m15.rsi,
+        "dist_from_low": dist_from_low,
+        "lower_wick": lower_wick,
+        "recovery_ratio": recovery,
+        "sweep": sweep,
+        "obv_up": obv_turn,
+        "macd_turn": macd_turn,
+        "rsi_turn": rsi_turn,
+        "green_reclaim": green_reclaim,
+        "reasons": reasons
+    }
+
 
 def update_money_state(symbol, d, stage):
     if not d:
@@ -1130,6 +1263,18 @@ Alt Fitil: %{d['lower_wick'] * 100:.1f}
 """
         decision = "Dip radar. 5m/15m retest ve kirilim bekle."
 
+    elif module == "SWEEP":
+        title = "LIQUIDITY SWEEP WATCH"
+        body = f"""
+Sweep Skoru: {d['score']}/21
+15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
+Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
+Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
+OBV Donus: {"VAR" if d.get("obv_up") else "YOK"}
+MACD Toparlanma: {"VAR" if d.get("macd_turn") else "YOK"}
+"""
+        decision = "15m alt Bollinger igne + bant icine donus. Direkt long degil; 5m/15m retest takip."
+
     else:
         title = "EARLY RADAR"
         body = f"""
@@ -1240,6 +1385,8 @@ def elite_score_signal(d, support_modules=None):
         score += 16
     elif module == "DIP":
         score += 10
+    elif module == "SWEEP":
+        score += 18
     elif module == "EARLY":
         score += 8
 
@@ -1253,6 +1400,8 @@ def elite_score_signal(d, support_modules=None):
         score += 5
     if "DIP" in support_modules:
         score += 5
+    if "SWEEP" in support_modules:
+        score += 10
 
     if price_gain >= 2.0:
         score += 12
@@ -1302,6 +1451,12 @@ TP1: {d.get('tp1', 0):.8f}
 TP2: {d.get('tp2', 0):.8f}
 TP3: {d.get('tp3', 0):.8f}
 Risk: %{d.get('risk_pct', 0):.2f}
+"""
+    elif module == "SWEEP":
+        extra = f"""
+15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
+Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
+Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
 """
 
     return f"""
@@ -1358,6 +1513,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         "MOMENTUM": (sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE),
         "MONEY": (sent_money_continue, COOLDOWN_MONEY_CONTINUE),
         "DIP": (sent_dip, COOLDOWN_DIP),
+        "SWEEP": (sent_sweep_watch, COOLDOWN_SWEEP_WATCH),
         "EARLY": (sent_early, COOLDOWN_EARLY),
     }
 
@@ -1384,7 +1540,7 @@ def analyze(item, btc_ok, btc_status):
 
         early_ok, early_data = early_radar(symbol, rs)
 
-        # EARLY mesajÄ± gelmese bile radar datasÄ± oluÅŸtuysa MoneyState baÅŸlasÄ±n.
+        # EARLY mesajÃ„Â± gelmese bile radar datasÃ„Â± oluÃ…Å¸tuysa MoneyState baÃ…Å¸lasÃ„Â±n.
         if early_data:
             update_money_state(symbol, early_data, "RADAR_DATA")
 
@@ -1392,6 +1548,7 @@ def analyze(item, btc_ok, btc_status):
         momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
         dip_ok, dip_data = big_dip_radar(symbol, rs)
+        sweep_ok, sweep_data = liquidity_sweep_watch(symbol, rs)
 
         if early_ok:
             signals.append(early_data)
@@ -1408,6 +1565,9 @@ def analyze(item, btc_ok, btc_status):
         if dip_ok:
             signals.append(dip_data)
 
+        if sweep_ok:
+            signals.append(sweep_data)
+
         if signals:
             sent = send_selected_signal(symbol, signals, funding, btc_status)
             if sent:
@@ -1423,6 +1583,7 @@ def analyze(item, btc_ok, btc_status):
                 "Momentum:", momentum_ok,
                 "Safe:", safe_ok,
                 "Dip:", dip_ok,
+                "Sweep:", sweep_ok,
                 "MoneyState:", "VAR" if symbol in money_state else "YOK",
                 "IC FILTRE",
                 flush=True
