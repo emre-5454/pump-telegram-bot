@@ -21,6 +21,7 @@ SLEEP_SECONDS = 120
 COOLDOWN_EARLY = 3 * 60 * 60
 COOLDOWN_SAFE = 4 * 60 * 60
 COOLDOWN_DIP = 4 * 60 * 60
+COOLDOWN_DIP_REACTION = 3 * 60 * 60
 COOLDOWN_WATCH_CONFIRM = 90 * 60
 COOLDOWN_MONEY_CONTINUE = 45 * 60
 COOLDOWN_MOMENTUM_CONTINUE = 60 * 60
@@ -35,6 +36,7 @@ MAX_RISK_PCT = 4.5
 sent_early = {}
 sent_safe = {}
 sent_dip = {}
+sent_dip_reaction = {}
 sent_watch_confirm = {}
 sent_money_continue = {}
 sent_momentum_continue = {}
@@ -334,6 +336,123 @@ def big_dip_radar(symbol, rs):
     return valid, {"module":"DIP","score":score,"priority":20,"price":h1.close,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"rsi":h1.rsi,"lower_wick":h1.lower_wick,"reasons":reasons}
 
 
+
+def dip_reaction_radar(symbol, rs):
+    """
+    15m dipten para giriÅŸli dÃ¶nÃ¼ÅŸ radarÄ±.
+    BIG DIP gibi 1H/4H Ã§Ã¶kÃ¼ÅŸ aramaz.
+    PENGU tarzÄ± 15m dip reaksiyonlarÄ±nÄ± erken yakalamak iÃ§in eklendi.
+    """
+    df15 = fetch_df(symbol, "15m", 140)
+    df1h = fetch_df(symbol, "1h", 100)
+
+    if df15 is None or df1h is None:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    m15_prev = df15.iloc[-2]
+    m15_prev2 = df15.iloc[-3]
+    h1 = df1h.iloc[-1]
+
+    vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
+    usdt_vol = m15.volume * m15.close
+    avg_usdt_vol = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    recent_low = df15["low"].tail(16).min()
+    dist_from_low = ((m15.close - recent_low) / recent_low) * 100 if recent_low > 0 else 999
+
+    touched_bb = (
+        m15.low <= m15.bb_lower * 1.006
+        or m15_prev.low <= m15_prev.bb_lower * 1.006
+        or m15_prev2.low <= m15_prev2.bb_lower * 1.006
+    )
+
+    green_reaction = m15.close > m15.open and m15.close > m15_prev.close
+    reclaim_ma = m15.close > m15.ema9 or m15.close > m15.ema21
+    obv_turn = df15["obv"].iloc[-1] > df15["obv"].iloc[-4]
+    rsi_turn = m15.rsi > m15_prev.rsi and 28 <= m15.rsi <= 62
+    macd_turn = m15.macd > m15_prev.macd
+    recovery = m15.recovery_ratio >= 0.55
+    lower_wick_ok = m15.lower_wick >= 0.28 or m15_prev.lower_wick >= 0.35
+
+    # Ã‡oktan uÃ§muÅŸ coinleri DIP REACTION diye alma
+    if dist_from_low > 9:
+        return False, None
+
+    # RSI Ã§ok ÅŸiÅŸmiÅŸse artÄ±k dip reaksiyonu deÄŸil, geÃ§ kalmÄ±ÅŸ momentum olur
+    if m15.rsi > 64:
+        return False, None
+
+    # 1H tamamen gÃ¼Ã§lÃ¼ trendde ve fiyat yukarÄ±da ise dip reaksiyonu sayma
+    if h1.close > h1.ema21 and h1.rsi > 58 and not touched_bb:
+        return False, None
+
+    score = 0
+    reasons = []
+
+    if touched_bb:
+        score += 2; reasons.append("15m alt Bollinger tepki")
+    if vol_ratio >= 1.8:
+        score += 2; reasons.append("15m hacim artisi")
+    if usdt_vol >= 30000:
+        score += 1; reasons.append("USDT hacim yeterli")
+    if money_impact >= 1.35:
+        score += 2; reasons.append("Para etkisi basladi")
+    if volume_power >= 2.8:
+        score += 2; reasons.append("Hacim gucu reaksiyon")
+    if obv_turn:
+        score += 2; reasons.append("OBV dipten yukari")
+    if rsi_turn:
+        score += 2; reasons.append("RSI dipten donuyor")
+    if macd_turn:
+        score += 1; reasons.append("MACD toparlaniyor")
+    if green_reaction:
+        score += 2; reasons.append("Yesil donus mumu")
+    if recovery:
+        score += 1; reasons.append("Mum toparlanma guclu")
+    if lower_wick_ok:
+        score += 1; reasons.append("Alt fitil tepki")
+    if reclaim_ma:
+        score += 1; reasons.append("EMA geri alindi")
+    if rs >= 55:
+        score += 1; reasons.append("RS destekli")
+
+    valid = (
+        score >= 10
+        and dist_from_low <= 9
+        and vol_ratio >= 1.6
+        and usdt_vol >= 25000
+        and money_impact >= 1.25
+        and volume_power >= 2.3
+        and 28 <= m15.rsi <= 64
+        and (touched_bb or lower_wick_ok or recovery)
+        and (obv_turn or macd_turn or green_reaction)
+    )
+
+    return valid, {
+        "module": "DIP_REACTION",
+        "score": score,
+        "priority": 28,
+        "price": m15.close,
+        "rs": rs,
+        "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
+        "rsi": m15.rsi,
+        "dist_from_low": dist_from_low,
+        "lower_wick": m15.lower_wick,
+        "recovery_ratio": m15.recovery_ratio,
+        "touched_bb": touched_bb,
+        "obv_up": obv_turn,
+        "macd_turn": macd_turn,
+        "green_reaction": green_reaction,
+        "reasons": reasons
+    }
+
+
 def update_money_state(symbol, d, stage):
     if not d:
         return
@@ -487,7 +606,7 @@ def watch_confirm(symbol, d):
 def format_signal(symbol, d, funding, btc_status, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
-    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "EARLY":"EARLY RADAR"}
+    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "EARLY":"EARLY RADAR"}
     title = title_map.get(module, module)
     reasons = d.get("reasons") or d.get("continue_reasons") or d.get("momentum_reasons") or d.get("watch_reasons") or []
     support_text = ", ".join(support_modules) if support_modules else "YOK"
@@ -522,6 +641,14 @@ Watch Suresi: {d['watch_age_min']:.1f} dk
     elif module == "DIP":
         extra = f"""
 Alt Fitil: %{d.get('lower_wick',0) * 100:.1f}
+"""
+    elif module == "DIP_REACTION":
+        extra = f"""
+15m Dip Mesafesi: %{d.get('dist_from_low',0):.2f}
+Alt Fitil: %{d.get('lower_wick',0) * 100:.1f}
+Mum Toparlanma: %{d.get('recovery_ratio',0) * 100:.1f}
+15m BB Tepki: {'VAR' if d.get('touched_bb') else 'YOK'}
+OBV Donus: {'VAR' if d.get('obv_up') else 'YOK'}
 """
     else:
         extra = f"""
@@ -570,7 +697,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         return False
     best = select_best_signal(signals)
     support = [s["module"] for s in signals if s["module"] != best["module"]]
-    cooldown_map = {"SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "EARLY":(sent_early, COOLDOWN_EARLY)}
+    cooldown_map = {"SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "EARLY":(sent_early, COOLDOWN_EARLY)}
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
     if can_send(cache, symbol + "_" + best["module"], cooldown):
         send_telegram(format_signal(symbol, best, funding, btc_status, support))
@@ -592,12 +719,14 @@ def analyze(item, btc_ok, btc_status):
         watch_ok, watch_data = watch_confirm(symbol, early_data)
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
         dip_ok, dip_data = big_dip_radar(symbol, rs)
+        reaction_ok, reaction_data = dip_reaction_radar(symbol, rs)
         if early_ok: signals.append(early_data)
         if money_ok: signals.append(money_data)
         if momentum_ok: signals.append(momentum_data)
         if watch_ok: signals.append(watch_data)
         if safe_ok: signals.append(safe_data)
         if dip_ok: signals.append(dip_data)
+        if reaction_ok: signals.append(reaction_data)
         if early_data:
             update_money_state(symbol, early_data, "RADAR_MANAGER")
             if is_watch_candidate(early_data):
@@ -605,7 +734,7 @@ def analyze(item, btc_ok, btc_status):
         if signals:
             send_selected_signal(symbol, signals, funding, btc_status)
         else:
-            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "IC FILTRE", flush=True)
+            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "IC FILTRE", flush=True)
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
