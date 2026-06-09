@@ -21,6 +21,7 @@ MAX_SYMBOLS = 160
 SLEEP_SECONDS = 45
 
 COOLDOWN_EARLY = 180 * 60
+EARLY_MAX_PER_SYMBOL_PER_DAY = 3
 COOLDOWN_SAFE = 90 * 60
 COOLDOWN_DIP = 120 * 60
 COOLDOWN_SWEEP_WATCH = 120 * 60
@@ -33,6 +34,7 @@ MIN_SAFE_CONFIDENCE = 68
 MAX_RISK_PCT = 4.5
 
 sent_early = {}
+early_daily_counter = {}
 sent_safe = {}
 sent_dip = {}
 sent_sweep_watch = {}
@@ -306,12 +308,12 @@ def early_radar(symbol, rs):
     score = 0
     reasons = []
 
-    # Dipten ÃƒÂ§ok uzaklaÃ…Å¸mÃ„Â±Ã…Å¸ coinleri cezalandÃ„Â±r
+    # Dipten ÃƒÆ’Ã‚Â§ok uzaklaÃƒâ€¦Ã…Â¸mÃƒâ€Ã‚Â±Ãƒâ€¦Ã…Â¸ coinleri cezalandÃƒâ€Ã‚Â±r
     if dist_from_low > 15:
         score -= 2
 
-    # ArtÃ„Â±k early sayÃ„Â±lmayacak kadar uzaksa EARLY puanÃ„Â± dÃƒÂ¼Ã…Å¸er.
-    # Ama None dÃƒÂ¶nmÃƒÂ¼yoruz; MoneyState / Money Continue iÃƒÂ§in radar verisi lazÃ„Â±m.
+    # ArtÃƒâ€Ã‚Â±k early sayÃƒâ€Ã‚Â±lmayacak kadar uzaksa EARLY puanÃƒâ€Ã‚Â± dÃƒÆ’Ã‚Â¼Ãƒâ€¦Ã…Â¸er.
+    # Ama None dÃƒÆ’Ã‚Â¶nmÃƒÆ’Ã‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã‚Â§in radar verisi lazÃƒâ€Ã‚Â±m.
     if dist_from_low > 25:
         score -= 3
 
@@ -1325,6 +1327,29 @@ Radar Manager tum filtreleri taradi. En guclu sonuc bu mesajdir.
 """.strip()
 
 
+
+def early_counter_key(symbol):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    return f"{symbol}_{today}"
+
+
+def can_send_early_today(symbol):
+    key = early_counter_key(symbol)
+    return early_daily_counter.get(key, 0) < EARLY_MAX_PER_SYMBOL_PER_DAY
+
+
+def mark_early_sent_today(symbol):
+    key = early_counter_key(symbol)
+    early_daily_counter[key] = early_daily_counter.get(key, 0) + 1
+
+
+def cleanup_early_daily_counter():
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    old_keys = [k for k in early_daily_counter if not k.endswith("_" + today)]
+    for k in old_keys:
+        early_daily_counter.pop(k, None)
+
+
 def select_best_signal(signals):
     if not signals:
         return None
@@ -1520,8 +1545,16 @@ def send_selected_signal(symbol, signals, funding, btc_status):
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
     key = symbol + "_" + best["module"]
 
+    if best["module"] == "EARLY" and not can_send_early_today(symbol):
+        print("EARLY DAILY LIMIT:", symbol, "Limit:", EARLY_MAX_PER_SYMBOL_PER_DAY, flush=True)
+        return False
+
     if can_send(cache, key, cooldown):
         send_telegram(format_signal(symbol, best, funding, btc_status, support))
+
+        if best["module"] == "EARLY":
+            mark_early_sent_today(symbol)
+
         send_elite_signal(symbol, best, support)
         print("SEND:", symbol, best["module"], "Score:", best.get("score"), "Support:", support, flush=True)
         return True
@@ -1540,7 +1573,7 @@ def analyze(item, btc_ok, btc_status):
 
         early_ok, early_data = early_radar(symbol, rs)
 
-        # EARLY mesajÃ„Â± gelmese bile radar datasÃ„Â± oluÃ…Å¸tuysa MoneyState baÃ…Å¸lasÃ„Â±n.
+        # EARLY mesajÃƒâ€Ã‚Â± gelmese bile radar datasÃƒâ€Ã‚Â± oluÃƒâ€¦Ã…Â¸tuysa MoneyState baÃƒâ€¦Ã…Â¸lasÃƒâ€Ã‚Â±n.
         if early_data:
             update_money_state(symbol, early_data, "RADAR_DATA")
 
