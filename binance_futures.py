@@ -685,10 +685,10 @@ def money_continue_signal(symbol, d):
     cont_score = 0
     reasons = []
 
-    if price_gain >= 0.7:
+    if price_gain >= 0.8:
         cont_score += 2
         reasons.append("Ilk sinyalden sonra fiyat yukari")
-    if money_now >= 1.3:
+    if money_now >= 1.5:
         cont_score += 2
         reasons.append("Para etkisi devam ediyor")
     if power_now >= 2.2:
@@ -761,7 +761,7 @@ def momentum_continue_signal(symbol, d):
     mom_score = 0
     reasons = []
 
-    if price_gain >= 1.5:
+    if price_gain >= 1.8:
         mom_score += 3
         reasons.append("Ilk sinyalden sonra fiyat guclendi")
     if money_now >= 1.5:
