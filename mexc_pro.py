@@ -96,6 +96,7 @@ def indicators(df):
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     basis = close.rolling(20).mean()
     dev = close.rolling(20).std()
+    df["bb_middle"] = basis
     df["bb_upper"] = basis + dev * 2
     df["bb_lower"] = basis - dev * 2
     df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / basis.replace(0, np.nan)
