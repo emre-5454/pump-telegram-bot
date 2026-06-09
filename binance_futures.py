@@ -12,6 +12,7 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8937020446:AAEmdROw4hfDYArdz4eJ47oGHAT_9u4HhIM"
 CHAT_ID = "7553607277"
+ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
 BOT_NAME = "BINANCE FUTURES RADAR MANAGER BOT"
 
@@ -21,8 +22,8 @@ SLEEP_SECONDS = 45
 COOLDOWN_EARLY = 180 * 60
 COOLDOWN_SAFE = 90 * 60
 COOLDOWN_DIP = 120 * 60
-COOLDOWN_MONEY_CONTINUE = 60 * 60
-COOLDOWN_MOMENTUM_CONTINUE = 75 * 60
+COOLDOWN_MONEY_CONTINUE = 120 * 60
+COOLDOWN_MOMENTUM_CONTINUE = 150 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
 
 MIN_EARLY_RS = 72
@@ -46,20 +47,21 @@ exchange = ccxt.binanceusdm({
 })
 
 
-def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
+def send_telegram(msg, chat_id=None):
+    target_chat_id = chat_id or CHAT_ID
+
+    if not TELEGRAM_TOKEN or not target_chat_id:
         print(msg, flush=True)
         return
 
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
+            data={"chat_id": target_chat_id, "text": msg},
             timeout=15
         )
     except Exception as e:
         print("Telegram hata:", e, flush=True)
-
 
 def can_send(cache, key, cooldown):
     now = time.time()
@@ -678,6 +680,9 @@ def money_continue_signal(symbol, d):
     money_now = d.get("money_impact", 0)
     power_now = d.get("volume_power", 0)
 
+    if d.get("rsi", 0) > 84:
+        return False, None
+
     money_growth = money_now / first_money
     power_growth = power_now / first_power
     score_growth = d.get("score", 0) - s.get("first_score", 0)
@@ -685,10 +690,10 @@ def money_continue_signal(symbol, d):
     cont_score = 0
     reasons = []
 
-    if price_gain >= 0.8:
+    if price_gain >= 0.9:
         cont_score += 2
         reasons.append("Ilk sinyalden sonra fiyat yukari")
-    if money_now >= 1.5:
+    if money_now >= 1.3:
         cont_score += 2
         reasons.append("Para etkisi devam ediyor")
     if power_now >= 2.2:
@@ -706,9 +711,9 @@ def money_continue_signal(symbol, d):
 
     valid = (
         cont_score >= 7
-        and price_gain >= 0.5
-        and money_now >= 1.2
-        and power_now >= 2.0
+        and price_gain >= 0.8
+        and money_now >= 1.35
+        and power_now >= 2.4
         and (
             money_growth >= 1.08
             or power_growth >= 1.08
@@ -755,13 +760,16 @@ def momentum_continue_signal(symbol, d):
     money_now = d.get("money_impact", 0)
     power_now = d.get("volume_power", 0)
 
+    if d.get("rsi", 0) > 84:
+        return False, None
+
     money_growth = money_now / first_money
     power_growth = power_now / first_power
 
     mom_score = 0
     reasons = []
 
-    if price_gain >= 1.8:
+    if price_gain >= 1.7:
         mom_score += 3
         reasons.append("Ilk sinyalden sonra fiyat guclendi")
     if money_now >= 1.5:
@@ -785,9 +793,9 @@ def momentum_continue_signal(symbol, d):
 
     valid = (
         mom_score >= 8
-        and price_gain >= 1.2
-        and money_now >= 1.4
-        and power_now >= 2.8
+        and price_gain >= 1.5
+        and money_now >= 1.55
+        and power_now >= 3.2
         and (
             money_growth >= 1.12
             or power_growth >= 1.18
@@ -1183,6 +1191,161 @@ def select_best_signal(signals):
     )[0]
 
 
+
+sent_elite = {}
+
+ELITE_MIN_SCORE = 88
+ELITE_COOLDOWN = 90 * 60
+
+
+def elite_score_signal(d, support_modules=None):
+    support_modules = support_modules or []
+    module = d.get("module", "UNKNOWN")
+
+    score = 0
+    rs = d.get("rs", 0)
+    money_impact = d.get("money_impact", 0)
+    volume_power = d.get("volume_power", 0)
+    price_gain = d.get("price_gain_from_first", 0)
+    money_growth = d.get("money_growth", 1)
+    power_growth = d.get("power_growth", 1)
+    rsi_value = d.get("rsi", d.get("rsi15", 0))
+
+    if rs >= 90:
+        score += 18
+    elif rs >= 85:
+        score += 14
+    elif rs >= 80:
+        score += 10
+
+    if money_impact >= 2.5:
+        score += 18
+    elif money_impact >= 2.0:
+        score += 14
+    elif money_impact >= 1.6:
+        score += 9
+
+    if volume_power >= 6:
+        score += 18
+    elif volume_power >= 4:
+        score += 14
+    elif volume_power >= 3:
+        score += 9
+
+    if module == "SAFE":
+        score += 30
+    elif module == "MOMENTUM":
+        score += 24
+    elif module == "MONEY":
+        score += 16
+    elif module == "DIP":
+        score += 10
+    elif module == "EARLY":
+        score += 8
+
+    if "SAFE" in support_modules:
+        score += 18
+    if "MOMENTUM" in support_modules:
+        score += 12
+    if "MONEY" in support_modules:
+        score += 8
+    if "EARLY" in support_modules:
+        score += 5
+    if "DIP" in support_modules:
+        score += 5
+
+    if price_gain >= 2.0:
+        score += 12
+    elif price_gain >= 1.2:
+        score += 8
+    elif price_gain >= 0.8:
+        score += 5
+
+    if money_growth >= 1.5:
+        score += 10
+    elif money_growth >= 1.2:
+        score += 6
+
+    if power_growth >= 1.8:
+        score += 10
+    elif power_growth >= 1.3:
+        score += 6
+
+    if rsi_value >= 86:
+        score -= 18
+    elif rsi_value >= 82:
+        score -= 8
+
+    return max(0, min(100, score))
+
+
+def format_elite_signal(symbol, d, elite_score, support_modules=None):
+    support_modules = support_modules or []
+    module = d.get("module", "UNKNOWN")
+    support_text = ", ".join(support_modules) if support_modules else "YOK"
+
+    extra = ""
+    if module in ("MONEY", "MOMENTUM"):
+        extra = f"""
+Ilk Fiyat: {d.get('first_price', 0):.8f}
+Simdiki Fiyat: {d.get('price', 0):.8f}
+Ilk Sinyalden Sonra: %{d.get('price_gain_from_first', 0):.2f}
+Para Buyume: {d.get('money_growth', 1):.2f}x
+Hacim Gucu Buyume: {d.get('power_growth', 1):.2f}x
+Sure: {d.get('age_min', 0):.1f} dk
+"""
+    elif module == "SAFE":
+        extra = f"""
+Giris: {d.get('entry', 0):.8f}
+Stop: {d.get('stop', 0):.8f}
+TP1: {d.get('tp1', 0):.8f}
+TP2: {d.get('tp2', 0):.8f}
+TP3: {d.get('tp3', 0):.8f}
+Risk: %{d.get('risk_pct', 0):.2f}
+"""
+
+    return f"""
+ğŸ† BINANCE ELITE TOP
+
+Coin: {symbol}
+Mod: {module}
+Elite Skor: {elite_score}/100
+
+Fiyat: {d.get('price', 0):.8f}
+RS Skoru: {d.get('rs', 0):.1f}/100
+Radar Skoru: {d.get('score', 0)}
+
+Para Etkisi: {d.get('money_impact', 0):.2f}x
+Hacim Gucu: {d.get('volume_power', 0):.2f}
+RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
+
+Ek Gecen Radarlar:
+{support_text}
+
+{extra}
+
+Karar:
+Bu coin ana radardaki sinyaller arasindan ELITE listeye ayrildi.
+Direkt islem degildir. 5m/15m kapanis, retest ve BTC durumu kontrol edilir.
+""".strip()
+
+
+def send_elite_signal(symbol, best, support):
+    if not ELITE_CHAT_ID:
+        return False
+
+    elite_score = elite_score_signal(best, support)
+    if elite_score < ELITE_MIN_SCORE:
+        return False
+
+    key = symbol + "_ELITE_" + best.get("module", "UNKNOWN")
+    if not can_send(sent_elite, key, ELITE_COOLDOWN):
+        return False
+
+    send_telegram(format_elite_signal(symbol, best, elite_score, support), ELITE_CHAT_ID)
+    print("ELITE SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+    return True
+
 def send_selected_signal(symbol, signals, funding, btc_status):
     if not signals:
         return False
@@ -1203,6 +1366,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
 
     if can_send(cache, key, cooldown):
         send_telegram(format_signal(symbol, best, funding, btc_status, support))
+        send_elite_signal(symbol, best, support)
         print("SEND:", symbol, best["module"], "Score:", best.get("score"), "Support:", support, flush=True)
         return True
 
