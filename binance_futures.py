@@ -1485,7 +1485,7 @@ Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
 """
 
     return f"""
-ğŸ† BINANCE ELITE TOP
+BINANCE ELITE TOP
 
 Coin: {symbol}
 Mod: {module}
