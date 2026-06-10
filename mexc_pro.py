@@ -12,6 +12,7 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
+MEXC_ELITE_CHAT_ID = os.getenv("-1003758052977")
 
 BOT_NAME = "MEXC RADAR MANAGER + MONEY CONTINUE BOT"
 
@@ -36,6 +37,9 @@ MIN_EARLY_RS = 65
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
+MEXC_ELITE_MIN_SCORE = 94
+MEXC_ELITE_COOLDOWN = 180 * 60
+
 sent_early = {}
 early_daily_counter = {}
 sent_safe = {}
@@ -48,6 +52,7 @@ sent_money_continue = {}
 sent_momentum_continue = {}
 watchlist = {}
 money_state = {}
+sent_mexc_elite = {}
 
 exchange = ccxt.mexc({
     "enableRateLimit": True,
@@ -56,14 +61,15 @@ exchange = ccxt.mexc({
 })
 
 
-def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
+def send_telegram(msg, chat_id=None):
+    target_chat_id = chat_id or CHAT_ID
+    if not TELEGRAM_TOKEN or not target_chat_id:
         print(msg, flush=True)
         return
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
+            data={"chat_id": target_chat_id, "text": msg},
             timeout=15
         )
     except Exception as e:
@@ -346,9 +352,9 @@ def big_dip_radar(symbol, rs):
 
 def dip_reaction_radar(symbol, rs):
     """
-    15m dipten para giriÃ…Å¸li dÃƒÂ¶nÃƒÂ¼Ã…Å¸ radarÃ„Â±.
-    BIG DIP gibi 1H/4H ÃƒÂ§ÃƒÂ¶kÃƒÂ¼Ã…Å¸ aramaz.
-    PENGU tarzÃ„Â± 15m dip reaksiyonlarÃ„Â±nÃ„Â± erken yakalamak iÃƒÂ§in eklendi.
+    15m dipten para giriÃƒâ€¦Ã…Â¸li dÃƒÆ’Ã‚Â¶nÃƒÆ’Ã‚Â¼Ãƒâ€¦Ã…Â¸ radarÃƒâ€Ã‚Â±.
+    BIG DIP gibi 1H/4H ÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â¶kÃƒÆ’Ã‚Â¼Ãƒâ€¦Ã…Â¸ aramaz.
+    PENGU tarzÃƒâ€Ã‚Â± 15m dip reaksiyonlarÃƒâ€Ã‚Â±nÃƒâ€Ã‚Â± erken yakalamak iÃƒÆ’Ã‚Â§in eklendi.
     """
     df15 = fetch_df(symbol, "15m", 140)
     df1h = fetch_df(symbol, "1h", 100)
@@ -384,15 +390,15 @@ def dip_reaction_radar(symbol, rs):
     recovery = m15.recovery_ratio >= 0.55
     lower_wick_ok = m15.lower_wick >= 0.28 or m15_prev.lower_wick >= 0.35
 
-    # Ãƒâ€¡oktan uÃƒÂ§muÃ…Å¸ coinleri DIP REACTION diye alma
+    # ÃƒÆ’Ã¢â‚¬Â¡oktan uÃƒÆ’Ã‚Â§muÃƒâ€¦Ã…Â¸ coinleri DIP REACTION diye alma
     if dist_from_low > 9:
         return False, None
 
-    # RSI ÃƒÂ§ok Ã…Å¸iÃ…Å¸miÃ…Å¸se artÃ„Â±k dip reaksiyonu deÃ„Å¸il, geÃƒÂ§ kalmÃ„Â±Ã…Å¸ momentum olur
+    # RSI ÃƒÆ’Ã‚Â§ok Ãƒâ€¦Ã…Â¸iÃƒâ€¦Ã…Â¸miÃƒâ€¦Ã…Â¸se artÃƒâ€Ã‚Â±k dip reaksiyonu deÃƒâ€Ã…Â¸il, geÃƒÆ’Ã‚Â§ kalmÃƒâ€Ã‚Â±Ãƒâ€¦Ã…Â¸ momentum olur
     if m15.rsi > 64:
         return False, None
 
-    # 1H tamamen gÃƒÂ¼ÃƒÂ§lÃƒÂ¼ trendde ve fiyat yukarÃ„Â±da ise dip reaksiyonu sayma
+    # 1H tamamen gÃƒÆ’Ã‚Â¼ÃƒÆ’Ã‚Â§lÃƒÆ’Ã‚Â¼ trendde ve fiyat yukarÃƒâ€Ã‚Â±da ise dip reaksiyonu sayma
     if h1.close > h1.ema21 and h1.rsi > 58 and not touched_bb:
         return False, None
 
@@ -893,6 +899,206 @@ def cleanup_early_daily_counter():
         early_daily_counter.pop(k, None)
 
 
+def mexc_elite_score_signal(d, support_modules=None):
+    support_modules = support_modules or []
+    module = d.get("module", "UNKNOWN")
+    score = 0
+
+    rs = d.get("rs", 0)
+    money_impact = d.get("money_impact", 0)
+    volume_power = d.get("volume_power", 0)
+    price_gain = d.get("price_gain_from_first", 0)
+    money_growth = d.get("money_growth", 1)
+    power_growth = d.get("power_growth", 1)
+    rsi_value = d.get("rsi", d.get("rsi15", 0))
+    usdt_vol = d.get("usdt_vol", 0)
+
+    if rs >= 90:
+        score += 18
+    elif rs >= 80:
+        score += 14
+    elif rs >= 70:
+        score += 10
+    elif rs >= 60:
+        score += 6
+
+    if money_impact >= 2.8:
+        score += 18
+    elif money_impact >= 2.2:
+        score += 14
+    elif money_impact >= 1.7:
+        score += 9
+    elif money_impact >= 1.3:
+        score += 5
+
+    if volume_power >= 7:
+        score += 18
+    elif volume_power >= 5:
+        score += 14
+    elif volume_power >= 3.5:
+        score += 9
+    elif volume_power >= 2.5:
+        score += 5
+
+    if usdt_vol >= 100000:
+        score += 10
+    elif usdt_vol >= 50000:
+        score += 7
+    elif usdt_vol >= 15000:
+        score += 4
+
+    if module == "SAFE":
+        score += 30
+    elif module == "MOMENTUM":
+        score += 24
+    elif module == "SQUEEZE":
+        score += 20
+    elif module == "REVERSAL":
+        score += 18
+    elif module == "MONEY":
+        score += 16
+    elif module == "DIP_REACTION":
+        score += 16
+    elif module == "WATCH":
+        score += 10
+    elif module == "DIP":
+        score += 8
+    elif module == "EARLY":
+        score += 4
+
+    if "SAFE" in support_modules:
+        score += 18
+    if "MOMENTUM" in support_modules:
+        score += 12
+    if "SQUEEZE" in support_modules:
+        score += 10
+    if "MONEY" in support_modules:
+        score += 8
+    if "REVERSAL" in support_modules:
+        score += 8
+    if "DIP_REACTION" in support_modules:
+        score += 7
+    if "WATCH" in support_modules:
+        score += 5
+
+    if price_gain >= 3.0:
+        score += 14
+    elif price_gain >= 2.0:
+        score += 10
+    elif price_gain >= 1.2:
+        score += 7
+    elif price_gain >= 0.8:
+        score += 4
+
+    if money_growth >= 1.8:
+        score += 10
+    elif money_growth >= 1.35:
+        score += 7
+    elif money_growth >= 1.15:
+        score += 4
+
+    if power_growth >= 2.0:
+        score += 10
+    elif power_growth >= 1.5:
+        score += 7
+    elif power_growth >= 1.25:
+        score += 4
+
+    if rsi_value >= 86:
+        score -= 18
+    elif rsi_value >= 82:
+        score -= 10
+
+    if module == "EARLY" and not support_modules:
+        score -= 20
+
+    return max(0, min(100, score))
+
+
+def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
+    support_modules = support_modules or []
+    module = d.get("module", "UNKNOWN")
+    support_text = ", ".join(support_modules) if support_modules else "YOK"
+
+    extra = ""
+    if module in ("MONEY", "MOMENTUM"):
+        extra = f"""
+Ilk Fiyat: {d.get('first_price', 0):.8f}
+Simdiki Fiyat: {d.get('price', 0):.8f}
+Ilk Sinyalden Sonra: %{d.get('price_gain_from_first', 0):.2f}
+Para Buyume: {d.get('money_growth', 1):.2f}x
+Hacim Gucu Buyume: {d.get('power_growth', 1):.2f}x
+Sure: {d.get('age_min', 0):.1f} dk
+"""
+    elif module == "SAFE":
+        extra = f"""
+Giris: {d.get('entry', 0):.8f}
+Stop: {d.get('stop', 0):.8f}
+TP1: {d.get('tp1', 0):.8f}
+TP2: {d.get('tp2', 0):.8f}
+TP3: {d.get('tp3', 0):.8f}
+Risk: %{d.get('risk_pct', 0):.2f}
+"""
+    elif module in ("REVERSAL", "DIP_REACTION"):
+        extra = f"""
+15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
+Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
+Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
+"""
+    elif module == "SQUEEZE":
+        extra = f"""
+BB Width: {d.get('bb_width', 0):.4f}
+Yatay Kirilim: {'VAR' if d.get('range_break') else 'YOK'}
+Ust Bant Kirilim: {'VAR' if d.get('upper_break') else 'YOK'}
+"""
+
+    return f"""
+MEXC ELITE TOP
+
+Coin: {symbol}
+Mod: {module}
+Elite Skor: {elite_score}/100
+
+Fiyat: {d.get('price', 0):.8f}
+RS Skoru: {d.get('rs', 0):.1f}/100
+Radar Skoru: {d.get('score', 0)}
+
+Para Etkisi: {d.get('money_impact', 0):.2f}x
+Hacim Gucu: {d.get('volume_power', 0):.2f}
+USDT Hacim: {int(d.get('usdt_vol', 0))} USDT
+RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
+
+Ek Gecen Radarlar:
+{support_text}
+
+{extra}
+
+Karar:
+Bu coin MEXC ana radardaki sinyaller arasindan ELITE listeye ayrildi.
+Direkt islem degildir. 5m/15m kapanis, retest ve BTC durumu kontrol edilir.
+""".strip()
+
+
+def send_mexc_elite_signal(symbol, best, support):
+    if not MEXC_ELITE_CHAT_ID:
+        return False
+
+    elite_score = mexc_elite_score_signal(best, support)
+    if elite_score < MEXC_ELITE_MIN_SCORE:
+        return False
+
+    if best.get("module") == "EARLY" and not support:
+        return False
+
+    key = symbol + "_MEXC_ELITE_" + best.get("module", "UNKNOWN")
+    if not can_send(sent_mexc_elite, key, MEXC_ELITE_COOLDOWN):
+        return False
+
+    send_telegram(format_mexc_elite_signal(symbol, best, elite_score, support), MEXC_ELITE_CHAT_ID)
+    print("MEXC ELITE SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+    return True
+
+
 def select_best_signal(signals):
     if not signals:
         return None
@@ -981,7 +1187,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC RADAR MANAGER Bot Aktif", 200
+    return "MEXC RADAR MANAGER + ELITE Bot Aktif", 200
 
 
 if __name__ == "__main__":
