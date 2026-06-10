@@ -1364,7 +1364,7 @@ def select_best_signal(signals):
 
 sent_elite = {}
 
-ELITE_MIN_SCORE = 94
+ELITE_MIN_SCORE = 97
 ELITE_COOLDOWN = 120 * 60
 
 
@@ -1405,7 +1405,7 @@ def elite_score_signal(d, support_modules=None):
     if module == "SAFE":
         score += 30
     elif module == "MOMENTUM":
-        score += 24
+        score += 18
     elif module == "MONEY":
         score += 16
     elif module == "DIP":
@@ -1420,7 +1420,7 @@ def elite_score_signal(d, support_modules=None):
     if "MOMENTUM" in support_modules:
         score += 12
     if "MONEY" in support_modules:
-        score += 8
+        score += 5
     if "EARLY" in support_modules:
         score += 5
     if "DIP" in support_modules:
