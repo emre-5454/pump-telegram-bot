@@ -14,6 +14,8 @@ TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 MEXC_ELITE_CHAT_ID = "-1003758052977"
 
+
+
 BOT_NAME = "MEXC RADAR MANAGER + MONEY CONTINUE BOT"
 
 MAX_SYMBOLS = 160
@@ -37,7 +39,7 @@ MIN_EARLY_RS = 65
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
-MEXC_ELITE_MIN_SCORE = 94
+MEXC_ELITE_MIN_SCORE = 92
 MEXC_ELITE_COOLDOWN = 180 * 60
 
 sent_early = {}
@@ -251,7 +253,7 @@ def early_radar(symbol, rs):
         score += 2; reasons.append("BB sikisma")
     if bb_strong_squeeze:
         score += 1; reasons.append("Guclu BB sikisma")
-    valid = score >= 10 and rs >= 50 and vol_ratio >= 1.5 and usdt_vol >= 25000 and money_impact >= 1.2 and dist_from_low <= 22 and 38 <= h1.rsi <= 78 and (volume_power >= 2.3 or bb_expanding or bb_squeeze or obv_up)
+    valid = score >= 10 and rs >= 50 and vol_ratio >= 1.5 and usdt_vol >= 5000 and money_impact >= 1.2 and dist_from_low <= 22 and 38 <= h1.rsi <= 78 and (volume_power >= 2.3 or bb_expanding or bb_squeeze or obv_up)
     return valid, {"module":"EARLY","score":score,"priority":10,"price":h1.close,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"rsi":h1.rsi,"dist_from_low":dist_from_low,"bb_width":bb_now,"bb_expanding":bb_expanding,"obv_up":obv_up,"macd_turn":macd_turn,"macd_cross_near":macd_cross_near,"bb_squeeze":bb_squeeze,"bb_strong_squeeze":bb_strong_squeeze,"reasons":reasons}
 
 
@@ -283,9 +285,9 @@ def safe_long(symbol, rs, btc_ok, funding):
     score = 0
     if rs >= 65: score += 12
     if vol_ratio >= 2.0: score += 15
-    if usdt_vol >= 30000: score += 10
+    if usdt_vol >= 5000: score += 10
     if money_impact >= 1.2: score += 8
-    if volume_power >= 2.8: score += 8
+    if volume_power >= 1.60: score += 8
     if change_3m >= 0.20: score += 10
     if trend_up: score += 10
     if macd_bull: score += 10
@@ -352,9 +354,9 @@ def big_dip_radar(symbol, rs):
 
 def dip_reaction_radar(symbol, rs):
     """
-    15m dipten para giriÃƒâ€¦Ã…Â¸li dÃƒÆ’Ã‚Â¶nÃƒÆ’Ã‚Â¼Ãƒâ€¦Ã…Â¸ radarÃƒâ€Ã‚Â±.
-    BIG DIP gibi 1H/4H ÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â¶kÃƒÆ’Ã‚Â¼Ãƒâ€¦Ã…Â¸ aramaz.
-    PENGU tarzÃƒâ€Ã‚Â± 15m dip reaksiyonlarÃƒâ€Ã‚Â±nÃƒâ€Ã‚Â± erken yakalamak iÃƒÆ’Ã‚Â§in eklendi.
+    15m dipten para giriÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸li dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸ radarÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±.
+    BIG DIP gibi 1H/4H ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶kÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸ aramaz.
+    PENGU tarzÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± 15m dip reaksiyonlarÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±nÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± erken yakalamak iÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§in eklendi.
     """
     df15 = fetch_df(symbol, "15m", 140)
     df1h = fetch_df(symbol, "1h", 100)
@@ -390,15 +392,15 @@ def dip_reaction_radar(symbol, rs):
     recovery = m15.recovery_ratio >= 0.55
     lower_wick_ok = m15.lower_wick >= 0.28 or m15_prev.lower_wick >= 0.35
 
-    # ÃƒÆ’Ã¢â‚¬Â¡oktan uÃƒÆ’Ã‚Â§muÃƒâ€¦Ã…Â¸ coinleri DIP REACTION diye alma
-    if dist_from_low > 9:
+    # ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¡oktan uÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§muÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸ coinleri DIP REACTION diye alma
+    if dist_from_low > 13:
         return False, None
 
-    # RSI ÃƒÆ’Ã‚Â§ok Ãƒâ€¦Ã…Â¸iÃƒâ€¦Ã…Â¸miÃƒâ€¦Ã…Â¸se artÃƒâ€Ã‚Â±k dip reaksiyonu deÃƒâ€Ã…Â¸il, geÃƒÆ’Ã‚Â§ kalmÃƒâ€Ã‚Â±Ãƒâ€¦Ã…Â¸ momentum olur
+    # RSI ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ok ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸iÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸miÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸se artÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±k dip reaksiyonu deÃƒÆ’Ã¢â‚¬ÂÃƒâ€¦Ã‚Â¸il, geÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ kalmÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸ momentum olur
     if m15.rsi > 64:
         return False, None
 
-    # 1H tamamen gÃƒÆ’Ã‚Â¼ÃƒÆ’Ã‚Â§lÃƒÆ’Ã‚Â¼ trendde ve fiyat yukarÃƒâ€Ã‚Â±da ise dip reaksiyonu sayma
+    # 1H tamamen gÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§lÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼ trendde ve fiyat yukarÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±da ise dip reaksiyonu sayma
     if h1.close > h1.ema21 and h1.rsi > 58 and not touched_bb:
         return False, None
 
@@ -407,13 +409,13 @@ def dip_reaction_radar(symbol, rs):
 
     if touched_bb:
         score += 2; reasons.append("15m alt Bollinger tepki")
-    if vol_ratio >= 1.8:
+    if vol_ratio >= 1.35:
         score += 2; reasons.append("15m hacim artisi")
-    if usdt_vol >= 30000:
+    if usdt_vol >= 5000:
         score += 1; reasons.append("USDT hacim yeterli")
-    if money_impact >= 1.35:
+    if money_impact >= 1.12:
         score += 2; reasons.append("Para etkisi basladi")
-    if volume_power >= 2.8:
+    if volume_power >= 1.60:
         score += 2; reasons.append("Hacim gucu reaksiyon")
     if obv_turn:
         score += 2; reasons.append("OBV dipten yukari")
@@ -434,11 +436,11 @@ def dip_reaction_radar(symbol, rs):
 
     valid = (
         score >= 10
-        and dist_from_low <= 9
-        and vol_ratio >= 1.6
-        and usdt_vol >= 25000
-        and money_impact >= 1.25
-        and volume_power >= 2.3
+        and dist_from_low <= 13
+        and vol_ratio >= 1.25
+        and usdt_vol >= 5000
+        and money_impact >= 1.08
+        and volume_power >= 1.45
         and 28 <= m15.rsi <= 64
         and (touched_bb or lower_wick_ok or recovery)
         and (obv_turn or macd_turn or green_reaction)
@@ -521,9 +523,9 @@ def reversal_watch(symbol, rs):
     valid = (
         score >= 9
         and dist_from_low <= 10
-        and usdt_vol >= 1500
-        and vol_ratio >= 1.15
-        and money_impact >= 1.05
+        and usdt_vol >= 1000
+        and vol_ratio >= 1.05
+        and money_impact >= 1.00
         and 25 <= m15.rsi <= 60
         and (rsi_turn or macd_turn or obv_turn)
         and (green_reaction or reclaim_ema or near_lower_bb or lower_wick_ok)
@@ -1187,7 +1189,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC RADAR MANAGER + ELITE Bot Aktif", 200
+    return "MEXC RADAR MANAGER + ELITE + DIP FIX Bot Aktif", 200
 
 
 if __name__ == "__main__":
