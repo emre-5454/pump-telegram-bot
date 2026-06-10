@@ -19,12 +19,15 @@ MAX_SYMBOLS = 160
 SLEEP_SECONDS = 120
 
 COOLDOWN_EARLY = 3 * 60 * 60
+EARLY_MAX_PER_SYMBOL_PER_DAY = 3
 COOLDOWN_SAFE = 4 * 60 * 60
 COOLDOWN_DIP = 4 * 60 * 60
 COOLDOWN_DIP_REACTION = 3 * 60 * 60
+COOLDOWN_REVERSAL_WATCH = 120 * 60
+COOLDOWN_SQUEEZE_BREAKOUT = 120 * 60
 COOLDOWN_WATCH_CONFIRM = 90 * 60
-COOLDOWN_MONEY_CONTINUE = 45 * 60
-COOLDOWN_MOMENTUM_CONTINUE = 60 * 60
+COOLDOWN_MONEY_CONTINUE = 120 * 60
+COOLDOWN_MOMENTUM_CONTINUE = 120 * 60
 
 WATCH_EXPIRE_SECONDS = 45 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
@@ -34,9 +37,12 @@ MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
 sent_early = {}
+early_daily_counter = {}
 sent_safe = {}
 sent_dip = {}
 sent_dip_reaction = {}
+sent_reversal_watch = {}
+sent_squeeze_breakout = {}
 sent_watch_confirm = {}
 sent_money_continue = {}
 sent_momentum_continue = {}
@@ -340,9 +346,9 @@ def big_dip_radar(symbol, rs):
 
 def dip_reaction_radar(symbol, rs):
     """
-    15m dipten para giriÅŸli dÃ¶nÃ¼ÅŸ radarÄ±.
-    BIG DIP gibi 1H/4H Ã§Ã¶kÃ¼ÅŸ aramaz.
-    PENGU tarzÄ± 15m dip reaksiyonlarÄ±nÄ± erken yakalamak iÃ§in eklendi.
+    15m dipten para giriÃ…Å¸li dÃƒÂ¶nÃƒÂ¼Ã…Å¸ radarÃ„Â±.
+    BIG DIP gibi 1H/4H ÃƒÂ§ÃƒÂ¶kÃƒÂ¼Ã…Å¸ aramaz.
+    PENGU tarzÃ„Â± 15m dip reaksiyonlarÃ„Â±nÃ„Â± erken yakalamak iÃƒÂ§in eklendi.
     """
     df15 = fetch_df(symbol, "15m", 140)
     df1h = fetch_df(symbol, "1h", 100)
@@ -378,15 +384,15 @@ def dip_reaction_radar(symbol, rs):
     recovery = m15.recovery_ratio >= 0.55
     lower_wick_ok = m15.lower_wick >= 0.28 or m15_prev.lower_wick >= 0.35
 
-    # Ã‡oktan uÃ§muÅŸ coinleri DIP REACTION diye alma
+    # Ãƒâ€¡oktan uÃƒÂ§muÃ…Å¸ coinleri DIP REACTION diye alma
     if dist_from_low > 9:
         return False, None
 
-    # RSI Ã§ok ÅŸiÅŸmiÅŸse artÄ±k dip reaksiyonu deÄŸil, geÃ§ kalmÄ±ÅŸ momentum olur
+    # RSI ÃƒÂ§ok Ã…Å¸iÃ…Å¸miÃ…Å¸se artÃ„Â±k dip reaksiyonu deÃ„Å¸il, geÃƒÂ§ kalmÃ„Â±Ã…Å¸ momentum olur
     if m15.rsi > 64:
         return False, None
 
-    # 1H tamamen gÃ¼Ã§lÃ¼ trendde ve fiyat yukarÄ±da ise dip reaksiyonu sayma
+    # 1H tamamen gÃƒÂ¼ÃƒÂ§lÃƒÂ¼ trendde ve fiyat yukarÃ„Â±da ise dip reaksiyonu sayma
     if h1.close > h1.ema21 and h1.rsi > 58 and not touched_bb:
         return False, None
 
@@ -454,6 +460,152 @@ def dip_reaction_radar(symbol, rs):
     }
 
 
+def reversal_watch(symbol, rs):
+    df15 = fetch_df(symbol, "15m", 140)
+    df1h = fetch_df(symbol, "1h", 100)
+    if df15 is None or df1h is None:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    p1 = df15.iloc[-2]
+    p2 = df15.iloc[-3]
+    h1 = df1h.iloc[-1]
+
+    vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
+    usdt_vol = m15.volume * m15.close
+    avg_usdt_vol = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    recent_low = df15["low"].tail(20).min()
+    dist_from_low = ((m15.close - recent_low) / recent_low) * 100 if recent_low > 0 else 999
+
+    rsi_turn = m15.rsi > p1.rsi and p1.rsi <= p2.rsi and 25 <= m15.rsi <= 58
+    macd_turn = m15.macd > p1.macd and p1.macd >= p2.macd
+    obv_turn = df15["obv"].iloc[-1] > df15["obv"].iloc[-4]
+    green_reaction = m15.close > m15.open and m15.close >= p1.close
+    reclaim_ema = m15.close > m15.ema9 or m15.close > m15.ema21
+    near_lower_bb = m15.low <= m15.bb_lower * 1.020 or p1.low <= p1.bb_lower * 1.020
+    lower_wick_ok = max(m15.lower_wick, p1.lower_wick) >= 0.25
+    recovery_ok = max(m15.recovery_ratio, p1.recovery_ratio) >= 0.50
+
+    if dist_from_low > 10:
+        return False, None
+    if m15.rsi > 60:
+        return False, None
+    if h1.close > h1.ema21 and h1.rsi > 62 and not near_lower_bb:
+        return False, None
+
+    score = 0
+    reasons = []
+    if dist_from_low <= 6: score += 2; reasons.append("15m dip bolgesine yakin")
+    if rsi_turn: score += 3; reasons.append("RSI dipten donuyor")
+    if macd_turn: score += 2; reasons.append("MACD dipten toparlaniyor")
+    if obv_turn: score += 2; reasons.append("OBV yukari donuyor")
+    if green_reaction: score += 2; reasons.append("Yesil donus mumu")
+    if reclaim_ema: score += 1; reasons.append("EMA geri alma")
+    if near_lower_bb: score += 2; reasons.append("15m alt Bollinger bolgesi")
+    if lower_wick_ok: score += 1; reasons.append("Alt fitil tepki")
+    if recovery_ok: score += 1; reasons.append("Mum toparlanma var")
+    if vol_ratio >= 1.25: score += 2; reasons.append("15m hacim uyanisi")
+    if money_impact >= 1.10: score += 2; reasons.append("Para etkisi basliyor")
+    if volume_power >= 1.7: score += 1; reasons.append("Hacim gucu erken")
+    if rs >= 45: score += 1; reasons.append("RS fena degil")
+
+    valid = (
+        score >= 9
+        and dist_from_low <= 10
+        and usdt_vol >= 1500
+        and vol_ratio >= 1.15
+        and money_impact >= 1.05
+        and 25 <= m15.rsi <= 60
+        and (rsi_turn or macd_turn or obv_turn)
+        and (green_reaction or reclaim_ema or near_lower_bb or lower_wick_ok)
+    )
+
+    return valid, {
+        "module":"REVERSAL", "score":score, "priority":24, "price":m15.close,
+        "rs":rs, "vol_ratio":vol_ratio, "usdt_vol":usdt_vol,
+        "money_impact":money_impact, "volume_power":volume_power,
+        "rsi":m15.rsi, "dist_from_low":dist_from_low,
+        "lower_wick":max(m15.lower_wick, p1.lower_wick),
+        "recovery_ratio":max(m15.recovery_ratio, p1.recovery_ratio),
+        "rsi_turn":rsi_turn, "macd_turn":macd_turn, "obv_up":obv_turn,
+        "green_reaction":green_reaction, "near_lower_bb":near_lower_bb,
+        "reasons":reasons
+    }
+
+
+def squeeze_breakout(symbol, rs):
+    df15 = fetch_df(symbol, "15m", 160)
+    df1h = fetch_df(symbol, "1h", 120)
+    if df15 is None or df1h is None:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    p1 = df15.iloc[-2]
+
+    vol_ratio = m15.volume / m15.vol_avg if m15.vol_avg > 0 else 0
+    usdt_vol = m15.volume * m15.close
+    avg_usdt_vol = m15.vol_avg * m15.close if m15.vol_avg > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    bb_now = m15.bb_width
+    bb_prev = df15["bb_width"].iloc[-8]
+    squeeze = bb_prev <= 0.085 or df15["bb_width"].tail(12).mean() <= 0.095
+    bb_expanding = bb_now > bb_prev * 1.08
+
+    high_range = df15["high"].tail(18).max()
+    range_break = m15.close >= high_range * 0.995
+    upper_break = m15.close > m15.bb_upper or p1.close > p1.bb_upper
+    reclaim_ma = m15.close > m15.ema21 and m15.close > m15.bb_middle
+
+    recent_low = df15["low"].tail(24).min()
+    dist_from_low = ((m15.close - recent_low) / recent_low) * 100 if recent_low > 0 else 999
+
+    obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-6]
+    macd_bull = m15.macd > m15.macd_signal and m15.macd > p1.macd
+    green_body = m15.close > m15.open and m15.body_ratio >= 0.35
+
+    if m15.rsi > 82:
+        return False, None
+    if dist_from_low > 18:
+        return False, None
+
+    score = 0
+    reasons = []
+    if squeeze: score += 3; reasons.append("15m BB sikisma")
+    if bb_expanding: score += 2; reasons.append("Bollinger aciliyor")
+    if range_break: score += 3; reasons.append("Yatay direnc kirilimi")
+    if upper_break: score += 2; reasons.append("Ust Bollinger kirilimi")
+    if reclaim_ma: score += 1; reasons.append("MA20 ustu kapanis")
+    if vol_ratio >= 1.6: score += 2; reasons.append("Hacim kirilim destekli")
+    if money_impact >= 1.25: score += 2; reasons.append("Para etkisi var")
+    if volume_power >= 2.4: score += 2; reasons.append("Hacim gucu var")
+    if obv_up: score += 2; reasons.append("OBV para girisi")
+    if macd_bull: score += 2; reasons.append("MACD yukari")
+    if green_body: score += 1; reasons.append("Kirilim mumu")
+    if rs >= 55: score += 1; reasons.append("RS destekli")
+
+    valid = (
+        score >= 10 and squeeze and (range_break or upper_break)
+        and vol_ratio >= 1.45 and money_impact >= 1.15
+        and usdt_vol >= 2500 and 45 <= m15.rsi <= 82
+        and (obv_up or macd_bull or green_body)
+    )
+
+    return valid, {
+        "module":"SQUEEZE", "score":score, "priority":26, "price":m15.close,
+        "rs":rs, "vol_ratio":vol_ratio, "usdt_vol":usdt_vol,
+        "money_impact":money_impact, "volume_power":volume_power,
+        "rsi":m15.rsi, "bb_width":bb_now, "bb_expanding":bb_expanding,
+        "dist_from_low":dist_from_low, "range_break":range_break,
+        "upper_break":upper_break, "obv_up":obv_up, "macd_turn":macd_bull,
+        "reasons":reasons
+    }
+
+
 def update_money_state(symbol, d, stage):
     if not d:
         return
@@ -508,7 +660,17 @@ def money_continue_signal(symbol, d):
     if score_growth >= 1: cont_score += 1; reasons.append("Radar skoru iyilesti")
     if d.get("obv_up", False): cont_score += 1; reasons.append("OBV para girisi destekliyor")
     if d.get("macd_turn", False) or d.get("macd_cross_near", False): cont_score += 1; reasons.append("MACD toparlaniyor")
-    valid = cont_score >= 7 and price_gain >= 0.5 and money_now >= 1.2 and power_now >= 2.0 and (money_growth >= 1.10 or power_growth >= 1.10 or score_growth >= 2)
+    if d.get("rsi", 0) > 82:
+        return False, None
+
+    valid = (
+        cont_score >= 8
+        and price_gain >= 1.2
+        and money_now >= 1.65
+        and power_now >= 3.0
+        and d.get("usdt_vol", 0) >= 5000
+        and (money_growth >= 1.20 or power_growth >= 1.25 or score_growth >= 2)
+    )
     if not valid:
         return False, None
     out = dict(d)
@@ -542,7 +704,17 @@ def momentum_continue_signal(symbol, d):
     if d.get("obv_up",False): mom_score += 1; reasons.append("OBV destekli")
     if d.get("macd_turn",False) or d.get("macd_cross_near",False): mom_score += 1; reasons.append("MACD destekli")
     if d.get("bb_expanding",False): mom_score += 1; reasons.append("Bollinger aciliyor")
-    valid = mom_score >= 8 and price_gain >= 1.5 and money_now >= 1.4 and power_now >= 2.8 and (money_growth >= 1.15 or power_growth >= 1.20)
+    if d.get("rsi", 0) > 84:
+        return False, None
+
+    valid = (
+        mom_score >= 8
+        and price_gain >= 1.7
+        and money_now >= 1.55
+        and power_now >= 3.2
+        and d.get("usdt_vol", 0) >= 7000
+        and (money_growth >= 1.18 or power_growth >= 1.25)
+    )
     if not valid:
         return False, None
     out = dict(d)
@@ -607,7 +779,7 @@ def watch_confirm(symbol, d):
 def format_signal(symbol, d, funding, btc_status, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
-    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "EARLY":"EARLY RADAR"}
+    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "REVERSAL":"REVERSAL WATCH", "SQUEEZE":"SQUEEZE BREAKOUT", "EARLY":"EARLY RADAR"}
     title = title_map.get(module, module)
     reasons = d.get("reasons") or d.get("continue_reasons") or d.get("momentum_reasons") or d.get("watch_reasons") or []
     support_text = ", ".join(support_modules) if support_modules else "YOK"
@@ -651,6 +823,23 @@ Mum Toparlanma: %{d.get('recovery_ratio',0) * 100:.1f}
 15m BB Tepki: {'VAR' if d.get('touched_bb') else 'YOK'}
 OBV Donus: {'VAR' if d.get('obv_up') else 'YOK'}
 """
+    elif module == "REVERSAL":
+        extra = f"""
+15m Dip Mesafesi: %{d.get('dist_from_low',0):.2f}
+Alt Fitil: %{d.get('lower_wick',0) * 100:.1f}
+Mum Toparlanma: %{d.get('recovery_ratio',0) * 100:.1f}
+RSI Donus: {'VAR' if d.get('rsi_turn') else 'YOK'}
+MACD Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
+OBV Donus: {'VAR' if d.get('obv_up') else 'YOK'}
+"""
+    elif module == "SQUEEZE":
+        extra = f"""
+BB Width: {d.get('bb_width',0):.4f}
+15m Dip Mesafesi: %{d.get('dist_from_low',0):.2f}
+Yatay Kirilim: {'VAR' if d.get('range_break') else 'YOK'}
+Ust Bant Kirilim: {'VAR' if d.get('upper_break') else 'YOK'}
+OBV Giris: {'VAR' if d.get('obv_up') else 'YOK'}
+"""
     else:
         extra = f"""
 BB Width: {d.get('bb_width',0):.4f}
@@ -687,6 +876,23 @@ Radar Manager tum filtreleri taradi. En guclu sonuc bu mesajdir.
 """.strip()
 
 
+def early_counter_key(symbol):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    return f"{symbol}_{today}"
+
+def can_send_early_today(symbol):
+    return early_daily_counter.get(early_counter_key(symbol), 0) < EARLY_MAX_PER_SYMBOL_PER_DAY
+
+def mark_early_sent_today(symbol):
+    key = early_counter_key(symbol)
+    early_daily_counter[key] = early_daily_counter.get(key, 0) + 1
+
+def cleanup_early_daily_counter():
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for k in [x for x in early_daily_counter if not x.endswith("_" + today)]:
+        early_daily_counter.pop(k, None)
+
+
 def select_best_signal(signals):
     if not signals:
         return None
@@ -698,10 +904,16 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         return False
     best = select_best_signal(signals)
     support = [s["module"] for s in signals if s["module"] != best["module"]]
-    cooldown_map = {"SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "EARLY":(sent_early, COOLDOWN_EARLY)}
+    cooldown_map = {"SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "REVERSAL":(sent_reversal_watch, COOLDOWN_REVERSAL_WATCH), "SQUEEZE":(sent_squeeze_breakout, COOLDOWN_SQUEEZE_BREAKOUT), "EARLY":(sent_early, COOLDOWN_EARLY)}
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
+    if best["module"] == "EARLY" and not can_send_early_today(symbol):
+        print("EARLY DAILY LIMIT:", symbol, "Limit:", EARLY_MAX_PER_SYMBOL_PER_DAY, flush=True)
+        return False
+
     if can_send(cache, symbol + "_" + best["module"], cooldown):
         send_telegram(format_signal(symbol, best, funding, btc_status, support))
+        if best["module"] == "EARLY":
+            mark_early_sent_today(symbol)
         print("SEND:", symbol, best["module"], "Score:", best.get("score"), "Support:", support, flush=True)
         return True
     print("COOLDOWN:", symbol, best["module"], "Support:", support, flush=True)
@@ -721,6 +933,8 @@ def analyze(item, btc_ok, btc_status):
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
         dip_ok, dip_data = big_dip_radar(symbol, rs)
         reaction_ok, reaction_data = dip_reaction_radar(symbol, rs)
+        reversal_ok, reversal_data = reversal_watch(symbol, rs)
+        squeeze_ok, squeeze_data = squeeze_breakout(symbol, rs)
         if early_ok: signals.append(early_data)
         if money_ok: signals.append(money_data)
         if momentum_ok: signals.append(momentum_data)
@@ -728,6 +942,8 @@ def analyze(item, btc_ok, btc_status):
         if safe_ok: signals.append(safe_data)
         if dip_ok: signals.append(dip_data)
         if reaction_ok: signals.append(reaction_data)
+        if reversal_ok: signals.append(reversal_data)
+        if squeeze_ok: signals.append(squeeze_data)
         if early_data:
             update_money_state(symbol, early_data, "RADAR_MANAGER")
             if is_watch_candidate(early_data):
@@ -735,7 +951,7 @@ def analyze(item, btc_ok, btc_status):
         if signals:
             send_selected_signal(symbol, signals, funding, btc_status)
         else:
-            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "IC FILTRE", flush=True)
+            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "Reversal:", reversal_ok, "Squeeze:", squeeze_ok, "IC FILTRE", flush=True)
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
