@@ -1364,8 +1364,8 @@ def select_best_signal(signals):
 
 sent_elite = {}
 
-ELITE_MIN_SCORE = 88
-ELITE_COOLDOWN = 90 * 60
+ELITE_MIN_SCORE = 94
+ELITE_COOLDOWN = 120 * 60
 
 
 def elite_score_signal(d, support_modules=None):
