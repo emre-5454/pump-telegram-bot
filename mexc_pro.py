@@ -41,8 +41,8 @@ MIN_EARLY_RS = 65
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
-MEXC_ELITE_MIN_SCORE = 88
-MEXC_ELITE_COOLDOWN = 180 * 60
+MEXC_ELITE_MIN_SCORE = 62
+MEXC_ELITE_COOLDOWN = 120 * 60
 
 sent_early = {}
 early_daily_counter = {}
@@ -904,120 +904,182 @@ def cleanup_early_daily_counter():
 
 
 def mexc_elite_score_signal(d, support_modules=None):
+    """
+    MEXC icin daha gercekci Elite puanlama.
+    Tek basina zayif EARLY Elite'e dusmesin.
+    REVERSAL / DIP_REACTION / MONEY / MOMENTUM / SQUEEZE kaliteli gelirse Elite'e dussun.
+    """
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
+
     score = 0
 
     rs = d.get("rs", 0)
+    base_score = d.get("score", 0)
     money_impact = d.get("money_impact", 0)
     volume_power = d.get("volume_power", 0)
+    vol_ratio = d.get("vol_ratio", 0)
+    usdt_vol = d.get("usdt_vol", 0)
+    rsi_value = d.get("rsi", d.get("rsi15", 0))
+    dist_from_low = d.get("dist_from_low", 999)
+    lower_wick = d.get("lower_wick", 0)
+    recovery = d.get("recovery_ratio", 0)
     price_gain = d.get("price_gain_from_first", 0)
     money_growth = d.get("money_growth", 1)
     power_growth = d.get("power_growth", 1)
-    rsi_value = d.get("rsi", d.get("rsi15", 0))
-    usdt_vol = d.get("usdt_vol", 0)
 
-    if rs >= 90:
-        score += 18
-    elif rs >= 80:
-        score += 14
-    elif rs >= 70:
-        score += 10
-    elif rs >= 60:
+    if base_score >= 14:
+        score += 16
+    elif base_score >= 12:
+        score += 12
+    elif base_score >= 10:
+        score += 9
+    elif base_score >= 8:
         score += 6
 
+    if rs >= 90:
+        score += 14
+    elif rs >= 80:
+        score += 11
+    elif rs >= 70:
+        score += 8
+    elif rs >= 60:
+        score += 5
+    elif rs >= 50:
+        score += 3
+
     if money_impact >= 2.8:
-        score += 18
+        score += 16
     elif money_impact >= 2.2:
-        score += 14
+        score += 13
     elif money_impact >= 1.7:
-        score += 9
-    elif money_impact >= 1.3:
-        score += 5
-
-    if volume_power >= 7:
-        score += 18
-    elif volume_power >= 5:
-        score += 14
-    elif volume_power >= 3.5:
-        score += 9
-    elif volume_power >= 2.5:
-        score += 5
-
-    if usdt_vol >= 100000:
         score += 10
-    elif usdt_vol >= 50000:
+    elif money_impact >= 1.3:
         score += 7
-    elif usdt_vol >= 15000:
+    elif money_impact >= 1.1:
         score += 4
 
+    if volume_power >= 7:
+        score += 16
+    elif volume_power >= 5:
+        score += 13
+    elif volume_power >= 3.5:
+        score += 10
+    elif volume_power >= 2.5:
+        score += 7
+    elif volume_power >= 1.6:
+        score += 4
+
+    if vol_ratio >= 2.5:
+        score += 7
+    elif vol_ratio >= 1.8:
+        score += 5
+    elif vol_ratio >= 1.3:
+        score += 3
+
+    if usdt_vol >= 100000:
+        score += 8
+    elif usdt_vol >= 50000:
+        score += 6
+    elif usdt_vol >= 15000:
+        score += 4
+    elif usdt_vol >= 5000:
+        score += 2
+
     if module == "SAFE":
-        score += 30
+        score += 24
     elif module == "MOMENTUM":
         score += 24
+    elif module == "MONEY":
+        score += 20
     elif module == "SQUEEZE":
+        score += 20
+    elif module == "DIP_REACTION":
         score += 20
     elif module == "REVERSAL":
         score += 18
-    elif module == "MONEY":
-        score += 16
-    elif module == "DIP_REACTION":
-        score += 16
     elif module == "WATCH":
-        score += 10
+        score += 12
     elif module == "DIP":
-        score += 8
+        score += 12
     elif module == "EARLY":
         score += 4
 
-    if "SAFE" in support_modules:
-        score += 18
     if "MOMENTUM" in support_modules:
-        score += 12
-    if "SQUEEZE" in support_modules:
         score += 10
     if "MONEY" in support_modules:
         score += 8
-    if "REVERSAL" in support_modules:
+    if "SQUEEZE" in support_modules:
         score += 8
     if "DIP_REACTION" in support_modules:
         score += 7
+    if "REVERSAL" in support_modules:
+        score += 7
     if "WATCH" in support_modules:
-        score += 5
-
-    if price_gain >= 3.0:
-        score += 14
-    elif price_gain >= 2.0:
-        score += 10
-    elif price_gain >= 1.2:
-        score += 7
-    elif price_gain >= 0.8:
         score += 4
-
-    if money_growth >= 1.8:
+    if "SAFE" in support_modules:
         score += 10
-    elif money_growth >= 1.35:
-        score += 7
-    elif money_growth >= 1.15:
-        score += 4
 
-    if power_growth >= 2.0:
-        score += 10
-    elif power_growth >= 1.5:
-        score += 7
-    elif power_growth >= 1.25:
-        score += 4
+    if module in ("REVERSAL", "DIP_REACTION", "DIP"):
+        if dist_from_low <= 4:
+            score += 10
+        elif dist_from_low <= 7:
+            score += 7
+        elif dist_from_low <= 10:
+            score += 5
+        elif dist_from_low <= 13:
+            score += 3
 
-    if rsi_value >= 86:
+        if lower_wick >= 0.45:
+            score += 7
+        elif lower_wick >= 0.30:
+            score += 5
+        elif lower_wick >= 0.20:
+            score += 3
+
+        if recovery >= 0.65:
+            score += 6
+        elif recovery >= 0.50:
+            score += 4
+
+        if d.get("near_lower_bb") or d.get("touched_bb"):
+            score += 6
+        if d.get("obv_up"):
+            score += 5
+        if d.get("macd_turn"):
+            score += 4
+        if d.get("green_reaction"):
+            score += 4
+
+    if module in ("MONEY", "MOMENTUM"):
+        if price_gain >= 3:
+            score += 10
+        elif price_gain >= 2:
+            score += 7
+        elif price_gain >= 1.2:
+            score += 5
+
+        if money_growth >= 2:
+            score += 8
+        elif money_growth >= 1.35:
+            score += 5
+
+        if power_growth >= 2:
+            score += 8
+        elif power_growth >= 1.35:
+            score += 5
+
+    if rsi_value >= 88:
         score -= 18
-    elif rsi_value >= 82:
+    elif rsi_value >= 84:
         score -= 10
+    elif rsi_value >= 80 and module not in ("MOMENTUM", "SQUEEZE"):
+        score -= 5
 
     if module == "EARLY" and not support_modules:
-        score -= 20
+        score -= 35
 
     return max(0, min(100, score))
-
 
 def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
