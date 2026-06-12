@@ -1,3 +1,7 @@
+# Binance Futures Radar Manager V2 + Elite 88
+# Ana kanal azaltildi, Early sikilastirildi, Sweep/Dip balina ignesi mantigina cekildi.
+# Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, ELITE_CHAT_ID
+
 from flask import Flask
 import threading
 import time
@@ -15,13 +19,13 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE FUTURES RADAR MANAGER BOT"
+BOT_NAME = "BINANCE FUTURES RADAR MANAGER V2 + ELITE 88"
 
-MAX_SYMBOLS = 160
-SLEEP_SECONDS = 45
+MAX_SYMBOLS = 80
+SLEEP_SECONDS = 120
 
 COOLDOWN_EARLY = 180 * 60
-EARLY_MAX_PER_SYMBOL_PER_DAY = 2
+EARLY_MAX_PER_SYMBOL_PER_DAY = 1
 COOLDOWN_SAFE = 90 * 60
 COOLDOWN_DIP = 120 * 60
 COOLDOWN_SWEEP_WATCH = 120 * 60
@@ -29,8 +33,8 @@ COOLDOWN_MONEY_CONTINUE = 120 * 60
 COOLDOWN_MOMENTUM_CONTINUE = 150 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
 
-MIN_EARLY_RS = 72
-MIN_SAFE_CONFIDENCE = 68
+MIN_EARLY_RS = 74
+MIN_SAFE_CONFIDENCE = 72
 MAX_RISK_PCT = 4.5
 
 sent_early = {}
@@ -202,10 +206,10 @@ def build_universe():
 
             volatility = ((high - low) / last) * 100
 
-            if qv < 1_500_000:
+            if qv < 3_000_000:
                 continue
 
-            if volatility < 1.2:
+            if volatility < 1.5:
                 continue
 
             rows.append({
@@ -308,12 +312,12 @@ def early_radar(symbol, rs):
     score = 0
     reasons = []
 
-    # Dipten ÃƒÆ’Ã‚Â§ok uzaklaÃƒâ€¦Ã…Â¸mÃƒâ€Ã‚Â±Ãƒâ€¦Ã…Â¸ coinleri cezalandÃƒâ€Ã‚Â±r
+    # Dipten ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ok uzaklaÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸mÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸ coinleri cezalandÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±r
     if dist_from_low > 15:
         score -= 2
 
-    # ArtÃƒâ€Ã‚Â±k early sayÃƒâ€Ã‚Â±lmayacak kadar uzaksa EARLY puanÃƒâ€Ã‚Â± dÃƒÆ’Ã‚Â¼Ãƒâ€¦Ã…Â¸er.
-    # Ama None dÃƒÆ’Ã‚Â¶nmÃƒÆ’Ã‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã‚Â§in radar verisi lazÃƒâ€Ã‚Â±m.
+    # ArtÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±k early sayÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±lmayacak kadar uzaksa EARLY puanÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸er.
+    # Ama None dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶nmÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§in radar verisi lazÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±m.
     if dist_from_low > 25:
         score -= 3
 
@@ -341,7 +345,7 @@ def early_radar(symbol, rs):
         score += 2
         reasons.append("Para etkisi guclu")
 
-    if volume_power >= 2.8:
+    if volume_power >= 3.2:
         score += 2
         reasons.append("Hacim gucu guclu")
 
@@ -378,7 +382,7 @@ def early_radar(symbol, rs):
         and rs >= MIN_EARLY_RS
         and (vol_ratio_1h >= 1.3 or vol_ratio_15m >= 1.4)
         and (usdt_vol_1h >= 25000 or usdt_vol_15m >= 12000)
-        and money_impact >= 1.4
+        and money_impact >= 1.55
         and (
             obv_up_1h
             or obv_up_15m
@@ -386,8 +390,8 @@ def early_radar(symbol, rs):
             or macd_turn_15m
             or bb_expanding
         )
-        and 42 <= h1.rsi <= 85
-        and dist_from_low <= 18
+        and 42 <= h1.rsi <= 78
+        and dist_from_low <= 12
     )
 
     return valid, {
@@ -446,7 +450,7 @@ def safe_long(symbol, rs, btc_ok, funding):
     if vol_ratio >= 2.2: score += 15
     if usdt_vol >= 30000: score += 10
     if money_impact >= 1.2: score += 8
-    if volume_power >= 2.8: score += 8
+    if volume_power >= 3.2: score += 8
     if change_3m >= 0.25: score += 10
     if trend_up: score += 10
     if macd_bull: score += 10
@@ -464,7 +468,7 @@ def safe_long(symbol, rs, btc_ok, funding):
         and vol_ratio >= 2.2
         and usdt_vol >= 30000
         and money_impact >= 1.2
-        and volume_power >= 2.8
+        and volume_power >= 3.2
         and change_3m >= 0.20
         and trend_up
         and macd_bull
@@ -570,7 +574,7 @@ def big_dip_radar(symbol, rs):
     if volume_power >= 2.2:
         score += 2
         reasons.append("Hacim gucu guclu")
-    if h1.lower_wick >= 0.45:
+    if h1.lower_wick >= 0.50:
         score += 2
         reasons.append("Alt fitil")
     if h1.rsi <= 35:
@@ -592,8 +596,8 @@ def big_dip_radar(symbol, rs):
     valid = (
         score >= 10
         and vol_ratio >= 1.5
-        and usdt_vol >= 50000
-        and h1.lower_wick >= 0.45
+        and usdt_vol >= 75000
+        and h1.lower_wick >= 0.50
         and (
             bb_touch
             or near_1h_lower_bb
@@ -661,10 +665,10 @@ def liquidity_sweep_watch(symbol, rs):
     macd_turn = m15.macd > m15_prev.macd
     green_reclaim = m15.close > m15.open and m15.close > m15_prev.close
 
-    if dist_from_low > 12:
+    if dist_from_low > 8:
         return False, None
 
-    if m15.rsi > 62:
+    if m15.rsi > 58:
         return False, None
 
     if h1.close > h1.ema21 and h1.rsi > 60 and not sweep:
@@ -676,7 +680,7 @@ def liquidity_sweep_watch(symbol, rs):
     if sweep:
         score += 4
         reasons.append("15m alt Bollinger disi igne ve geri alis")
-    if lower_wick >= 0.40:
+    if lower_wick >= 0.50:
         score += 3
         reasons.append("Guclu alt fitil")
     if recovery >= 0.55:
@@ -713,13 +717,13 @@ def liquidity_sweep_watch(symbol, rs):
     valid = (
         score >= 10
         and sweep
-        and lower_wick >= 0.35
-        and recovery >= 0.45
-        and vol_ratio >= 1.25
-        and usdt_vol >= 25000
-        and money_impact >= 1.10
-        and 28 <= m15.rsi <= 62
-        and dist_from_low <= 12
+        and lower_wick >= 0.45
+        and recovery >= 0.60
+        and vol_ratio >= 1.45
+        and usdt_vol >= 40000
+        and money_impact >= 1.20
+        and 28 <= m15.rsi <= 58
+        and dist_from_low <= 8
         and (
             obv_turn
             or rsi_turn
@@ -815,7 +819,7 @@ def money_continue_signal(symbol, d):
     money_now = d.get("money_impact", 0)
     power_now = d.get("volume_power", 0)
 
-    if d.get("rsi", 0) > 84:
+    if d.get("rsi", 0) > 80:
         return False, None
 
     money_growth = money_now / first_money
@@ -895,7 +899,7 @@ def momentum_continue_signal(symbol, d):
     money_now = d.get("money_impact", 0)
     power_now = d.get("volume_power", 0)
 
-    if d.get("rsi", 0) > 84:
+    if d.get("rsi", 0) > 80:
         return False, None
 
     money_growth = money_now / first_money
@@ -1364,7 +1368,7 @@ def select_best_signal(signals):
 
 sent_elite = {}
 
-ELITE_MIN_SCORE = 97
+ELITE_MIN_SCORE = 88
 ELITE_COOLDOWN = 120 * 60
 
 
@@ -1573,7 +1577,7 @@ def analyze(item, btc_ok, btc_status):
 
         early_ok, early_data = early_radar(symbol, rs)
 
-        # EARLY mesajÃƒâ€Ã‚Â± gelmese bile radar datasÃƒâ€Ã‚Â± oluÃƒâ€¦Ã…Â¸tuysa MoneyState baÃƒâ€¦Ã…Â¸lasÃƒâ€Ã‚Â±n.
+        # EARLY mesajÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± gelmese bile radar datasÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± oluÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸tuysa MoneyState baÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸lasÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±n.
         if early_data:
             update_money_state(symbol, early_data, "RADAR_DATA")
 
