@@ -1,5 +1,5 @@
-# Binance Futures Radar Manager V2 + Elite 88
-# Ana kanal azaltildi, Early sikilastirildi, Sweep/Dip balina ignesi mantigina cekildi.
+# Binance Futures SAFE ENTRY DECISION BOT V3
+# Binance MEXC kopyasi degil: Money Acceleration + Safe Entry + Elite AL + FOMO Block mantigi.
 # Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, ELITE_CHAT_ID
 
 from flask import Flask
@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE FUTURES RADAR MANAGER V2 + ELITE 88"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V3"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -268,6 +268,65 @@ def fib_targets(df, lookback=60):
     return {"low": low, "high": high}
 
 
+def recent_price_gains(df, price=None):
+    """FOMO filtresi: son 15m / 30m hareketini olcer."""
+    if df is None or len(df) < 3:
+        return {"price_gain_15m": 0, "price_gain_30m": 0}
+    now_price = price if price is not None else df["close"].iloc[-1]
+    p15 = df["close"].iloc[-2]
+    p30 = df["close"].iloc[-3]
+    gain15 = ((now_price - p15) / p15) * 100 if p15 > 0 else 0
+    gain30 = ((now_price - p30) / p30) * 100 if p30 > 0 else 0
+    return {"price_gain_15m": gain15, "price_gain_30m": gain30}
+
+
+def is_fomo_block(d):
+    """Gec kalmis patlama mumunu AL kapisindan engeller."""
+    if not d:
+        return True
+    price_gain_from_first = d.get("price_gain_from_first", 0)
+    price_gain_15m = d.get("price_gain_15m", 0)
+    price_gain_30m = d.get("price_gain_30m", 0)
+    dist_from_low = d.get("dist_from_low", 0)
+    rsi_value = d.get("rsi", d.get("rsi15", 0))
+
+    if price_gain_from_first > 6.0:
+        return True
+    if price_gain_15m > 6.0:
+        return True
+    if price_gain_30m > 12.0:
+        return True
+    if dist_from_low > 18:
+        return True
+    if rsi_value >= 78:
+        return True
+    return False
+
+
+def build_entry_levels(d):
+    """SAFE/MONEY/SWEEP fark etmeden Elite AL mesajina giris-stop-TP uretir."""
+    price = d.get("entry", d.get("price", 0))
+    if price <= 0:
+        return {"entry": 0, "stop": 0, "tp1": 0, "tp2": 0, "tp3": 0, "risk_pct": 0}
+
+    if d.get("stop", 0) > 0:
+        stop = d["stop"]
+    else:
+        # Binance karar botunda risk sabit ve net olsun.
+        risk_pct = 0.032 if d.get("module") in ("DIP", "SWEEP") else 0.028
+        stop = price * (1 - risk_pct)
+
+    risk = max(price - stop, price * 0.01)
+    return {
+        "entry": price,
+        "stop": stop,
+        "tp1": price + risk * 1.5,
+        "tp2": price + risk * 2.5,
+        "tp3": price + risk * 4.0,
+        "risk_pct": (risk / price) * 100
+    }
+
+
 def early_radar(symbol, rs):
     df1h = fetch_df(symbol, "1h", 120)
     df15 = fetch_df(symbol, "15m", 120)
@@ -312,12 +371,12 @@ def early_radar(symbol, rs):
     score = 0
     reasons = []
 
-    # Dipten ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ok uzaklaÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸mÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸ coinleri cezalandÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±r
+    # Dipten ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§ok uzaklaÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ coinleri cezalandÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±r
     if dist_from_low > 15:
         score -= 2
 
-    # ArtÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±k early sayÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±lmayacak kadar uzaksa EARLY puanÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸er.
-    # Ama None dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶nmÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§in radar verisi lazÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±m.
+    # ArtÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±k early sayÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±lmayacak kadar uzaksa EARLY puanÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸er.
+    # Ama None dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶nmÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§in radar verisi lazÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±m.
     if dist_from_low > 25:
         score -= 3
 
@@ -414,6 +473,11 @@ def early_radar(symbol, rs):
 
 
 def safe_long(symbol, rs, btc_ok, funding):
+    """
+    BINANCE SAFE ENTRY:
+    Breakout bekleyip gec kalmak yerine; para/hacim yeni guclenirken,
+    FOMO olmadan AL kapisina aday uretir.
+    """
     df1m = fetch_df(symbol, "1m", 90)
     df5 = fetch_df(symbol, "5m", 100)
     df15 = fetch_df(symbol, "15m", 150)
@@ -433,7 +497,7 @@ def safe_long(symbol, rs, btc_ok, funding):
 
     resistance = fib["high"]
     breakout = m5.close > resistance
-    strong_breakout = breakout and m5.body_ratio >= 0.38 and m5.upper_wick <= 0.55
+    strong_breakout = breakout and m5.body_ratio >= 0.35 and m5.upper_wick <= 0.55
 
     vol_ratio = m1.volume / m1.vol_avg if m1.vol_avg > 0 else 0
     usdt_vol = m1.volume * m1.close
@@ -442,46 +506,69 @@ def safe_long(symbol, rs, btc_ok, funding):
     volume_power = money_impact * vol_ratio
     change_3m = ((m1.close - prev3.open) / prev3.open) * 100 if prev3.open > 0 else 0
 
+    gains = recent_price_gains(df15, m1.close)
+    price_gain_15m = gains["price_gain_15m"]
+    price_gain_30m = gains["price_gain_30m"]
+
+    low_24h = df15["low"].tail(96).min()
+    dist_from_low = ((m1.close - low_24h) / low_24h) * 100 if low_24h > 0 else 999
+
     trend_up = t15.ema9 > t15.ema21
+    trend_new = t15.close > t15.ema9 and t15.ema9 >= t15.ema21 * 0.998
     macd_bull = t15.macd > t15.macd_signal and t15.macd > t15_prev.macd
+    macd_turn = t15.macd > t15_prev.macd
+    obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-5]
 
     score = 0
-    if rs >= 70: score += 12
-    if vol_ratio >= 2.2: score += 15
-    if usdt_vol >= 30000: score += 10
-    if money_impact >= 1.2: score += 8
-    if volume_power >= 3.2: score += 8
-    if change_3m >= 0.25: score += 10
-    if trend_up: score += 10
-    if macd_bull: score += 10
-    if 48 <= t15.rsi <= 88: score += 8
-    if strong_breakout: score += 15
-    if btc_ok: score += 5
-    else: score -= 5
-    if funding["ok"]: score += 5
-    else: score -= 5
+    reasons = []
+    if rs >= 68: score += 10; reasons.append("RS destekli")
+    if vol_ratio >= 1.7: score += 12; reasons.append("1m hacim gucleniyor")
+    if usdt_vol >= 30000: score += 8; reasons.append("USDT hacim yeterli")
+    if money_impact >= 1.35: score += 10; reasons.append("Para etkisi basladi")
+    if volume_power >= 2.6: score += 12; reasons.append("Hacim gucu erken")
+    if 0.10 <= change_3m <= 1.20: score += 8; reasons.append("3m kontrollu momentum")
+    if trend_new: score += 8; reasons.append("15m EMA geri alindi")
+    if macd_turn: score += 8; reasons.append("MACD toparlaniyor")
+    if obv_up: score += 8; reasons.append("OBV para girisi")
+    if 45 <= t15.rsi <= 70: score += 8; reasons.append("RSI giris bolgesi")
+    if strong_breakout: score += 8; reasons.append("5m kontrollu kirilim")
+    if dist_from_low <= 12: score += 8; reasons.append("Dipten cok uzak degil")
+    if btc_ok: score += 4
+    else: score -= 6
+    if funding["ok"]: score += 4
+    else: score -= 6
 
     confidence = max(0, min(100, score))
 
+    fomo_block = (
+        price_gain_15m > 6
+        or price_gain_30m > 12
+        or dist_from_low > 18
+        or t15.rsi > 72
+    )
+
     valid = (
-        confidence >= MIN_SAFE_CONFIDENCE
-        and vol_ratio >= 2.2
+        confidence >= 72
+        and not fomo_block
+        and vol_ratio >= 1.7
         and usdt_vol >= 30000
-        and money_impact >= 1.2
-        and volume_power >= 3.2
-        and change_3m >= 0.20
-        and trend_up
-        and macd_bull
-        and 48 <= t15.rsi <= 82
+        and money_impact >= 1.35
+        and volume_power >= 2.6
+        and change_3m >= 0.10
+        and (trend_new or trend_up)
+        and (macd_turn or macd_bull or obv_up)
+        and 45 <= t15.rsi <= 72
+        and dist_from_low <= 18
         and (
             strong_breakout
-            or volume_power >= 3.5
-            or change_3m >= 0.45
+            or volume_power >= 3.0
+            or (money_impact >= 1.55 and obv_up)
+            or (change_3m >= 0.25 and macd_turn)
         )
     )
 
     price = m1.close
-    stop = max(resistance * 0.990, price * 0.970)
+    stop = max(resistance * 0.990, price * 0.972)
     risk = price - stop
 
     if risk <= 0:
@@ -494,7 +581,7 @@ def safe_long(symbol, rs, btc_ok, funding):
     return valid, {
         "module": "SAFE",
         "score": confidence,
-        "priority": 40,
+        "priority": 42,
         "price": price,
         "confidence": confidence,
         "rs": rs,
@@ -503,20 +590,26 @@ def safe_long(symbol, rs, btc_ok, funding):
         "money_impact": money_impact,
         "volume_power": volume_power,
         "change_3m": change_3m,
+        "price_gain_15m": price_gain_15m,
+        "price_gain_30m": price_gain_30m,
+        "dist_from_low": dist_from_low,
+        "rsi": t15.rsi,
         "rsi15": t15.rsi,
         "trend_up": trend_up,
+        "trend_new": trend_new,
         "macd_bull": macd_bull,
+        "macd_turn": macd_turn,
+        "obv_up": obv_up,
         "breakout": breakout,
         "strong_breakout": strong_breakout,
         "entry": price,
         "stop": stop,
         "tp1": price + risk * 1.5,
-        "tp2": price + risk * 2.0,
-        "tp3": price + risk * 3.0,
+        "tp2": price + risk * 2.5,
+        "tp3": price + risk * 4.0,
         "risk_pct": risk_pct,
-        "reasons": ["Trend yukari", "MACD yukari", "Momentum onayi"]
+        "reasons": reasons
     }
-
 
 def big_dip_radar(symbol, rs):
     df1h = fetch_df(symbol, "1h", 120)
@@ -801,13 +894,18 @@ def cleanup_money_state():
 
 
 def money_continue_signal(symbol, d):
+    """
+    MONEY ACCELERATION:
+    Ilk radar datasindan sonra para/hacim buyuyor ama fiyat henuz kacmamis ise calisir.
+    BTW tipi 0.080 gec FOMO sinyalini degil, 0.072-0.075 erken onayi hedefler.
+    """
     if symbol not in money_state or not d:
         return False, None
 
     s = money_state[symbol]
     age = time.time() - s["time"]
 
-    if age < 5 * 60:
+    if age < 4 * 60:
         return False, None
 
     first_price = s["first_price"]
@@ -818,8 +916,9 @@ def money_continue_signal(symbol, d):
 
     money_now = d.get("money_impact", 0)
     power_now = d.get("volume_power", 0)
+    rsi_now = d.get("rsi", 0)
 
-    if d.get("rsi", 0) > 80:
+    if rsi_now > 72:
         return False, None
 
     money_growth = money_now / first_money
@@ -829,33 +928,30 @@ def money_continue_signal(symbol, d):
     cont_score = 0
     reasons = []
 
-    if price_gain >= 0.9:
-        cont_score += 2
-        reasons.append("Ilk sinyalden sonra fiyat yukari")
-    if money_now >= 1.3:
-        cont_score += 2
-        reasons.append("Para etkisi devam ediyor")
-    if power_now >= 2.2:
-        cont_score += 2
-        reasons.append("Hacim gucu devam ediyor")
-    if money_growth >= 1.10:
-        cont_score += 2
-        reasons.append("Para etkisi ilk sinyale gore artti")
-    if power_growth >= 1.10:
-        cont_score += 2
-        reasons.append("Hacim gucu ilk sinyale gore artti")
+    if 0.6 <= price_gain <= 5.0:
+        cont_score += 2; reasons.append("Ilk sinyalden sonra kontrollu yukselis")
+    if money_now >= 1.45:
+        cont_score += 2; reasons.append("Para etkisi gucleniyor")
+    if power_now >= 2.8:
+        cont_score += 2; reasons.append("Hacim gucu gucleniyor")
+    if money_growth >= 1.12:
+        cont_score += 2; reasons.append("Para etkisi ilk sinyale gore buyudu")
+    if power_growth >= 1.15:
+        cont_score += 2; reasons.append("Hacim gucu ilk sinyale gore buyudu")
     if score_growth >= 1:
-        cont_score += 1
-        reasons.append("Radar skoru iyilesti")
+        cont_score += 1; reasons.append("Radar skoru iyilesti")
+    if d.get("bb_expanding", False):
+        cont_score += 1; reasons.append("Bollinger aciliyor")
 
     valid = (
         cont_score >= 7
-        and price_gain >= 0.8
-        and money_now >= 1.35
-        and power_now >= 2.4
+        and 0.6 <= price_gain <= 5.0
+        and money_now >= 1.45
+        and power_now >= 2.8
+        and rsi_now <= 72
         and (
-            money_growth >= 1.08
-            or power_growth >= 1.08
+            money_growth >= 1.10
+            or power_growth >= 1.12
             or score_growth >= 2
         )
     )
@@ -864,9 +960,9 @@ def money_continue_signal(symbol, d):
         return False, None
 
     out = dict(d)
-    out["module"] = "MONEY"
+    out["module"] = "MONEY_ACCEL"
     out["score"] = cont_score
-    out["priority"] = 30
+    out["priority"] = 34
     out["continue_score"] = cont_score
     out["continue_reasons"] = reasons
     out["first_price"] = first_price
@@ -876,9 +972,9 @@ def money_continue_signal(symbol, d):
     out["first_volume_power"] = s["first_volume_power"]
     out["power_growth"] = power_growth
     out["age_min"] = age / 60
+    levels = build_entry_levels(out)
+    out.update(levels)
     return True, out
-
-
 
 def momentum_continue_signal(symbol, d):
     if symbol not in money_state or not d:
@@ -1017,7 +1113,7 @@ Sebep:
 
 Karar:
 Takibe al.
-5m/15m kirilim gelmeden direkt long degil.
+Bu ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir.
 """.strip()
 
 
@@ -1094,7 +1190,7 @@ Sebep:
 Karar:
 Ayni coine para girmeye devam ediyor.
 Bu ilk EARLY sinyalden daha onemli takip sinyalidir.
-Retest ve 5m/15m kapanis bekle.
+Bu ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir.
 """.strip()
 
 
@@ -1207,7 +1303,7 @@ Sebep:
 
 Karar:
 Dip radar.
-5m/15m retest ve kirilim bekle.
+Bu ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir.
 """.strip()
 
 
@@ -1244,10 +1340,10 @@ Sure: {d['age_min']:.1f} dk
 Para Buyume: {d['money_growth']:.2f}x
 Hacim Gucu Buyume: {d['power_growth']:.2f}x
 """
-        decision = "Para devam etti ve momentum guclendi. Retest / devam mumu takip."
+        decision = "Para devam etti ve momentum guclendi. Bu ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir."
 
-    elif module == "MONEY":
-        title = "MONEY CONTINUE"
+    elif module in ("MONEY", "MONEY_ACCEL"):
+        title = "MONEY ACCELERATION" if module == "MONEY_ACCEL" else "MONEY CONTINUE"
         body = f"""
 Ilk Fiyat: {d['first_price']:.8f}
 Simdiki Fiyat: {d['price']:.8f}
@@ -1267,7 +1363,7 @@ Dip Skoru: {d['score']}/18
 Alt Fitil: %{d['lower_wick'] * 100:.1f}
 24s Dipten Uzaklik: %{d.get('dist_from_low', 0):.2f}
 """
-        decision = "Dip radar. 5m/15m retest ve kirilim bekle."
+        decision = "Dip radar. Bu ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir."
 
     elif module == "SWEEP":
         title = "LIQUIDITY SWEEP WATCH"
@@ -1292,7 +1388,7 @@ Radar Skoru: {d['score']}/18
 24s Dipten Uzaklik: %{d['dist_from_low']:.2f}
 Bollinger: {"Aciliyor" if d['bb_expanding'] else "Henuz zayif"}
 """
-        decision = "Takibe al. 5m/15m kirilim gelmeden direkt long degil."
+        decision = "Takibe al. Bu ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir."
 
     reasons = d.get("reasons") or d.get("continue_reasons") or d.get("momentum_reasons") or []
     support_text = ", ".join(support_modules) if support_modules else "YOK"
@@ -1372,6 +1468,21 @@ ELITE_MIN_SCORE = 88
 ELITE_COOLDOWN = 120 * 60
 
 
+def radar_combo_score(best, support_modules=None):
+    support_modules = support_modules or []
+    modules = [best.get("module", "UNKNOWN")] + support_modules
+    weights = {
+        "SAFE": 3,
+        "MONEY_ACCEL": 3,
+        "MONEY": 2,
+        "SWEEP": 3,
+        "DIP": 2,
+        "EARLY": 1,
+        "MOMENTUM": 0,
+    }
+    return sum(weights.get(m, 0) for m in modules), len(set(modules))
+
+
 def elite_score_signal(d, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
@@ -1384,86 +1495,97 @@ def elite_score_signal(d, support_modules=None):
     money_growth = d.get("money_growth", 1)
     power_growth = d.get("power_growth", 1)
     rsi_value = d.get("rsi", d.get("rsi15", 0))
+    combo_score, radar_count = radar_combo_score(d, support_modules)
 
-    if rs >= 90:
-        score += 18
-    elif rs >= 85:
-        score += 14
-    elif rs >= 80:
-        score += 10
+    if rs >= 85: score += 12
+    elif rs >= 75: score += 8
+    elif rs >= 65: score += 5
 
-    if money_impact >= 2.5:
-        score += 18
-    elif money_impact >= 2.0:
-        score += 14
-    elif money_impact >= 1.6:
-        score += 9
+    if money_impact >= 2.2: score += 16
+    elif money_impact >= 1.8: score += 12
+    elif money_impact >= 1.45: score += 8
 
-    if volume_power >= 6:
-        score += 18
-    elif volume_power >= 4:
-        score += 14
-    elif volume_power >= 3:
-        score += 9
+    if volume_power >= 5: score += 16
+    elif volume_power >= 3.5: score += 12
+    elif volume_power >= 2.8: score += 8
 
-    if module == "SAFE":
-        score += 30
-    elif module == "MOMENTUM":
-        score += 18
-    elif module == "MONEY":
-        score += 16
-    elif module == "DIP":
-        score += 10
-    elif module == "SWEEP":
-        score += 18
-    elif module == "EARLY":
-        score += 8
+    if module == "SAFE": score += 28
+    elif module == "MONEY_ACCEL": score += 26
+    elif module == "SWEEP": score += 22
+    elif module == "DIP": score += 14
+    elif module == "MONEY": score += 8
+    elif module == "MOMENTUM": score -= 10
+    elif module == "EARLY": score += 5
 
-    if "SAFE" in support_modules:
-        score += 18
-    if "MOMENTUM" in support_modules:
-        score += 12
-    if "MONEY" in support_modules:
-        score += 5
-    if "EARLY" in support_modules:
-        score += 5
-    if "DIP" in support_modules:
-        score += 5
-    if "SWEEP" in support_modules:
-        score += 10
+    if "SAFE" in support_modules: score += 18
+    if "MONEY_ACCEL" in support_modules or "MONEY" in support_modules: score += 12
+    if "EARLY" in support_modules: score += 6
+    if "SWEEP" in support_modules: score += 12
+    if "DIP" in support_modules: score += 8
+    if "MOMENTUM" in support_modules: score -= 4
 
-    if price_gain >= 2.0:
-        score += 12
-    elif price_gain >= 1.2:
-        score += 8
-    elif price_gain >= 0.8:
-        score += 5
+    if combo_score >= 5: score += 12
+    elif combo_score >= 4: score += 8
 
-    if money_growth >= 1.5:
-        score += 10
-    elif money_growth >= 1.2:
-        score += 6
+    if 0.6 <= price_gain <= 4.5: score += 10
+    elif price_gain > 6: score -= 18
 
-    if power_growth >= 1.8:
-        score += 10
-    elif power_growth >= 1.3:
-        score += 6
+    if money_growth >= 1.35: score += 8
+    elif money_growth >= 1.15: score += 5
 
-    if rsi_value >= 86:
-        score -= 18
-    elif rsi_value >= 82:
-        score -= 8
+    if power_growth >= 1.5: score += 8
+    elif power_growth >= 1.2: score += 5
+
+    if 45 <= rsi_value <= 68: score += 8
+    elif rsi_value >= 76: score -= 18
+    elif rsi_value >= 72: score -= 8
+
+    if is_fomo_block(d):
+        score -= 30
 
     return max(0, min(100, score))
+
+
+def is_elite_al_candidate(best, support_modules=None):
+    support_modules = support_modules or []
+    module = best.get("module", "UNKNOWN")
+    combo_score, radar_count = radar_combo_score(best, support_modules)
+
+    if is_fomo_block(best):
+        return False, "FOMO_BLOCK"
+
+    if module == "MOMENTUM":
+        return False, "MOMENTUM_AL_DEGIL"
+
+    if best.get("money_impact", 0) < 1.45 or best.get("volume_power", 0) < 2.8:
+        return False, "PARA_ZAYIF"
+
+    rsi_value = best.get("rsi", best.get("rsi15", 0))
+    if rsi_value > 72:
+        return False, "RSI_YUKSEK"
+
+    # Binance karar botu: en az guclu bir ana radar veya 2 destek ister.
+    if module in ("SAFE", "MONEY_ACCEL") and combo_score >= 3:
+        return True, "SAFE_MONEY_ONAY"
+
+    if module == "SWEEP" and combo_score >= 4 and best.get("lower_wick", 0) >= 0.45:
+        return True, "SWEEP_ONAY"
+
+    if module == "DIP" and combo_score >= 4 and best.get("lower_wick", 0) >= 0.50:
+        return True, "DIP_ONAY"
+
+    return False, "RADAR_KOMBINASYON_YETERSIZ"
 
 
 def format_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
     support_text = ", ".join(support_modules) if support_modules else "YOK"
+    combo_score, radar_count = radar_combo_score(d, support_modules)
+    levels = build_entry_levels(d)
 
     extra = ""
-    if module in ("MONEY", "MOMENTUM"):
+    if module in ("MONEY_ACCEL", "MONEY", "MOMENTUM"):
         extra = f"""
 Ilk Fiyat: {d.get('first_price', 0):.8f}
 Simdiki Fiyat: {d.get('price', 0):.8f}
@@ -1471,15 +1593,6 @@ Ilk Sinyalden Sonra: %{d.get('price_gain_from_first', 0):.2f}
 Para Buyume: {d.get('money_growth', 1):.2f}x
 Hacim Gucu Buyume: {d.get('power_growth', 1):.2f}x
 Sure: {d.get('age_min', 0):.1f} dk
-"""
-    elif module == "SAFE":
-        extra = f"""
-Giris: {d.get('entry', 0):.8f}
-Stop: {d.get('stop', 0):.8f}
-TP1: {d.get('tp1', 0):.8f}
-TP2: {d.get('tp2', 0):.8f}
-TP3: {d.get('tp3', 0):.8f}
-Risk: %{d.get('risk_pct', 0):.2f}
 """
     elif module == "SWEEP":
         extra = f"""
@@ -1489,28 +1602,40 @@ Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
 """
 
     return f"""
-BINANCE ELITE TOP
+BINANCE ELITE AL ONAY
 
 Coin: {symbol}
 Mod: {module}
-Elite Skor: {elite_score}/100
+Karar: AL
+Elite Giris Skoru: {elite_score}/100
+
+Giris: {levels['entry']:.8f}
+Stop: {levels['stop']:.8f}
+TP1: {levels['tp1']:.8f}
+TP2: {levels['tp2']:.8f}
+TP3: {levels['tp3']:.8f}
+Risk: %{levels['risk_pct']:.2f}
 
 Fiyat: {d.get('price', 0):.8f}
 RS Skoru: {d.get('rs', 0):.1f}/100
 Radar Skoru: {d.get('score', 0)}
+Radar Sayisi: {radar_count}
+Radar Kombinasyon Puani: {combo_score}
 
 Para Etkisi: {d.get('money_impact', 0):.2f}x
 Hacim Gucu: {d.get('volume_power', 0):.2f}
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
+FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
+FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
 
 Ek Gecen Radarlar:
 {support_text}
 
 {extra}
 
-Karar:
-Bu coin ana radardaki sinyaller arasindan ELITE listeye ayrildi.
-Direkt islem degildir. 5m/15m kapanis, retest ve BTC durumu kontrol edilir.
+Not:
+Bu mesaj Binance karar botunda AL kapisindan gecen sinyal icin atilir.
+Momentum tek basina AL degildir. FOMO / gec giris / yuksek RSI elendi.
 """.strip()
 
 
@@ -1518,18 +1643,22 @@ def send_elite_signal(symbol, best, support):
     if not ELITE_CHAT_ID:
         return False
 
+    ok, reason = is_elite_al_candidate(best, support)
+    if not ok:
+        print("ELITE BLOCK:", symbol, best.get("module"), reason, flush=True)
+        return False
+
     elite_score = elite_score_signal(best, support)
     if elite_score < ELITE_MIN_SCORE:
         return False
 
-    key = symbol + "_ELITE_" + best.get("module", "UNKNOWN")
+    key = symbol + "_ELITE_AL_" + best.get("module", "UNKNOWN")
     if not can_send(sent_elite, key, ELITE_COOLDOWN):
         return False
 
     send_telegram(format_elite_signal(symbol, best, elite_score, support), ELITE_CHAT_ID)
-    print("ELITE SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+    print("ELITE AL SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
     return True
-
 def send_selected_signal(symbol, signals, funding, btc_status):
     if not signals:
         return False
@@ -1541,6 +1670,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         "SAFE": (sent_safe, COOLDOWN_SAFE),
         "MOMENTUM": (sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE),
         "MONEY": (sent_money_continue, COOLDOWN_MONEY_CONTINUE),
+        "MONEY_ACCEL": (sent_money_continue, COOLDOWN_MONEY_CONTINUE),
         "DIP": (sent_dip, COOLDOWN_DIP),
         "SWEEP": (sent_sweep_watch, COOLDOWN_SWEEP_WATCH),
         "EARLY": (sent_early, COOLDOWN_EARLY),
@@ -1577,7 +1707,7 @@ def analyze(item, btc_ok, btc_status):
 
         early_ok, early_data = early_radar(symbol, rs)
 
-        # EARLY mesajÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± gelmese bile radar datasÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± oluÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸tuysa MoneyState baÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€¦Ã‚Â¸lasÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±n.
+        # EARLY mesajÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± gelmese bile radar datasÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± oluÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸tuysa MoneyState baÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸lasÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±n.
         if early_data:
             update_money_state(symbol, early_data, "RADAR_DATA")
 
