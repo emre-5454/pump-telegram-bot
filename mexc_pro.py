@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V8"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V9"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -346,7 +346,7 @@ def safe_long(symbol, rs, btc_ok, funding):
     if funding["ok"]: score += 5
     else: score -= 5
     confidence = max(0, min(100, score))
-    valid = confidence >= MIN_SAFE_CONFIDENCE and vol_ratio >= 2.0 and usdt_vol >= 30000 and money_impact >= 1.2 and volume_power >= 2.8 and change_3m >= 0.20 and trend_up and macd_bull and dist_from_low <= 14 and price_gain_15m <= 6 and price_gain_30m <= 12 and t15.rsi <= 76 and (strong_breakout or volume_power >= 3.5 or change_3m >= 0.45)
+    valid = confidence >= MIN_SAFE_CONFIDENCE and vol_ratio >= 2.0 and usdt_vol >= 30000 and money_impact >= 1.2 and volume_power >= 2.8 and change_3m >= 0.20 and trend_up and macd_bull and dist_from_low <= 14 and price_gain_15m <= 8 and price_gain_30m <= 15 and t15.rsi <= 76 and (strong_breakout or volume_power >= 3.5 or change_3m >= 0.45)
     price = m1.close
     stop = max(resistance * 0.990, price * 0.970)
     risk = price - stop
@@ -359,134 +359,47 @@ def safe_long(symbol, rs, btc_ok, funding):
 
 
 def big_dip_radar(symbol, rs):
-    """
-    V8 BIG DIP RADAR
-    Artik normal tepkiyi BIG DIP saymaz.
-    Gercek dip icin sert asagi igne / supurme + guclu toparlanma + para/hacim ister.
-    RIVER ornegindeki gibi %10-15 alt fitil ve zayif hacim artik BIG DIP degildir.
-    """
-    df15 = fetch_df(symbol, "15m", 160)
-    df1h = fetch_df(symbol, "1h", 140)
-    df4h = fetch_df(symbol, "4h", 140)
-    if df15 is None or df1h is None or df4h is None:
+    df1h = fetch_df(symbol, "1h", 120)
+    df4h = fetch_df(symbol, "4h", 120)
+    if df1h is None or df4h is None:
         return False, None
-
-    m15 = df15.iloc[-1]
-    p15 = df15.iloc[-2]
-    p15_2 = df15.iloc[-3]
     h1 = df1h.iloc[-1]
     h1_prev = df1h.iloc[-2]
     h4 = df4h.iloc[-1]
     h4_prev = df4h.iloc[-2]
-
+    bb_touch = h4.low <= h4.bb_lower or h4_prev.low <= h4_prev.bb_lower
     vol_ratio = h1.volume / h1.vol_avg if h1.vol_avg > 0 else 0
     usdt_vol = h1.volume * h1.close
     avg_usdt_vol = h1.vol_avg * h1.close if h1.vol_avg > 0 else 0
     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
     volume_power = money_impact * vol_ratio
-
-    candles15 = [m15, p15, p15_2]
-    lower_wick = max(c.lower_wick for c in candles15)
-    recovery = max(c.recovery_ratio for c in candles15)
-
-    recent_low_15 = df15["low"].tail(32).min()
-    dist_from_low = ((m15.close - recent_low_15) / recent_low_15) * 100 if recent_low_15 > 0 else 999
-
-    bb_touch_4h = h4.low <= h4.bb_lower or h4_prev.low <= h4_prev.bb_lower
-    bb_touch_15 = any(c.low <= c.bb_lower * 1.006 for c in candles15)
-    deep_sweep_15 = any(c.low < c.bb_lower and c.close > c.bb_lower for c in candles15)
-    close_back_inside = m15.close > m15.bb_lower or p15.close > p15.bb_lower
-
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
-    obv_15_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-4]
-    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi <= 48
+
+    if h1.rsi > 45:
+        return False, None
+
+    if h1.close > h1.bb_middle and h1.rsi > 50:
+        return False, None
+
+    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
     macd_turn = h1.macd > h1_prev.macd
-
-    hard_wick = lower_wick >= 0.40
-    strong_recovery = recovery >= 0.70
-    sweep_quality = deep_sweep_15 or (bb_touch_15 and close_back_inside)
-
-    # Tepeden gelen tepkiyi dip sanma.
-    if h1.rsi > 48:
-        return False, None
-    if dist_from_low > 5:
-        return False, None
-
     score = 0
     reasons = []
-    if bb_touch_4h:
-        score += 3; reasons.append("4H alt Bollinger tepki")
-    if bb_touch_15:
-        score += 3; reasons.append("15m alt Bollinger igne")
-    if deep_sweep_15:
-        score += 4; reasons.append("15m Bollinger disi supurme")
-    if close_back_inside:
-        score += 2; reasons.append("Bant icine geri alis")
-    if lower_wick >= 0.60:
-        score += 4; reasons.append("Cok sert asagi igne")
-    elif lower_wick >= 0.40:
-        score += 3; reasons.append("Sert asagi igne")
-    if recovery >= 0.80:
-        score += 4; reasons.append("Mum dipten cok guclu toparladi")
-    elif recovery >= 0.70:
-        score += 3; reasons.append("Mum dipten guclu toparladi")
-    if vol_ratio >= 2.0:
-        score += 3; reasons.append("1H hacim patlamasi")
-    elif vol_ratio >= 1.6:
-        score += 2; reasons.append("1H hacim guclu")
-    if usdt_vol >= 100000:
-        score += 2; reasons.append("USDT hacim guclu")
-    if money_impact >= 1.8:
-        score += 3; reasons.append("Para etkisi guclu")
-    elif money_impact >= 1.45:
-        score += 2; reasons.append("Para etkisi basliyor")
-    if volume_power >= 3.2:
-        score += 3; reasons.append("Hacim gucu yuksek")
-    elif volume_power >= 2.4:
-        score += 2; reasons.append("Hacim gucu yeterli")
-    if obv_up or obv_15_up:
-        score += 2; reasons.append("OBV yukari donuyor")
-    if rsi_turn:
-        score += 2; reasons.append("RSI dipten donuyor")
-    if macd_turn:
-        score += 1; reasons.append("MACD toparlaniyor")
-    if rs >= 50:
-        score += 1; reasons.append("RS fena degil")
+    if bb_touch: score += 3; reasons.append("4H alt Bollinger tepki")
+    if vol_ratio >= 1.5: score += 2; reasons.append("1H hacim patlamasi")
+    if usdt_vol >= 100000: score += 2; reasons.append("USDT hacim guclu")
+    if money_impact >= 1.2: score += 2; reasons.append("Para etkisi guclu")
+    if volume_power >= 2.2: score += 2; reasons.append("Hacim gucu guclu")
+    if h1.lower_wick >= 0.60: score += 2; reasons.append("Alt fitil")
+    if obv_up: score += 1; reasons.append("OBV yukari")
+    if rsi_turn: score += 2; reasons.append("RSI dipten donuyor")
+    if macd_turn: score += 1; reasons.append("MACD toparlaniyor")
+    if rs >= 50: score += 1; reasons.append("RS fena degil")
+    valid = score >= 10 and (bb_touch or h1.lower_wick >= 0.30) and vol_ratio >= 1.3 and usdt_vol >= 20000 and rsi_turn and (obv_up or macd_turn or money_impact >= 1.2)
+    return valid, {"module":"DIP","score":score,"priority":20,"price":h1.close,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"rsi":h1.rsi,"lower_wick":h1.lower_wick,"reasons":reasons}
 
-    valid = (
-        score >= 15
-        and dist_from_low <= 5
-        and (hard_wick or sweep_quality)
-        and strong_recovery
-        and vol_ratio >= 1.55
-        and money_impact >= 1.35
-        and volume_power >= 2.2
-        and usdt_vol >= 50000
-        and h1.rsi <= 48
-        and (obv_up or obv_15_up or macd_turn)
-    )
 
-    return valid, {
-        "module":"DIP",
-        "score":score,
-        "priority":22,
-        "price":h1.close,
-        "rs":rs,
-        "vol_ratio":vol_ratio,
-        "usdt_vol":usdt_vol,
-        "money_impact":money_impact,
-        "volume_power":volume_power,
-        "rsi":h1.rsi,
-        "dist_from_low":dist_from_low,
-        "lower_wick":lower_wick,
-        "recovery_ratio":recovery,
-        "deep_sweep":deep_sweep_15,
-        "close_back_inside":close_back_inside,
-        "obv_up":obv_up or obv_15_up,
-        "macd_turn":macd_turn,
-        "rsi_turn":rsi_turn,
-        "reasons":reasons
-    }
+
 
 def strong_wick_watch(symbol, rs):
     df15 = fetch_df(symbol, "15m", 140)
@@ -1128,8 +1041,8 @@ def early_entry_confirm_signal(symbol, d):
         and power_now >= 2.7
         and d.get("usdt_vol", 0) >= 15000
         and rsi_value <= 70
-        and gain15 <= 6
-        and gain30 <= 12
+        and gain15 <= 8
+        and gain30 <= 15
         and d.get("dist_from_low", 999) <= 14
         and (money_growth >= 1.12 or power_growth >= 1.18 or score_growth >= 1)
     )
@@ -1380,6 +1293,102 @@ def cleanup_early_daily_counter():
 
 
 
+
+
+def radar_strength_points(module, support_modules=None):
+    """
+    Elite kapisi icin radar kombinasyon puani.
+    Her 3 radar ayni kalitede degil:
+    - Guclu radarlar 2 puan
+    - Erken/izleme radarlar 1 puan
+    - MOMENTUM tek basina puan tasimaz
+    """
+    support_modules = support_modules or []
+    weights = {
+        "DIP_SWEEP": 2,
+        "DIP_REACTION": 2,
+        "REVERSAL": 2,
+        "SQUEEZE": 2,
+        "SAFE": 2,
+        "ELITE_WHALE": 2,
+        "DIP": 2,
+        "EARLY_CONFIRM": 2,
+        "EARLY": 1,
+        "MONEY": 1,
+        "WATCH": 1,
+        "MOMENTUM": 0,
+    }
+    mods = [module] + list(support_modules)
+    return sum(weights.get(m, 0) for m in mods)
+
+
+def elite_combo_allowed(best, support=None):
+    """
+    Elite AL kapisi: genel kural 3 radar veya guclu erken istisna.
+    Amac: INJ gibi SQUEEZE+REVERSAL iki radarli zayif sinyali elemek,
+    OP/HYPE/SPX gibi anlamli erken kombinasyonlari kacirmamak.
+    """
+    support = support or []
+    module = best.get("module", "UNKNOWN")
+    support_set = set(support)
+    total_radars = 1 + len(support)
+    points = radar_strength_points(module, support)
+
+    money = best.get("money_impact", 0)
+    power = best.get("volume_power", 0)
+    rs = best.get("rs", 0)
+    rsi_value = best.get("rsi", best.get("rsi15", 0))
+    score = best.get("score", 0)
+    price_gain = best.get("price_gain_from_first", 999)
+    money_growth = best.get("money_growth", 1)
+    power_growth = best.get("power_growth", 1)
+
+    # Standart kalite: 3 radar + yeterli radar puani.
+    if total_radars >= 3 and points >= 4:
+        return True
+
+    # Dipten erken yakalama istisnasi: sert iÄŸne + tepki radarlarindan biri.
+    dip_exception = (
+        module in ("DIP_SWEEP", "ELITE_WHALE")
+        and bool(support_set.intersection({"DIP_REACTION", "REVERSAL", "DIP"}))
+        and best.get("dist_from_low", 999) <= 3
+        and best.get("lower_wick", 0) >= 0.45
+        and best.get("recovery_ratio", 0) >= 0.70
+        and money >= 1.55
+        and power >= 2.8
+        and rsi_value <= 60
+    )
+    if dip_exception:
+        return True
+
+    # Erken para hÄ±zlanmasÄ± istisnasi: 0.070 -> 0.072/0.073 mantigi.
+    early_accel_exception = (
+        module in ("MONEY", "EARLY_CONFIRM")
+        and "EARLY" in support_set
+        and price_gain <= 2.2
+        and money >= 1.8
+        and power >= 4.0
+        and money_growth >= 1.35
+        and power_growth >= 1.50
+        and rsi_value <= 72
+    )
+    if early_accel_exception:
+        return True
+
+    # Squeeze erken ve guclu ise 2 radarla da gecsin; SQUEEZE+REVERSAL tek basina gecmesin.
+    squeeze_early_exception = (
+        module == "SQUEEZE"
+        and "EARLY" in support_set
+        and score >= 18
+        and money >= 2.2
+        and power >= 5.0
+        and rsi_value <= 68
+    )
+    if squeeze_early_exception:
+        return True
+
+    return False
+
 def mexc_elite_score_signal(d, support_modules=None, btc_status=""):
     """
     Elite artik: guclu coin degil, guclu giris.
@@ -1393,6 +1402,8 @@ def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
     support_text = ", ".join(support_modules) if support_modules else "YOK"
+    radar_count = 1 + len(support_modules)
+    radar_points = radar_strength_points(module, support_modules)
 
     price = d.get("price", d.get("entry", 0))
     entry = d.get("entry", price)
@@ -1464,6 +1475,9 @@ RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 
 Ek Gecen Radarlar:
 {support_text}
+
+Toplam Radar: {radar_count}
+Radar Kombinasyon Puani: {radar_points}
 
 {extra}
 
@@ -1736,11 +1750,15 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         return False
 
     # FOMO filtresi: sinyal gec kaldiyse AL mesaji yok.
-    if best.get("price_gain_15m", 0) > 6:
+    if best.get("price_gain_15m", 0) > 8:
         return False
-    if best.get("price_gain_30m", 0) > 12:
+    if best.get("price_gain_30m", 0) > 15:
         return False
     if fomo > 12:
+        return False
+
+    # Elite icin radar kombinasyonu: genel olarak 3 radar veya guclu erken/dip istisnasi gerekir.
+    if not elite_combo_allowed(best, support):
         return False
 
     # Momentum artik tek basina AL degil. Erken radarlarla destekli ve kacmamis olmali.
@@ -1773,8 +1791,8 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and power >= 2.7
             and usdt_vol >= 15000
             and rsi_value <= 70
-            and best.get("price_gain_15m", 0) <= 6
-            and best.get("price_gain_30m", 0) <= 12
+            and best.get("price_gain_15m", 0) <= 8
+            and best.get("price_gain_30m", 0) <= 15
             and fomo <= 8
         )
 
@@ -1819,18 +1837,7 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and (best.get("obv_up") or best.get("macd_turn"))
         )
 
-    if module == "DIP":
-        return (
-            dist <= 5
-            and best.get("lower_wick", 0) >= 0.40
-            and best.get("recovery_ratio", 0) >= 0.70
-            and money >= 1.35
-            and power >= 2.2
-            and rsi_value <= 48
-            and (best.get("obv_up") or best.get("macd_turn"))
-        )
-
-    if module in ("DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
+    if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
         return (
             dist <= 7
             and money >= 1.25
