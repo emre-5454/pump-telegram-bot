@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V7"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V8"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -346,7 +346,7 @@ def safe_long(symbol, rs, btc_ok, funding):
     if funding["ok"]: score += 5
     else: score -= 5
     confidence = max(0, min(100, score))
-    valid = confidence >= MIN_SAFE_CONFIDENCE and vol_ratio >= 2.0 and usdt_vol >= 30000 and money_impact >= 1.2 and volume_power >= 2.8 and change_3m >= 0.20 and trend_up and macd_bull and dist_from_low <= 14 and price_gain_15m <= 8 and price_gain_30m <= 15 and t15.rsi <= 76 and (strong_breakout or volume_power >= 3.5 or change_3m >= 0.45)
+    valid = confidence >= MIN_SAFE_CONFIDENCE and vol_ratio >= 2.0 and usdt_vol >= 30000 and money_impact >= 1.2 and volume_power >= 2.8 and change_3m >= 0.20 and trend_up and macd_bull and dist_from_low <= 14 and price_gain_15m <= 6 and price_gain_30m <= 12 and t15.rsi <= 76 and (strong_breakout or volume_power >= 3.5 or change_3m >= 0.45)
     price = m1.close
     stop = max(resistance * 0.990, price * 0.970)
     risk = price - stop
@@ -359,47 +359,134 @@ def safe_long(symbol, rs, btc_ok, funding):
 
 
 def big_dip_radar(symbol, rs):
-    df1h = fetch_df(symbol, "1h", 120)
-    df4h = fetch_df(symbol, "4h", 120)
-    if df1h is None or df4h is None:
+    """
+    V8 BIG DIP RADAR
+    Artik normal tepkiyi BIG DIP saymaz.
+    Gercek dip icin sert asagi igne / supurme + guclu toparlanma + para/hacim ister.
+    RIVER ornegindeki gibi %10-15 alt fitil ve zayif hacim artik BIG DIP degildir.
+    """
+    df15 = fetch_df(symbol, "15m", 160)
+    df1h = fetch_df(symbol, "1h", 140)
+    df4h = fetch_df(symbol, "4h", 140)
+    if df15 is None or df1h is None or df4h is None:
         return False, None
+
+    m15 = df15.iloc[-1]
+    p15 = df15.iloc[-2]
+    p15_2 = df15.iloc[-3]
     h1 = df1h.iloc[-1]
     h1_prev = df1h.iloc[-2]
     h4 = df4h.iloc[-1]
     h4_prev = df4h.iloc[-2]
-    bb_touch = h4.low <= h4.bb_lower or h4_prev.low <= h4_prev.bb_lower
+
     vol_ratio = h1.volume / h1.vol_avg if h1.vol_avg > 0 else 0
     usdt_vol = h1.volume * h1.close
     avg_usdt_vol = h1.vol_avg * h1.close if h1.vol_avg > 0 else 0
     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
     volume_power = money_impact * vol_ratio
+
+    candles15 = [m15, p15, p15_2]
+    lower_wick = max(c.lower_wick for c in candles15)
+    recovery = max(c.recovery_ratio for c in candles15)
+
+    recent_low_15 = df15["low"].tail(32).min()
+    dist_from_low = ((m15.close - recent_low_15) / recent_low_15) * 100 if recent_low_15 > 0 else 999
+
+    bb_touch_4h = h4.low <= h4.bb_lower or h4_prev.low <= h4_prev.bb_lower
+    bb_touch_15 = any(c.low <= c.bb_lower * 1.006 for c in candles15)
+    deep_sweep_15 = any(c.low < c.bb_lower and c.close > c.bb_lower for c in candles15)
+    close_back_inside = m15.close > m15.bb_lower or p15.close > p15.bb_lower
+
     obv_up = df1h["obv"].iloc[-1] > df1h["obv"].iloc[-5]
-
-    if h1.rsi > 45:
-        return False, None
-
-    if h1.close > h1.bb_middle and h1.rsi > 50:
-        return False, None
-
-    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi < 70
+    obv_15_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-4]
+    rsi_turn = h1.rsi > h1_prev.rsi and h1.rsi <= 48
     macd_turn = h1.macd > h1_prev.macd
+
+    hard_wick = lower_wick >= 0.40
+    strong_recovery = recovery >= 0.70
+    sweep_quality = deep_sweep_15 or (bb_touch_15 and close_back_inside)
+
+    # Tepeden gelen tepkiyi dip sanma.
+    if h1.rsi > 48:
+        return False, None
+    if dist_from_low > 5:
+        return False, None
+
     score = 0
     reasons = []
-    if bb_touch: score += 3; reasons.append("4H alt Bollinger tepki")
-    if vol_ratio >= 1.5: score += 2; reasons.append("1H hacim patlamasi")
-    if usdt_vol >= 100000: score += 2; reasons.append("USDT hacim guclu")
-    if money_impact >= 1.2: score += 2; reasons.append("Para etkisi guclu")
-    if volume_power >= 2.2: score += 2; reasons.append("Hacim gucu guclu")
-    if h1.lower_wick >= 0.60: score += 2; reasons.append("Alt fitil")
-    if obv_up: score += 1; reasons.append("OBV yukari")
-    if rsi_turn: score += 2; reasons.append("RSI dipten donuyor")
-    if macd_turn: score += 1; reasons.append("MACD toparlaniyor")
-    if rs >= 50: score += 1; reasons.append("RS fena degil")
-    valid = score >= 10 and (bb_touch or h1.lower_wick >= 0.30) and vol_ratio >= 1.3 and usdt_vol >= 20000 and rsi_turn and (obv_up or macd_turn or money_impact >= 1.2)
-    return valid, {"module":"DIP","score":score,"priority":20,"price":h1.close,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"rsi":h1.rsi,"lower_wick":h1.lower_wick,"reasons":reasons}
+    if bb_touch_4h:
+        score += 3; reasons.append("4H alt Bollinger tepki")
+    if bb_touch_15:
+        score += 3; reasons.append("15m alt Bollinger igne")
+    if deep_sweep_15:
+        score += 4; reasons.append("15m Bollinger disi supurme")
+    if close_back_inside:
+        score += 2; reasons.append("Bant icine geri alis")
+    if lower_wick >= 0.60:
+        score += 4; reasons.append("Cok sert asagi igne")
+    elif lower_wick >= 0.40:
+        score += 3; reasons.append("Sert asagi igne")
+    if recovery >= 0.80:
+        score += 4; reasons.append("Mum dipten cok guclu toparladi")
+    elif recovery >= 0.70:
+        score += 3; reasons.append("Mum dipten guclu toparladi")
+    if vol_ratio >= 2.0:
+        score += 3; reasons.append("1H hacim patlamasi")
+    elif vol_ratio >= 1.6:
+        score += 2; reasons.append("1H hacim guclu")
+    if usdt_vol >= 100000:
+        score += 2; reasons.append("USDT hacim guclu")
+    if money_impact >= 1.8:
+        score += 3; reasons.append("Para etkisi guclu")
+    elif money_impact >= 1.45:
+        score += 2; reasons.append("Para etkisi basliyor")
+    if volume_power >= 3.2:
+        score += 3; reasons.append("Hacim gucu yuksek")
+    elif volume_power >= 2.4:
+        score += 2; reasons.append("Hacim gucu yeterli")
+    if obv_up or obv_15_up:
+        score += 2; reasons.append("OBV yukari donuyor")
+    if rsi_turn:
+        score += 2; reasons.append("RSI dipten donuyor")
+    if macd_turn:
+        score += 1; reasons.append("MACD toparlaniyor")
+    if rs >= 50:
+        score += 1; reasons.append("RS fena degil")
 
+    valid = (
+        score >= 15
+        and dist_from_low <= 5
+        and (hard_wick or sweep_quality)
+        and strong_recovery
+        and vol_ratio >= 1.55
+        and money_impact >= 1.35
+        and volume_power >= 2.2
+        and usdt_vol >= 50000
+        and h1.rsi <= 48
+        and (obv_up or obv_15_up or macd_turn)
+    )
 
-
+    return valid, {
+        "module":"DIP",
+        "score":score,
+        "priority":22,
+        "price":h1.close,
+        "rs":rs,
+        "vol_ratio":vol_ratio,
+        "usdt_vol":usdt_vol,
+        "money_impact":money_impact,
+        "volume_power":volume_power,
+        "rsi":h1.rsi,
+        "dist_from_low":dist_from_low,
+        "lower_wick":lower_wick,
+        "recovery_ratio":recovery,
+        "deep_sweep":deep_sweep_15,
+        "close_back_inside":close_back_inside,
+        "obv_up":obv_up or obv_15_up,
+        "macd_turn":macd_turn,
+        "rsi_turn":rsi_turn,
+        "reasons":reasons
+    }
 
 def strong_wick_watch(symbol, rs):
     df15 = fetch_df(symbol, "15m", 140)
@@ -1041,8 +1128,8 @@ def early_entry_confirm_signal(symbol, d):
         and power_now >= 2.7
         and d.get("usdt_vol", 0) >= 15000
         and rsi_value <= 70
-        and gain15 <= 8
-        and gain30 <= 15
+        and gain15 <= 6
+        and gain30 <= 12
         and d.get("dist_from_low", 999) <= 14
         and (money_growth >= 1.12 or power_growth >= 1.18 or score_growth >= 1)
     )
@@ -1649,9 +1736,9 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         return False
 
     # FOMO filtresi: sinyal gec kaldiyse AL mesaji yok.
-    if best.get("price_gain_15m", 0) > 8:
+    if best.get("price_gain_15m", 0) > 6:
         return False
-    if best.get("price_gain_30m", 0) > 15:
+    if best.get("price_gain_30m", 0) > 12:
         return False
     if fomo > 12:
         return False
@@ -1686,8 +1773,8 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and power >= 2.7
             and usdt_vol >= 15000
             and rsi_value <= 70
-            and best.get("price_gain_15m", 0) <= 8
-            and best.get("price_gain_30m", 0) <= 15
+            and best.get("price_gain_15m", 0) <= 6
+            and best.get("price_gain_30m", 0) <= 12
             and fomo <= 8
         )
 
@@ -1732,7 +1819,18 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and (best.get("obv_up") or best.get("macd_turn"))
         )
 
-    if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
+    if module == "DIP":
+        return (
+            dist <= 5
+            and best.get("lower_wick", 0) >= 0.40
+            and best.get("recovery_ratio", 0) >= 0.70
+            and money >= 1.35
+            and power >= 2.2
+            and rsi_value <= 48
+            and (best.get("obv_up") or best.get("macd_turn"))
+        )
+
+    if module in ("DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
         return (
             dist <= 7
             and money >= 1.25
