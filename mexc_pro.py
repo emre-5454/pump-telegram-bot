@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V6"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -282,6 +282,8 @@ def safe_long(symbol, rs, btc_ok, funding):
     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
     volume_power = money_impact * vol_ratio
     change_3m = ((m1.close - prev3.open) / prev3.open) * 100 if prev3.open > 0 else 0
+    recent_low_15 = df15["low"].tail(32).min()
+    dist_from_low = ((m1.close - recent_low_15) / recent_low_15) * 100 if recent_low_15 > 0 else 999
     trend_up = t15.ema9 > t15.ema21
     macd_bull = t15.macd > t15.macd_signal and t15.macd > t15_prev.macd
     low_24h = df15["low"].tail(96).min()
@@ -311,7 +313,7 @@ def safe_long(symbol, rs, btc_ok, funding):
     risk_pct = (risk / price) * 100
     if risk_pct > MAX_RISK_PCT:
         return False, None
-    return valid, {"module":"SAFE","score":confidence,"priority":40,"price":price,"confidence":confidence,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"change_3m":change_3m,"rsi":t15.rsi,"rsi15":t15.rsi,"trend_up":trend_up,"macd_bull":macd_bull,"breakout":breakout,"strong_breakout":strong_breakout,"entry":price,"stop":stop,"tp1":price+risk*1.5,"tp2":price+risk*2.0,"tp3":price+risk*3.0,"risk_pct":risk_pct,"dist_from_low":dist_from_low,"reasons":["Trend yukari","MACD yukari","Momentum onayi"]}
+    return valid, {"module":"SAFE","score":confidence,"priority":40,"price":price,"confidence":confidence,"rs":rs,"vol_ratio":vol_ratio,"usdt_vol":usdt_vol,"money_impact":money_impact,"volume_power":volume_power,"change_3m":change_3m,"rsi":t15.rsi,"rsi15":t15.rsi,"dist_from_low":dist_from_low,"trend_up":trend_up,"macd_bull":macd_bull,"breakout":breakout,"strong_breakout":strong_breakout,"entry":price,"stop":stop,"tp1":price+risk*1.5,"tp2":price+risk*2.0,"tp3":price+risk*3.0,"risk_pct":risk_pct,"dist_from_low":dist_from_low,"reasons":["Trend yukari","MACD yukari","Momentum onayi"]}
 
 
 def big_dip_radar(symbol, rs):
@@ -1249,8 +1251,8 @@ Ek Gecen Radarlar:
 {extra}
 
 Not:
-Bu mesaj sadece giris kalitesi filtresinden gecen sinyal icin atilir.
-FOMO / gec momentum / yuksek RSI elendi.
+Bu mesaj sadece AL kapisindan gecen sinyal icin atilir.
+Gec momentum, FOMO mumu, yuksek RSI ve kotu giris elendi.
 """.strip()
 
 def mexc_elite_allowed(best, support=None, btc_status=""):
@@ -1341,8 +1343,14 @@ def radar_support_score(module, support_modules):
     if "MOMENTUM" in s:
         score += 3
 
-    # Radar sayisi da onemli.
+    # Radar sayisi da onemli ama asil deger erken radarlarin birlikte yanmasi.
     score += min(len(support_modules), 4) * 5
+    if {"EARLY", "MONEY"}.issubset(s):
+        score += 10
+    if {"EARLY", "SQUEEZE"}.issubset(s):
+        score += 8
+    if {"MONEY", "SAFE"}.issubset(s):
+        score += 10
     return score
 
 
@@ -1443,12 +1451,16 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     elif fomo > 8:
         score -= 8
 
-    # Momentum gec geldiyse sert ceza.
+    # Momentum gec geldiyse sert ceza. Momentum tek basina Elite degildir.
     if module == "MOMENTUM":
-        if price_gain > 3.0:
-            score -= 30
+        if not any(x in support_modules for x in ("EARLY", "MONEY", "SAFE", "SQUEEZE")):
+            score -= 35
+        if price_gain > 2.8:
+            score -= 40
         elif price_gain > 2.0:
-            score -= 18
+            score -= 28
+        elif price_gain > 1.4:
+            score -= 16
         else:
             score -= 6
 
@@ -1499,28 +1511,31 @@ def entry_decision_allowed(best, support=None, btc_status=""):
     if rsi_value >= 82:
         return False
 
-    if fomo > 14:
+    # FOMO filtresi: sinyal gec kaldiyse AL mesaji yok.
+    if fomo > 12:
         return False
 
     # Momentum artik tek basina AL degil. Erken radarlarla destekli ve kacmamis olmali.
     if module == "MOMENTUM":
         return (
-            price_gain <= 2.2
+            price_gain <= 1.4
+            and fomo <= 8
             and money >= 1.8
             and power >= 3.5
             and usdt_vol >= 25000
-            and (("MONEY" in support_set) or ("EARLY" in support_set) or ("SAFE" in support_set) or ("SQUEEZE" in support_set))
-            and rsi_value <= 74
+            and len(support_set.intersection({"MONEY", "EARLY", "SAFE", "SQUEEZE"})) >= 2
+            and rsi_value <= 70
         )
 
     if module == "SAFE":
         return (
-            best.get("confidence", best.get("score", 0)) >= 72
+            best.get("confidence", best.get("score", 0)) >= 70
             and money >= 1.35
             and power >= 2.6
             and usdt_vol >= 25000
-            and rsi_value <= 76
-            and fomo <= 12
+            and rsi_value <= 74
+            and fomo <= 10
+            and best.get("dist_from_low", 999) <= 12
         )
 
     if module == "MONEY":
@@ -1528,8 +1543,9 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             money >= 1.45
             and power >= 2.8
             and usdt_vol >= 15000
-            and price_gain <= 2.5
-            and rsi_value <= 74
+            and price_gain <= 2.0
+            and fomo <= 8
+            and rsi_value <= 72
             and (("EARLY" in support_set) or ("SAFE" in support_set) or ("SQUEEZE" in support_set) or len(support) >= 1)
         )
 
