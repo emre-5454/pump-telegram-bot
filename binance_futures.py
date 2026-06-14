@@ -1,4 +1,4 @@
-# Binance Futures SAFE ENTRY DECISION BOT V3
+# Binance Futures SAFE ENTRY DECISION BOT V4
 # Binance MEXC kopyasi degil: Money Acceleration + Safe Entry + Elite AL + FOMO Block mantigi.
 # Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, ELITE_CHAT_ID
 
@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V3"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V4"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -327,6 +327,78 @@ def build_entry_levels(d):
     }
 
 
+def attach_market_impact(d, item):
+    """
+    Coinin kendi 24s hacmine gore gelen paranin etkisini olcer.
+    Mutlak USDT hacim tek basina yeterli degil; 100k USDT bazi coinde dev etki,
+    bazi coinde cok kucuk etki yapar.
+    """
+    if not d or not item:
+        return d
+
+    daily_qv = item.get("qv") or item.get("quoteVolume") or 0
+    if daily_qv <= 0:
+        d["daily_quote_volume"] = 0
+        d["impact_usdt_volume"] = 0
+        d["market_impact_pct"] = 0
+        d["market_impact_score"] = 0
+        return d
+
+    module = d.get("module", "")
+
+    # SAFE genelde 1m hacimle gelir. EARLY/MONEY_ACCEL icin 15m/1h hacim verileri olur.
+    impact_usdt = (
+        d.get("usdt_vol")
+        or d.get("usdt_vol_15m")
+        or (d.get("usdt_vol_1h", 0) * 0.25)
+        or 0
+    )
+
+    market_impact_pct = (impact_usdt / daily_qv) * 100 if daily_qv > 0 else 0
+
+    score = 0
+    if market_impact_pct >= 0.35:
+        score = 20
+    elif market_impact_pct >= 0.20:
+        score = 15
+    elif market_impact_pct >= 0.10:
+        score = 10
+    elif market_impact_pct >= 0.05:
+        score = 6
+    elif market_impact_pct >= 0.02:
+        score = 3
+
+    d["daily_quote_volume"] = daily_qv
+    d["impact_usdt_volume"] = impact_usdt
+    d["market_impact_pct"] = market_impact_pct
+    d["market_impact_score"] = score
+
+    return d
+
+
+def market_impact_ok(d):
+    """
+    Elite AL kapisinda coinin hacmine gore para etkisi yeterli mi kontrol eder.
+    Binance daha likit oldugu icin esik MEXC'e gore biraz daha esnek tutuldu.
+    """
+    if not d:
+        return False
+
+    module = d.get("module", "")
+    score = d.get("market_impact_score", 0)
+    pct = d.get("market_impact_pct", 0)
+
+    # SAFE / MONEY_ACCEL karar sinyali icin market etki gerekli.
+    if module in ("SAFE", "MONEY_ACCEL"):
+        return score >= 3 or pct >= 0.02
+
+    # Dip / sweep sinyallerinde hacim bazen ani iÄŸneyle gelir; yine de minimum etki ariyoruz.
+    if module in ("DIP", "SWEEP"):
+        return score >= 3 or pct >= 0.015
+
+    return score >= 3 or pct >= 0.02
+
+
 def early_radar(symbol, rs):
     df1h = fetch_df(symbol, "1h", 120)
     df15 = fetch_df(symbol, "15m", 120)
@@ -371,12 +443,12 @@ def early_radar(symbol, rs):
     score = 0
     reasons = []
 
-    # Dipten ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§ok uzaklaÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ coinleri cezalandÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±r
+    # Dipten ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§ok uzaklaÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸mÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ coinleri cezalandÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±r
     if dist_from_low > 15:
         score -= 2
 
-    # ArtÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±k early sayÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±lmayacak kadar uzaksa EARLY puanÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸er.
-    # Ama None dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶nmÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§in radar verisi lazÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±m.
+    # ArtÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±k early sayÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±lmayacak kadar uzaksa EARLY puanÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸er.
+    # Ama None dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶nmÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼yoruz; MoneyState / Money Continue iÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§in radar verisi lazÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±m.
     if dist_from_low > 25:
         score -= 3
 
@@ -1407,6 +1479,8 @@ Hacim Artisi: {d.get('vol_ratio', d.get('vol_ratio_1h', 0)):.2f}x
 USDT Hacim: {int(d.get('usdt_vol', d.get('usdt_vol_1h', 0)))} USDT
 Para Etkisi: {d.get('money_impact', 0):.2f}x
 Hacim Gucu: {d.get('volume_power', 0):.2f}
+Market Etki: %{d.get('market_impact_pct', 0):.4f}
+Market Etki Skoru: {d.get('market_impact_score', 0)}/20
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 
 {body}
@@ -1496,6 +1570,17 @@ def elite_score_signal(d, support_modules=None):
     power_growth = d.get("power_growth", 1)
     rsi_value = d.get("rsi", d.get("rsi15", 0))
     combo_score, radar_count = radar_combo_score(d, support_modules)
+    market_impact_score = d.get("market_impact_score", 0)
+    market_impact_pct = d.get("market_impact_pct", 0)
+
+    if market_impact_score >= 15:
+        score += 14
+    elif market_impact_score >= 10:
+        score += 10
+    elif market_impact_score >= 6:
+        score += 6
+    elif market_impact_score >= 3:
+        score += 3
 
     if rs >= 85: score += 12
     elif rs >= 75: score += 8
@@ -1560,6 +1645,9 @@ def is_elite_al_candidate(best, support_modules=None):
     if best.get("money_impact", 0) < 1.45 or best.get("volume_power", 0) < 2.8:
         return False, "PARA_ZAYIF"
 
+    if not market_impact_ok(best):
+        return False, "MARKET_ETKI_ZAYIF"
+
     rsi_value = best.get("rsi", best.get("rsi15", 0))
     if rsi_value > 72:
         return False, "RSI_YUKSEK"
@@ -1622,8 +1710,14 @@ Radar Skoru: {d.get('score', 0)}
 Radar Sayisi: {radar_count}
 Radar Kombinasyon Puani: {combo_score}
 
+24s Hacim: {int(d.get('daily_quote_volume', 0))} USDT
+Market Etki: %{d.get('market_impact_pct', 0):.4f}
+Market Etki Skoru: {d.get('market_impact_score', 0)}/20
+
 Para Etkisi: {d.get('money_impact', 0):.2f}x
 Hacim Gucu: {d.get('volume_power', 0):.2f}
+Market Etki: %{d.get('market_impact_pct', 0):.4f}
+Market Etki Skoru: {d.get('market_impact_score', 0)}/20
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
 FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
@@ -1706,16 +1800,32 @@ def analyze(item, btc_ok, btc_status):
         signals = []
 
         early_ok, early_data = early_radar(symbol, rs)
+        if early_data:
+            early_data = attach_market_impact(early_data, item)
 
-        # EARLY mesajÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± gelmese bile radar datasÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± oluÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸tuysa MoneyState baÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸lasÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±n.
+        # EARLY mesajÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± gelmese bile radar datasÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± oluÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸tuysa MoneyState baÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸lasÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±n.
         if early_data:
             update_money_state(symbol, early_data, "RADAR_DATA")
 
         money_ok, money_data = money_continue_signal(symbol, early_data)
+        if money_data:
+            money_data = attach_market_impact(money_data, item)
+
         momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
+        if momentum_data:
+            momentum_data = attach_market_impact(momentum_data, item)
+
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
+        if safe_data:
+            safe_data = attach_market_impact(safe_data, item)
+
         dip_ok, dip_data = big_dip_radar(symbol, rs)
+        if dip_data:
+            dip_data = attach_market_impact(dip_data, item)
+
         sweep_ok, sweep_data = liquidity_sweep_watch(symbol, rs)
+        if sweep_data:
+            sweep_data = attach_market_impact(sweep_data, item)
 
         if early_ok:
             signals.append(early_data)
