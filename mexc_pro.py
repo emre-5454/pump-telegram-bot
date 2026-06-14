@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V12"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V13"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -33,6 +33,7 @@ COOLDOWN_MONEY_CONTINUE = 180 * 60
 COOLDOWN_MOMENTUM_CONTINUE = 180 * 60
 COOLDOWN_EARLY_CONFIRM = 120 * 60
 COOLDOWN_TREND_BUILDUP = 150 * 60
+COOLDOWN_V_DIP_RECOVERY = 90 * 60
 
 WATCH_EXPIRE_SECONDS = 45 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
@@ -58,6 +59,7 @@ sent_money_continue = {}
 sent_momentum_continue = {}
 sent_early_confirm = {}
 sent_trend_buildup = {}
+sent_v_dip_recovery = {}
 watchlist = {}
 money_state = {}
 sent_mexc_elite = {}
@@ -350,6 +352,167 @@ def money_quality_upgrade(d):
     return early_enough and (strong_absolute_money or strong_relative_money)
 
 
+
+
+
+def v_dip_recovery_signal(symbol, rs):
+    """
+    V_DIP_RECOVERY / PANIC_SWEEP_RECOVERY:
+    H/USDT tipi sert dump + alt supurme + hacimli V donusleri yakalar.
+    Normal FOMO degildir; once sert dusus vardir, sonra guclu geri alis vardir.
+    """
+    df15 = fetch_df(symbol, "15m", 180)
+    df1h = fetch_df(symbol, "1h", 120)
+    if df15 is None or df1h is None or len(df15) < 50:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    p1 = df15.iloc[-2]
+    p2 = df15.iloc[-3]
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+
+    price = m15.close
+    recent = df15.tail(24)
+    recent_low = recent["low"].min()
+    recent_high_before_low = df15["high"].iloc[-32:-3].max() if len(df15) >= 32 else recent["high"].max()
+    low_idx = recent["low"].idxmin()
+
+    drop_from_high = ((recent_high_before_low - recent_low) / recent_high_before_low) * 100 if recent_high_before_low > 0 else 0
+    recovery_from_low = ((price - recent_low) / recent_low) * 100 if recent_low > 0 else 0
+    still_below_high = ((recent_high_before_low - price) / recent_high_before_low) * 100 if recent_high_before_low > 0 else 999
+    dist_from_low = recovery_from_low
+
+    candles = [m15, p1, p2]
+    lower_wick = max(c.lower_wick for c in candles)
+    recovery_ratio = max(c.recovery_ratio for c in candles)
+
+    touched_bb = any(c.low <= c.bb_lower * 1.012 for c in candles)
+    deep_sweep = any(c.low < c.bb_lower and c.close > c.bb_lower for c in candles)
+    close_back_inside = any(c.close > c.bb_lower for c in candles)
+    reclaim_ema9 = m15.close > m15.ema9 or p1.close > p1.ema9
+    reclaim_mid = m15.close > m15.bb_middle or p1.close > p1.bb_middle
+
+    last3_vol = df15["volume"].tail(3).mean()
+    prev20_vol = df15["volume"].iloc[-24:-4].mean()
+    vol_ratio = last3_vol / prev20_vol if prev20_vol > 0 else 0
+    usdt_vol = df15["volume"].tail(3).sum() * price
+    avg_usdt_vol = df15["vol_avg"].tail(3).sum() * price if df15["vol_avg"].tail(3).sum() > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    rsi_turn = m15.rsi > p1.rsi or p1.rsi > p2.rsi
+    macd_turn = m15.macd > df15["macd"].iloc[-4] or h1.macd > h1_prev.macd
+    obv_recover = df15["obv"].iloc[-1] > df15["obv"].iloc[-5]
+    green_reaction = (m15.close > m15.open) or (p1.close > p1.open)
+
+    # Bu radar tam panik-dip toparlanmasi icin. Ufak yatay tepkiyi alma.
+    if drop_from_high < 10:
+        return False, None
+    if recovery_from_low < 6:
+        return False, None
+    if recovery_from_low > 55:
+        return False, None
+    if still_below_high < 12:
+        return False, None
+    if m15.rsi > 68:
+        return False, None
+
+    score = 0
+    reasons = []
+    if drop_from_high >= 25:
+        score += 5; reasons.append("Sert dump sonrasi")
+    elif drop_from_high >= 15:
+        score += 4; reasons.append("Dump sonrasi tepki")
+    if recovery_from_low >= 15:
+        score += 5; reasons.append("Dipten guclu V toparlanma")
+    elif recovery_from_low >= 8:
+        score += 3; reasons.append("Dipten V toparlanma")
+    if still_below_high >= 20:
+        score += 3; reasons.append("Eski tepeye hala uzak")
+    if lower_wick >= 0.55:
+        score += 4; reasons.append("Alt supurme fitili")
+    elif lower_wick >= 0.35:
+        score += 2; reasons.append("Alt fitil")
+    if recovery_ratio >= 0.70:
+        score += 3; reasons.append("Mum dipten geri aldi")
+    if touched_bb:
+        score += 3; reasons.append("Alt Bollinger bolgesi")
+    if deep_sweep:
+        score += 4; reasons.append("Bollinger disi supurme")
+    if close_back_inside:
+        score += 2; reasons.append("Bant icine geri donus")
+    if reclaim_ema9:
+        score += 2; reasons.append("EMA9 geri alma")
+    if reclaim_mid:
+        score += 2; reasons.append("BB orta geri alma")
+    if vol_ratio >= 2.0:
+        score += 4; reasons.append("Tepkide hacim patlamasi")
+    elif vol_ratio >= 1.35:
+        score += 2; reasons.append("Tepkide hacim artisi")
+    if money_impact >= 2.0:
+        score += 4; reasons.append("Para etkisi guclu")
+    elif money_impact >= 1.25:
+        score += 2; reasons.append("Para etkisi var")
+    if volume_power >= 5.0:
+        score += 4; reasons.append("Hacim gucu cok guclu")
+    elif volume_power >= 2.5:
+        score += 2; reasons.append("Hacim gucu var")
+    if rsi_turn:
+        score += 2; reasons.append("RSI dipten donuyor")
+    if macd_turn:
+        score += 2; reasons.append("MACD toparlaniyor")
+    if obv_recover:
+        score += 3; reasons.append("OBV toparlaniyor")
+    if green_reaction:
+        score += 1; reasons.append("Yesil tepki mumu")
+    if rs >= 45:
+        score += 1; reasons.append("RS yeterli")
+
+    valid = (
+        score >= 20
+        and drop_from_high >= 12
+        and 6 <= recovery_from_low <= 45
+        and still_below_high >= 12
+        and vol_ratio >= 1.25
+        and money_impact >= 1.15
+        and volume_power >= 1.8
+        and m15.rsi <= 66
+        and (lower_wick >= 0.35 or touched_bb or deep_sweep)
+        and (rsi_turn or macd_turn or obv_recover or reclaim_ema9)
+    )
+
+    return valid, {
+        "module": "V_DIP_RECOVERY",
+        "score": score,
+        "priority": 46,
+        "price": price,
+        "rs": rs,
+        "vol_ratio": vol_ratio,
+        "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
+        "rsi": m15.rsi,
+        "dist_from_low": dist_from_low,
+        "drop_from_high": drop_from_high,
+        "recovery_from_low": recovery_from_low,
+        "still_below_high": still_below_high,
+        "lower_wick": lower_wick,
+        "recovery_ratio": recovery_ratio,
+        "touched_bb": touched_bb,
+        "deep_sweep": deep_sweep,
+        "close_back_inside": close_back_inside,
+        "reclaim_ema9": reclaim_ema9,
+        "reclaim_mid": reclaim_mid,
+        "rsi_turn": rsi_turn,
+        "macd_turn": macd_turn,
+        "obv_up": obv_recover,
+        "green_reaction": green_reaction,
+        "price_gain_15m": 0,
+        "price_gain_30m": 0,
+        "fomo_exempt": True,
+        "reasons": reasons,
+    }
 
 def trend_buildup_signal(symbol, rs):
     """
@@ -1475,7 +1638,7 @@ Mum Toparlanma: %{d.get('recovery_ratio',0) * 100:.1f}
 15m BB Tepki: {'VAR' if d.get('touched_bb') else 'YOK'}
 OBV Donus: {'VAR' if d.get('obv_up') else 'YOK'}
 """
-    elif module in ("DIP_SWEEP", "STRONG_WICK", "ELITE_WHALE"):
+    elif module in ("DIP_SWEEP", "STRONG_WICK", "ELITE_WHALE", "V_DIP_RECOVERY"):
         extra = f"""
 15m Dip Mesafesi: %{d.get('dist_from_low',0):.2f}
 Alt Fitil: %{d.get('lower_wick',0) * 100:.1f}
@@ -1588,6 +1751,7 @@ def radar_strength_points(module, support_modules=None):
         "DIP": 2,
         "EARLY_CONFIRM": 2,
         "TREND_BUILDUP": 2,
+        "V_DIP_RECOVERY": 2,
         "EARLY": 1,
         "MONEY": 1,
         "WATCH": 1,
@@ -1624,7 +1788,7 @@ def elite_combo_allowed(best, support=None):
 
     # Dipten erken yakalama istisnasi: sert iÃ„Å¸ne + tepki radarlarindan biri.
     dip_exception = (
-        module in ("DIP_SWEEP", "ELITE_WHALE")
+        module in ("DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY")
         and bool(support_set.intersection({"DIP_REACTION", "REVERSAL", "DIP"}))
         and best.get("dist_from_low", 999) <= 3
         and best.get("lower_wick", 0) >= 0.45
@@ -1677,6 +1841,20 @@ def elite_combo_allowed(best, support=None):
     if trend_exception:
         return True
 
+    # H tipi panik dip V donusu: FOMO degil, dump sonrasi geri alis.
+    v_dip_exception = (
+        module == "V_DIP_RECOVERY"
+        and best.get("drop_from_high", 0) >= 12
+        and 6 <= best.get("recovery_from_low", 0) <= 45
+        and best.get("still_below_high", 999) >= 12
+        and money >= 1.15
+        and power >= 1.8
+        and rsi_value <= 66
+        and (best.get("obv_up") or best.get("macd_turn") or best.get("reclaim_ema9"))
+    )
+    if v_dip_exception:
+        return True
+
     # Para kalitesi istisnasi: radar sayisi az olsa bile gercek para cok gucluyse Elite kapisina aday.
     money_quality_exception = (
         money_quality_upgrade(best)
@@ -1716,7 +1894,7 @@ def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
         risk_pct = d.get("risk_pct", ((entry - stop) / entry * 100 if entry else 0))
     else:
         risk_pct = 2.8
-        if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
+        if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
             risk_pct = 3.2
         elif module in ("MONEY", "WATCH", "EARLY", "SQUEEZE", "TREND_BUILDUP"):
             risk_pct = 2.5
@@ -1735,11 +1913,14 @@ Para Buyume: {d.get('money_growth', 1):.2f}x
 Hacim Gucu Buyume: {d.get('power_growth', 1):.2f}x
 Sure: {d.get('age_min', 0):.1f} dk
 """
-    elif module in ("REVERSAL", "DIP_REACTION", "STRONG_WICK", "DIP_SWEEP", "ELITE_WHALE"):
+    elif module in ("REVERSAL", "DIP_REACTION", "STRONG_WICK", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
         extra = f"""
 15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
 Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
 Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
+Dump Dusus: %{d.get('drop_from_high', 0):.2f}
+Dipten Donus: %{d.get('recovery_from_low', 0):.2f}
+Eski Tepeye Uzaklik: %{d.get('still_below_high', 0):.2f}
 """
     elif module == "SQUEEZE":
         extra = f"""
@@ -1866,7 +2047,7 @@ def radar_support_score(module, support_modules):
         score += 18
     elif module == "SQUEEZE":
         score += 16
-    elif module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
+    elif module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
         score += 16
     elif module == "REVERSAL":
         score += 12
@@ -1883,7 +2064,7 @@ def radar_support_score(module, support_modules):
         score += 18
     if "SQUEEZE" in s:
         score += 10
-    if "DIP" in s or "DIP_REACTION" in s or "DIP_SWEEP" in s:
+    if "DIP" in s or "DIP_REACTION" in s or "DIP_SWEEP" in s or "V_DIP_RECOVERY" in s:
         score += 10
     if "REVERSAL" in s:
         score += 6
@@ -1928,6 +2109,7 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     dist = d.get("dist_from_low", 999)
     price_gain = d.get("price_gain_from_first", 0)
     fomo = fomo_gain_pct(d)
+    fomo_exempt = module == "V_DIP_RECOVERY" or d.get("fomo_exempt", False)
 
     score += radar_support_score(module, support_modules)
 
@@ -2021,19 +2203,20 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         score += 3
 
     # FOMO cezasi: gec gelen patlama mumu Elite olmasin.
-    if d.get("price_gain_15m", 0) > 8:
-        score -= 12
-    if d.get("price_gain_30m", 0) > 15:
-        score -= 12
+    if not fomo_exempt:
+        if d.get("price_gain_15m", 0) > 8:
+            score -= 12
+        if d.get("price_gain_30m", 0) > 15:
+            score -= 12
 
-    if fomo > 25:
-        score -= 35
-    elif fomo > 18:
-        score -= 25
-    elif fomo > 12:
-        score -= 15
-    elif fomo > 8:
-        score -= 8
+        if fomo > 25:
+            score -= 35
+        elif fomo > 18:
+            score -= 25
+        elif fomo > 12:
+            score -= 15
+        elif fomo > 8:
+            score -= 8
 
     # Momentum gec geldiyse sert ceza. Momentum tek basina Elite degildir.
     if module == "MOMENTUM":
@@ -2089,6 +2272,20 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         if d.get("market_impact_pct", 0) >= 0.10:
             score += 6
 
+    if module == "V_DIP_RECOVERY":
+        if d.get("drop_from_high", 0) >= 20:
+            score += 10
+        if 8 <= d.get("recovery_from_low", 0) <= 35:
+            score += 12
+        if d.get("still_below_high", 999) >= 15:
+            score += 8
+        if d.get("deep_sweep") or d.get("touched_bb"):
+            score += 8
+        if d.get("reclaim_ema9") or d.get("reclaim_mid"):
+            score += 6
+        if d.get("market_impact_pct", 0) >= 0.10 or d.get("usdt_vol", 0) >= 100000:
+            score += 8
+
     return max(0, min(100, int(score)))
 
 
@@ -2111,17 +2308,20 @@ def entry_decision_allowed(best, support=None, btc_status=""):
     price_gain = best.get("price_gain_from_first", 0)
     fomo = signal_price_gain_pct(best)
     support_set = set(support)
+    fomo_exempt = module == "V_DIP_RECOVERY" or best.get("fomo_exempt", False)
 
     if rsi_value >= 82:
         return False
 
-    # FOMO filtresi: sinyal gec kaldiyse AL mesaji yok.
-    if best.get("price_gain_15m", 0) > 8:
-        return False
-    if best.get("price_gain_30m", 0) > 15:
-        return False
-    if fomo > 12:
-        return False
+    # FOMO filtresi: normal pump gec kaldiyse AL mesaji yok.
+    # V_DIP_RECOVERY icin gevsek; cunku once sert dump vardir, toparlanma FOMO sayilmaz.
+    if not fomo_exempt:
+        if best.get("price_gain_15m", 0) > 8:
+            return False
+        if best.get("price_gain_30m", 0) > 15:
+            return False
+        if fomo > 12:
+            return False
 
     # Coin hacmine gore para etkisi kapisi.
     # Mutlak hacim yuksek olsa bile, 24s hacmine gore cok zayifsa AL kapisindan gecmesin.
@@ -2242,7 +2442,7 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and (best.get("obv_up") or best.get("macd_turn"))
         )
 
-    if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
+    if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
         return (
             dist <= 7
             and money >= 1.25
@@ -2272,7 +2472,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         return False
     best = select_best_signal(signals)
     support = [s["module"] for s in signals if s["module"] != best["module"]]
-    cooldown_map = {"EARLY_CONFIRM":(sent_early_confirm, COOLDOWN_EARLY_CONFIRM), "TREND_BUILDUP":(sent_trend_buildup, COOLDOWN_TREND_BUILDUP), "SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "DIP_SWEEP":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "ELITE_WHALE":(sent_elite_whale, MEXC_ELITE_COOLDOWN), "STRONG_WICK":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "REVERSAL":(sent_reversal_watch, COOLDOWN_REVERSAL_WATCH), "SQUEEZE":(sent_squeeze_breakout, COOLDOWN_SQUEEZE_BREAKOUT), "EARLY":(sent_early, COOLDOWN_EARLY)}
+    cooldown_map = {"EARLY_CONFIRM":(sent_early_confirm, COOLDOWN_EARLY_CONFIRM), "TREND_BUILDUP":(sent_trend_buildup, COOLDOWN_TREND_BUILDUP), "V_DIP_RECOVERY":(sent_v_dip_recovery, COOLDOWN_V_DIP_RECOVERY), "SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "DIP_SWEEP":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "ELITE_WHALE":(sent_elite_whale, MEXC_ELITE_COOLDOWN), "STRONG_WICK":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "REVERSAL":(sent_reversal_watch, COOLDOWN_REVERSAL_WATCH), "SQUEEZE":(sent_squeeze_breakout, COOLDOWN_SQUEEZE_BREAKOUT), "EARLY":(sent_early, COOLDOWN_EARLY)}
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
     if best["module"] == "EARLY" and not can_send_early_today(symbol):
         print("EARLY DAILY LIMIT:", symbol, "Limit:", EARLY_MAX_PER_SYMBOL_PER_DAY, flush=True)
@@ -2322,8 +2522,9 @@ def analyze(item, btc_ok, btc_status):
         reversal_ok, reversal_data = reversal_watch(symbol, rs)
         squeeze_ok, squeeze_data = squeeze_breakout(symbol, rs)
         trend_ok, trend_data = trend_buildup_signal(symbol, rs)
+        vdip_ok, vdip_data = v_dip_recovery_signal(symbol, rs)
         # Coinin kendi 24s hacmine gore para etkisini tum radar verilerine ekle.
-        for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, trend_data]:
+        for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, trend_data, vdip_data]:
             enrich_market_impact(_d, daily_qv)
 
         if early_ok: signals.append(early_data)
@@ -2339,6 +2540,7 @@ def analyze(item, btc_ok, btc_status):
         if reversal_ok: signals.append(reversal_data)
         if squeeze_ok: signals.append(squeeze_data)
         if trend_ok: signals.append(trend_data)
+        if vdip_ok: signals.append(vdip_data)
         if early_data:
             update_money_state(symbol, early_data, "RADAR_MANAGER")
             if is_watch_candidate(early_data):
@@ -2346,7 +2548,7 @@ def analyze(item, btc_ok, btc_status):
         if signals:
             send_selected_signal(symbol, signals, funding, btc_status)
         else:
-            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "EarlyConfirm:", early_confirm_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "DipSweep:", strong_wick_ok, "EliteWhale:", elite_whale_ok, "Reversal:", reversal_ok, "Squeeze:", squeeze_ok, "TrendBuild:", trend_ok, "IC FILTRE", flush=True)
+            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "EarlyConfirm:", early_confirm_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "DipSweep:", strong_wick_ok, "EliteWhale:", elite_whale_ok, "Reversal:", reversal_ok, "Squeeze:", squeeze_ok, "TrendBuild:", trend_ok, "VDip:", vdip_ok, "IC FILTRE", flush=True)
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
@@ -2376,7 +2578,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V11 Bot Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V13 Bot Aktif", 200
 
 
 if __name__ == "__main__":
