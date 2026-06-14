@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V11"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V12"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -296,6 +296,59 @@ def enrich_market_impact(d, daily_qv):
     # Para etkisi + hacim gucu + coin hacmine gore etkiyi tek yerde toplar.
     d["relative_money_power"] = d.get("money_impact", 0) * (1 + market_impact_pct)
     return d
+
+
+
+def money_quality_upgrade(d):
+    """
+    PARA KALITESI TERFISI:
+    H/USDT gibi tek radarda kalip da cok guclu para girisi olan coinleri Elite adayina tasir.
+    Radar sayisi az olsa bile; hacim coin icin gercekten buyukse, fiyat cok kacmamis ise ve RSI sisik degilse calisir.
+    """
+    if not d:
+        return False
+
+    module = d.get("module", "UNKNOWN")
+    money = d.get("money_impact", 0)
+    power = d.get("volume_power", 0)
+    usdt_vol = d.get("usdt_vol", d.get("signal_usdt_vol", 0))
+    market_impact_pct = d.get("market_impact_pct", 0)
+    rsi_value = d.get("rsi", d.get("rsi15", 0))
+    dist = d.get("dist_from_low", 999)
+    price_gain_15m = d.get("price_gain_15m", 0)
+    price_gain_30m = d.get("price_gain_30m", 0)
+
+    # Momentum tek basina terfi almasin; zaten gec kalma riski yuksek.
+    if module == "MOMENTUM":
+        return False
+
+    if rsi_value >= 74:
+        return False
+
+    # H tipi: cok guclu para var ama daha fomo olmamis.
+    strong_absolute_money = (
+        usdt_vol >= 5_000_000
+        and money >= 2.8
+        and power >= 10
+    )
+
+    # Kucuk/orta hacimli coinde 24s hacme gore cok buyuk etki.
+    strong_relative_money = (
+        market_impact_pct >= 1.0
+        and usdt_vol >= 75_000
+        and money >= 2.0
+        and power >= 5.0
+    )
+
+    # Erkenlik korunacak: coktan kacmis coin terfi almasin.
+    early_enough = (
+        dist <= 18
+        and price_gain_15m <= 8
+        and price_gain_30m <= 15
+    )
+
+    return early_enough and (strong_absolute_money or strong_relative_money)
+
 
 
 def trend_buildup_signal(symbol, rs):
@@ -1624,6 +1677,15 @@ def elite_combo_allowed(best, support=None):
     if trend_exception:
         return True
 
+    # Para kalitesi istisnasi: radar sayisi az olsa bile gercek para cok gucluyse Elite kapisina aday.
+    money_quality_exception = (
+        money_quality_upgrade(best)
+        and module in ("EARLY", "MONEY", "SAFE", "SQUEEZE", "DIP_REACTION", "DIP_SWEEP", "TREND_BUILDUP")
+        and rsi_value <= 72
+    )
+    if money_quality_exception:
+        return True
+
     return False
 
 def mexc_elite_score_signal(d, support_modules=None, btc_status=""):
@@ -1722,6 +1784,7 @@ USDT Hacim: {int(d.get('usdt_vol', 0))} USDT
 24s Hacim: {int(d.get('daily_qv', 0))} USDT
 Market Etki: %{d.get('market_impact_pct', 0):.3f}
 Market Etki Skoru: {d.get('market_impact_score', 0):.0f}/100
+Para Kalitesi Terfisi: {'VAR' if money_quality_upgrade(d) else 'YOK'}
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 
 Ek Gecen Radarlar:
@@ -1943,6 +2006,10 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     elif market_impact_score <= 15 and usdt_vol < 50000:
         score -= 4
 
+    # Para Kalitesi Terfisi: H gibi tek radar ama cok guclu para girisi olanlari odullendir.
+    if money_quality_upgrade(d):
+        score += 22
+
     # Erken giris odulu.
     if dist <= 3:
         score += 14
@@ -2067,6 +2134,17 @@ def entry_decision_allowed(best, support=None, btc_status=""):
     # Elite icin radar kombinasyonu: genel olarak 3 radar veya guclu erken/dip istisnasi gerekir.
     if not elite_combo_allowed(best, support):
         return False
+
+    # Para Kalitesi Terfisi: H ornegi gibi cok guclu para girisi olan tek radarlar AL kapisina aday olabilir.
+    if money_quality_upgrade(best):
+        return (
+            module != "MOMENTUM"
+            and money >= 2.0
+            and power >= 5.0
+            and (usdt_vol >= 75_000 or market_impact_pct >= 1.0)
+            and rsi_value <= 72
+            and fomo <= 12
+        )
 
     # Momentum artik tek basina AL degil. Erken radarlarla destekli ve kacmamis olmali.
     if module == "MOMENTUM":
