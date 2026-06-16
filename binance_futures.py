@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V4"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V5"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -31,7 +31,34 @@ COOLDOWN_DIP = 120 * 60
 COOLDOWN_SWEEP_WATCH = 120 * 60
 COOLDOWN_MONEY_CONTINUE = 120 * 60
 COOLDOWN_MOMENTUM_CONTINUE = 150 * 60
+COOLDOWN_TREND_BUILDUP = 150 * 60
+COOLDOWN_HISTORY_BUILDUP = 150 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
+
+# MEXC V18'den tasinan hafiza katmani
+RADAR_HISTORY_EXPIRE_SECONDS = 4 * 60 * 60
+RADAR_HISTORY_DEDUP_SECONDS = 25 * 60
+RADAR_HISTORY_WEIGHTS = {
+    "EARLY": 4,
+    "SAFE": 5,
+    "MONEY": 5,
+    "MONEY_ACCEL": 6,
+    "MOMENTUM": 2,
+    "DIP": 4,
+    "SWEEP": 5,
+    "TREND_BUILDUP": 7,
+    "HISTORY_BUILDUP": 8,
+}
+
+MONEY_MEMORY_EXPIRE_SECONDS = 60 * 60
+MONEY_MEMORY_MIN_EVENT_USDT = 15_000
+MONEY_MEMORY_MIN_EVENT_MARKET = 0.02
+MONEY_MEMORY_MIN_EVENT_POWER = 1.15
+MONEY_MEMORY_MIN_TOTAL_USDT = 250_000
+MONEY_MEMORY_MIN_WAVES = 3
+MONEY_MEMORY_MIN_MARKET_60M = 0.25
+MONEY_MEMORY_MIN_15M_USDT = 30_000
+MONEY_MEMORY_MIN_30M_USDT = 80_000
 
 MIN_EARLY_RS = 74
 MIN_SAFE_CONFIDENCE = 72
@@ -44,7 +71,11 @@ sent_dip = {}
 sent_sweep_watch = {}
 sent_money_continue = {}
 sent_momentum_continue = {}
+sent_trend_buildup = {}
+sent_history_buildup = {}
 money_state = {}
+radar_history = {}
+money_memory = {}
 
 exchange = ccxt.binanceusdm({
     "enableRateLimit": True,
@@ -398,6 +429,294 @@ def market_impact_ok(d):
 
     return score >= 3 or pct >= 0.02
 
+
+
+
+def cleanup_radar_history():
+    now = time.time()
+    for symbol in list(radar_history.keys()):
+        radar_history[symbol] = [e for e in radar_history[symbol] if now - e.get("time", 0) <= RADAR_HISTORY_EXPIRE_SECONDS]
+        if not radar_history[symbol]:
+            radar_history.pop(symbol, None)
+
+
+def record_radar_history(symbol, signals):
+    if not signals:
+        return
+    now = time.time()
+    events = radar_history.setdefault(symbol, [])
+    for d in signals:
+        if not d:
+            continue
+        module = d.get("module", "UNKNOWN")
+        duplicate = False
+        for e in events:
+            if e.get("module") == module and now - e.get("time", 0) < RADAR_HISTORY_DEDUP_SECONDS:
+                e.update({
+                    "time": now,
+                    "price": d.get("price", e.get("price", 0)),
+                    "score": max(e.get("score", 0), d.get("score", 0)),
+                    "money_impact": max(e.get("money_impact", 0), d.get("money_impact", 0)),
+                    "volume_power": max(e.get("volume_power", 0), d.get("volume_power", 0)),
+                    "market_impact_pct": max(e.get("market_impact_pct", 0), d.get("market_impact_pct", 0)),
+                    "rsi": d.get("rsi", d.get("rsi15", e.get("rsi", 0))),
+                })
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        events.append({
+            "time": now,
+            "module": module,
+            "price": d.get("price", 0),
+            "score": d.get("score", 0),
+            "money_impact": d.get("money_impact", 0),
+            "volume_power": d.get("volume_power", 0),
+            "market_impact_pct": d.get("market_impact_pct", 0),
+            "rsi": d.get("rsi", d.get("rsi15", 0)),
+        })
+    cleanup_radar_history()
+
+
+def radar_history_summary(symbol):
+    cleanup_radar_history()
+    events = sorted(radar_history.get(symbol, []), key=lambda x: x.get("time", 0))
+    if not events:
+        return {"history_points": 0, "history_modules": [], "history_text": "YOK", "history_age_min": 0, "history_first_price": 0, "history_price_gain": 0, "history_money_max": 0, "history_power_max": 0, "history_market_max": 0, "history_unique_count": 0}
+    modules = []
+    for e in events:
+        m = e.get("module", "UNKNOWN")
+        if m not in modules:
+            modules.append(m)
+    points = sum(RADAR_HISTORY_WEIGHTS.get(m, 0) for m in modules)
+    s = set(modules)
+    if {"EARLY", "MONEY"}.issubset(s) or {"EARLY", "MONEY_ACCEL"}.issubset(s):
+        points += 5
+    if {"TREND_BUILDUP", "EARLY"}.issubset(s):
+        points += 5
+    if {"TREND_BUILDUP", "MONEY"}.issubset(s) or {"TREND_BUILDUP", "MONEY_ACCEL"}.issubset(s):
+        points += 6
+    if {"SAFE", "MONEY_ACCEL"}.issubset(s):
+        points += 4
+    if "MOMENTUM" in s and ("MONEY" in s or "MONEY_ACCEL" in s or "TREND_BUILDUP" in s):
+        points += 3
+    first = events[0]
+    last = events[-1]
+    first_price = first.get("price", 0)
+    last_price = last.get("price", first_price)
+    gain = ((last_price - first_price) / first_price * 100) if first_price > 0 else 0
+    return {
+        "history_points": points,
+        "history_modules": modules,
+        "history_text": ", ".join(modules),
+        "history_age_min": (time.time() - first.get("time", time.time())) / 60,
+        "history_first_price": first_price,
+        "history_price_gain": gain,
+        "history_money_max": max(e.get("money_impact", 0) for e in events),
+        "history_power_max": max(e.get("volume_power", 0) for e in events),
+        "history_market_max": max(e.get("market_impact_pct", 0) for e in events),
+        "history_unique_count": len(modules),
+    }
+
+
+def cleanup_money_memory():
+    now = time.time()
+    for symbol in list(money_memory.keys()):
+        money_memory[symbol] = [e for e in money_memory[symbol] if now - e.get("time", 0) <= MONEY_MEMORY_EXPIRE_SECONDS]
+        if not money_memory[symbol]:
+            money_memory.pop(symbol, None)
+
+
+def update_money_memory(symbol, d):
+    if not d:
+        return
+    usdt = d.get("impact_usdt_volume") or d.get("usdt_vol") or d.get("usdt_vol_15m") or d.get("usdt_vol_1h") or 0
+    market = d.get("market_impact_pct", 0)
+    power = d.get("volume_power", 0)
+    money = d.get("money_impact", 0)
+    if usdt < MONEY_MEMORY_MIN_EVENT_USDT and market < MONEY_MEMORY_MIN_EVENT_MARKET and power < MONEY_MEMORY_MIN_EVENT_POWER:
+        return
+    events = money_memory.setdefault(symbol, [])
+    events.append({
+        "time": time.time(),
+        "price": d.get("price", 0),
+        "module": d.get("module", "UNKNOWN"),
+        "usdt": float(usdt or 0),
+        "market": float(market or 0),
+        "power": float(power or 0),
+        "money": float(money or 0),
+    })
+    cleanup_money_memory()
+
+
+def money_memory_summary(symbol):
+    cleanup_money_memory()
+    events = money_memory.get(symbol, [])
+    now = time.time()
+    if not events:
+        return {"money_mem_60m": 0, "money_mem_30m": 0, "money_mem_15m": 0, "money_wave_count": 0, "money_market_60m": 0, "money_first_price": 0, "money_gain_from_first": 0, "money_memory_bonus": False}
+    e60 = [e for e in events if now - e["time"] <= 60 * 60]
+    e30 = [e for e in events if now - e["time"] <= 30 * 60]
+    e15 = [e for e in events if now - e["time"] <= 15 * 60]
+    buckets = set(int(e["time"] // (5 * 60)) for e in e60)
+    first_price = e60[0].get("price", 0) if e60 else 0
+    last_price = e60[-1].get("price", first_price) if e60 else first_price
+    gain = ((last_price - first_price) / first_price * 100) if first_price > 0 else 0
+    total60 = sum(e.get("usdt", 0) for e in e60)
+    total30 = sum(e.get("usdt", 0) for e in e30)
+    total15 = sum(e.get("usdt", 0) for e in e15)
+    market60 = sum(e.get("market", 0) for e in e60)
+    waves = len(buckets)
+    bonus = (
+        waves >= MONEY_MEMORY_MIN_WAVES
+        and total15 >= MONEY_MEMORY_MIN_15M_USDT
+        and total30 >= MONEY_MEMORY_MIN_30M_USDT
+        and (total60 >= MONEY_MEMORY_MIN_TOTAL_USDT or market60 >= MONEY_MEMORY_MIN_MARKET_60M)
+        and gain <= 9.0
+    )
+    return {"money_mem_60m": total60, "money_mem_30m": total30, "money_mem_15m": total15, "money_wave_count": waves, "money_market_60m": market60, "money_first_price": first_price, "money_gain_from_first": gain, "money_memory_bonus": bonus}
+
+
+def trend_buildup_signal(symbol, rs):
+    """Sessiz trend: Higher Low + EMA21 ustu tutunma + OBV/MACD + parca parca para."""
+    df15 = fetch_df(symbol, "15m", 180)
+    df1h = fetch_df(symbol, "1h", 120)
+    if df15 is None or df1h is None or len(df15) < 60:
+        return False, None
+    m15 = df15.iloc[-1]
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+    price = m15.close
+    p6h = df15["close"].iloc[-25]
+    p12h = df15["close"].iloc[-49] if len(df15) >= 49 else df15["close"].iloc[0]
+    price_change_6h = ((price - p6h) / p6h) * 100 if p6h > 0 else 0
+    price_change_12h = ((price - p12h) / p12h) * 100 if p12h > 0 else 0
+    low_24h = df15["low"].tail(96).min()
+    high_24h = df15["high"].tail(96).max()
+    dist_from_low = ((price - low_24h) / low_24h) * 100 if low_24h > 0 else 999
+    pullback_from_high = ((high_24h - price) / high_24h) * 100 if high_24h > 0 else 999
+
+    lows = df15["low"].tail(24).reset_index(drop=True)
+    highs = df15["high"].tail(24).reset_index(drop=True)
+    higher_low_count = 0
+    higher_high_count = 0
+    for i in range(4, len(lows), 4):
+        if lows.iloc[i] > lows.iloc[i-4]:
+            higher_low_count += 1
+        if highs.iloc[i] > highs.iloc[i-4]:
+            higher_high_count += 1
+
+    close_above_ema21_count = int((df15["close"].tail(12) > df15["ema21"].tail(12)).sum())
+    last8_vol = df15["volume"].tail(8).mean()
+    prev16_vol = df15["volume"].iloc[-24:-8].mean()
+    vol_ratio = last8_vol / prev16_vol if prev16_vol > 0 else 0
+    usdt_vol = df15["volume"].tail(8).sum() * price
+    avg_usdt_vol = df15["vol_avg"].tail(8).sum() * price if df15["vol_avg"].tail(8).sum() > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-16]
+    macd_turn = m15.macd > df15["macd"].iloc[-4] or h1.macd > h1_prev.macd
+    ema_structure = m15.close > m15.ema21 and m15.ema9 >= m15.ema21 * 0.995
+    h1_structure = h1.close > h1.ema21 or h1.ema9 >= h1.ema21 * 0.995
+
+    if price_change_6h < 1.0 or price_change_6h > 24 or price_change_12h > 45:
+        return False, None
+    if not (45 <= m15.rsi <= 74):
+        return False, None
+    if dist_from_low > 32:
+        return False, None
+
+    score = 0
+    reasons = []
+    if higher_low_count >= 3:
+        score += 3; reasons.append("Higher Low yapisi")
+    elif higher_low_count >= 2:
+        score += 2; reasons.append("Higher Low basliyor")
+    if higher_high_count >= 2:
+        score += 2; reasons.append("Higher High basliyor")
+    if close_above_ema21_count >= 8:
+        score += 3; reasons.append("15m EMA21 ustu tutunma")
+    if ema_structure:
+        score += 2; reasons.append("EMA yapi yukari")
+    if h1_structure:
+        score += 2; reasons.append("1H yapi toparliyor")
+    if 50 <= m15.rsi <= 68:
+        score += 2; reasons.append("RSI trend bolgesi")
+    if 1.15 <= vol_ratio <= 3.8:
+        score += 2; reasons.append("Hacim sessiz artiyor")
+    if money_impact >= 1.20:
+        score += 2; reasons.append("Para etkisi surekli pozitif")
+    if volume_power >= 1.8:
+        score += 2; reasons.append("Hacim gucu birikiyor")
+    if obv_up:
+        score += 3; reasons.append("OBV birikim")
+    if macd_turn:
+        score += 2; reasons.append("MACD toparlanma")
+    if 1.5 <= price_change_6h <= 14:
+        score += 3; reasons.append("6s kontrollu yukselis")
+    if pullback_from_high <= 8:
+        score += 1; reasons.append("Tepeye yakin tutunuyor")
+    if rs >= 65:
+        score += 1; reasons.append("RS yeterli")
+
+    valid = (
+        score >= 17
+        and higher_low_count >= 2
+        and close_above_ema21_count >= 7
+        and ema_structure
+        and h1_structure
+        and 1.0 <= price_change_6h <= 24
+        and price_change_12h <= 45
+        and money_impact >= 1.15
+        and volume_power >= 1.5
+        and (obv_up or macd_turn)
+    )
+    return valid, {
+        "module": "TREND_BUILDUP", "score": score, "priority": 33, "price": price, "rs": rs,
+        "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "money_impact": money_impact, "volume_power": volume_power,
+        "rsi": m15.rsi, "dist_from_low": dist_from_low, "price_change_6h": price_change_6h, "price_change_12h": price_change_12h,
+        "higher_low_count": higher_low_count, "higher_high_count": higher_high_count, "close_above_ema21_count": close_above_ema21_count,
+        "obv_up": obv_up, "macd_turn": macd_turn, "ema_structure": ema_structure, "h1_structure": h1_structure, "pullback_from_high": pullback_from_high,
+        "reasons": reasons,
+    }
+
+
+def build_history_signal(symbol, rs, latest_signals=None):
+    latest_signals = latest_signals or []
+    hist = radar_history_summary(symbol)
+    mem = money_memory_summary(symbol)
+    if not latest_signals and hist.get("history_points", 0) <= 0:
+        return False, None
+    ref = latest_signals[0] if latest_signals else {"price": hist.get("history_first_price", 0), "rsi": 0, "money_impact": 0, "volume_power": 0, "market_impact_pct": 0, "score": 0}
+    rsi_value = ref.get("rsi", ref.get("rsi15", 0))
+    points = hist.get("history_points", 0)
+    age = hist.get("history_age_min", 0)
+    gain = hist.get("history_price_gain", 0)
+    modules = hist.get("history_modules", [])
+    valid = (
+        points >= 16
+        and age >= 25
+        and gain <= 8
+        and rsi_value <= 72
+        and (
+            hist.get("history_unique_count", 0) >= 3
+            or mem.get("money_memory_bonus", False)
+            or {"TREND_BUILDUP", "EARLY"}.issubset(set(modules))
+        )
+    )
+    if not valid:
+        return False, None
+    d = dict(ref)
+    d.update(hist)
+    d.update(mem)
+    d["module"] = "HISTORY_BUILDUP"
+    d["priority"] = 36
+    d["score"] = max(ref.get("score", 0), int(points))
+    d["rs"] = rs
+    d["price"] = ref.get("price", hist.get("history_first_price", 0))
+    d["reasons"] = ["Radar hafizasi gucleniyor", "Son 1 saatte para/radar birikimi var"]
+    return True, d
 
 def early_radar(symbol, rs):
     df1h = fetch_df(symbol, "1h", 120)
@@ -1449,6 +1768,39 @@ MACD Toparlanma: {"VAR" if d.get("macd_turn") else "YOK"}
 """
         decision = "15m alt Bollinger igne + bant icine donus. Direkt long degil; 5m/15m retest takip."
 
+    elif module == "TREND_BUILDUP":
+        title = "SESSIZ TREND BUILDUP"
+        body = f"""
+6s Yukselis: %{d.get('price_change_6h', 0):.2f}
+12s Yukselis: %{d.get('price_change_12h', 0):.2f}
+24s Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
+Higher Low: {d.get('higher_low_count', 0)}
+Higher High: {d.get('higher_high_count', 0)}
+EMA21 Ustu Mum: {d.get('close_above_ema21_count', 0)}/12
+OBV Birikim: {"VAR" if d.get("obv_up") else "YOK"}
+MACD Toparlanma: {"VAR" if d.get("macd_turn") else "YOK"}
+"""
+        decision = "Sessiz trend radari. Ana kanal izleme mesajidir. AL icin ELITE AL ONAY beklenir."
+
+    elif module == "HISTORY_BUILDUP":
+        title = "HISTORY BUILDUP"
+        body = f"""
+Radar Hafiza Puani: {d.get('history_points', 0)}
+Radar Hafiza Modulleri: {d.get('history_text', 'YOK')}
+Hafiza Suresi: {d.get('history_age_min', 0):.1f} dk
+Ilk Hafiza Fiyati: {d.get('history_first_price', 0):.8f}
+Hafizadan Sonra: %{d.get('history_price_gain', 0):.2f}
+Max Para Etkisi: {d.get('history_money_max', 0):.2f}x
+Max Hacim Gucu: {d.get('history_power_max', 0):.2f}
+Money Memory Bonus: {"VAR" if d.get("money_memory_bonus") else "YOK"}
+Para Hafiza 60dk: {int(d.get('money_mem_60m', 0))} USDT
+Para Hafiza 30dk: {int(d.get('money_mem_30m', 0))} USDT
+Para Hafiza 15dk: {int(d.get('money_mem_15m', 0))} USDT
+Para Dalga Sayisi: {d.get('money_wave_count', 0)}
+Toplam Market Etki 60dk: %{d.get('money_market_60m', 0):.3f}
+"""
+        decision = "Radar hafizasi ve para hafizasi guclendi. AL icin Elite kapisi beklenir."
+
     else:
         title = "EARLY RADAR"
         body = f"""
@@ -1553,6 +1905,8 @@ def radar_combo_score(best, support_modules=None):
         "DIP": 2,
         "EARLY": 1,
         "MOMENTUM": 0,
+        "TREND_BUILDUP": 2,
+        "HISTORY_BUILDUP": 3,
     }
     return sum(weights.get(m, 0) for m in modules), len(set(modules))
 
@@ -1599,6 +1953,8 @@ def elite_score_signal(d, support_modules=None):
     elif module == "SWEEP": score += 22
     elif module == "DIP": score += 14
     elif module == "MONEY": score += 8
+    elif module == "TREND_BUILDUP": score += 18
+    elif module == "HISTORY_BUILDUP": score += 24
     elif module == "MOMENTUM": score -= 10
     elif module == "EARLY": score += 5
 
@@ -1608,6 +1964,8 @@ def elite_score_signal(d, support_modules=None):
     if "SWEEP" in support_modules: score += 12
     if "DIP" in support_modules: score += 8
     if "MOMENTUM" in support_modules: score -= 4
+    if "TREND_BUILDUP" in support_modules: score += 10
+    if "HISTORY_BUILDUP" in support_modules: score += 12
 
     if combo_score >= 5: score += 12
     elif combo_score >= 4: score += 8
@@ -1620,6 +1978,13 @@ def elite_score_signal(d, support_modules=None):
 
     if power_growth >= 1.5: score += 8
     elif power_growth >= 1.2: score += 5
+
+    if d.get("money_memory_bonus"):
+        score += 12
+    if d.get("money_wave_count", 0) >= 3:
+        score += 5
+    if d.get("history_points", 0) >= 18:
+        score += 8
 
     if 45 <= rsi_value <= 68: score += 8
     elif rsi_value >= 76: score -= 18
@@ -1642,8 +2007,11 @@ def is_elite_al_candidate(best, support_modules=None):
     if module == "MOMENTUM":
         return False, "MOMENTUM_AL_DEGIL"
 
+    money_memory_ok = bool(best.get("money_memory_bonus"))
+    history_ok = best.get("history_points", 0) >= 16
     if best.get("money_impact", 0) < 1.45 or best.get("volume_power", 0) < 2.8:
-        return False, "PARA_ZAYIF"
+        if not (money_memory_ok or history_ok or module == "TREND_BUILDUP"):
+            return False, "PARA_ZAYIF"
 
     if not market_impact_ok(best):
         return False, "MARKET_ETKI_ZAYIF"
@@ -1661,6 +2029,21 @@ def is_elite_al_candidate(best, support_modules=None):
 
     if module == "DIP" and combo_score >= 4 and best.get("lower_wick", 0) >= 0.50:
         return True, "DIP_ONAY"
+
+    if module == "TREND_BUILDUP" and (
+        radar_count >= 2
+        or money_memory_ok
+        or (best.get("higher_low_count", 0) >= 3 and best.get("obv_up") and best.get("macd_turn"))
+    ):
+        return True, "SESSIZ_TREND_ONAY"
+
+    if module == "HISTORY_BUILDUP" and (
+        history_ok
+        and best.get("history_age_min", 0) >= 25
+        and best.get("history_price_gain", 0) <= 8
+        and (radar_count >= 2 or money_memory_ok)
+    ):
+        return True, "HISTORY_BUILDUP_ONAY"
 
     return False, "RADAR_KOMBINASYON_YETERSIZ"
 
@@ -1687,6 +2070,33 @@ Sure: {d.get('age_min', 0):.1f} dk
 15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
 Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
 Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
+"""
+    elif module == "TREND_BUILDUP":
+        extra = f"""
+6s Yukselis: %{d.get('price_change_6h', 0):.2f}
+12s Yukselis: %{d.get('price_change_12h', 0):.2f}
+24s Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
+Higher Low: {d.get('higher_low_count', 0)}
+Higher High: {d.get('higher_high_count', 0)}
+EMA21 Ustu Mum: {d.get('close_above_ema21_count', 0)}/12
+OBV Birikim: {"VAR" if d.get("obv_up") else "YOK"}
+MACD Toparlanma: {"VAR" if d.get("macd_turn") else "YOK"}
+"""
+    elif module == "HISTORY_BUILDUP":
+        extra = f"""
+Radar Hafiza Puani: {d.get('history_points', 0)}
+Radar Hafiza Modulleri: {d.get('history_text', 'YOK')}
+Hafiza Suresi: {d.get('history_age_min', 0):.1f} dk
+Ilk Hafiza Fiyati: {d.get('history_first_price', 0):.8f}
+Hafizadan Sonra: %{d.get('history_price_gain', 0):.2f}
+Max Para Etkisi: {d.get('history_money_max', 0):.2f}x
+Max Hacim Gucu: {d.get('history_power_max', 0):.2f}
+Money Memory Bonus: {"VAR" if d.get("money_memory_bonus") else "YOK"}
+Para Hafiza 60dk: {int(d.get('money_mem_60m', 0))} USDT
+Para Hafiza 30dk: {int(d.get('money_mem_30m', 0))} USDT
+Para Hafiza 15dk: {int(d.get('money_mem_15m', 0))} USDT
+Para Dalga Sayisi: {d.get('money_wave_count', 0)}
+Toplam Market Etki 60dk: %{d.get('money_market_60m', 0):.3f}
 """
 
     return f"""
@@ -1768,6 +2178,8 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         "DIP": (sent_dip, COOLDOWN_DIP),
         "SWEEP": (sent_sweep_watch, COOLDOWN_SWEEP_WATCH),
         "EARLY": (sent_early, COOLDOWN_EARLY),
+        "TREND_BUILDUP": (sent_trend_buildup, COOLDOWN_TREND_BUILDUP),
+        "HISTORY_BUILDUP": (sent_history_buildup, COOLDOWN_HISTORY_BUILDUP),
     }
 
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
@@ -1802,48 +2214,74 @@ def analyze(item, btc_ok, btc_status):
         early_ok, early_data = early_radar(symbol, rs)
         if early_data:
             early_data = attach_market_impact(early_data, item)
-
-        # EARLY mesajÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± gelmese bile radar datasÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â± oluÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸tuysa MoneyState baÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸lasÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±n.
-        if early_data:
             update_money_state(symbol, early_data, "RADAR_DATA")
+            update_money_memory(symbol, early_data)
 
         money_ok, money_data = money_continue_signal(symbol, early_data)
         if money_data:
             money_data = attach_market_impact(money_data, item)
+            update_money_memory(symbol, money_data)
 
         momentum_ok, momentum_data = momentum_continue_signal(symbol, early_data)
         if momentum_data:
             momentum_data = attach_market_impact(momentum_data, item)
+            update_money_memory(symbol, momentum_data)
 
         safe_ok, safe_data = safe_long(symbol, rs, btc_ok, funding)
         if safe_data:
             safe_data = attach_market_impact(safe_data, item)
+            update_money_memory(symbol, safe_data)
 
         dip_ok, dip_data = big_dip_radar(symbol, rs)
         if dip_data:
             dip_data = attach_market_impact(dip_data, item)
+            update_money_memory(symbol, dip_data)
 
         sweep_ok, sweep_data = liquidity_sweep_watch(symbol, rs)
         if sweep_data:
             sweep_data = attach_market_impact(sweep_data, item)
+            update_money_memory(symbol, sweep_data)
+
+        trend_ok, trend_data = trend_buildup_signal(symbol, rs)
+        if trend_data:
+            trend_data = attach_market_impact(trend_data, item)
+            update_money_memory(symbol, trend_data)
+
+        valid_for_history = []
+        for ok_flag, data in [
+            (early_ok, early_data),
+            (money_ok, money_data),
+            (momentum_ok, momentum_data),
+            (safe_ok, safe_data),
+            (dip_ok, dip_data),
+            (sweep_ok, sweep_data),
+            (trend_ok, trend_data),
+        ]:
+            if ok_flag and data:
+                valid_for_history.append(data)
+
+        record_radar_history(symbol, valid_for_history)
+        history_ok, history_data = build_history_signal(symbol, rs, valid_for_history)
+        if history_data:
+            history_data = attach_market_impact(history_data, item)
+            history_data.update(money_memory_summary(symbol))
 
         if early_ok:
             signals.append(early_data)
-
         if money_ok:
             signals.append(money_data)
-
         if momentum_ok:
             signals.append(momentum_data)
-
         if safe_ok:
             signals.append(safe_data)
-
         if dip_ok:
             signals.append(dip_data)
-
         if sweep_ok:
             signals.append(sweep_data)
+        if trend_ok:
+            signals.append(trend_data)
+        if history_ok:
+            signals.append(history_data)
 
         if signals:
             sent = send_selected_signal(symbol, signals, funding, btc_status)
@@ -1861,6 +2299,8 @@ def analyze(item, btc_ok, btc_status):
                 "Safe:", safe_ok,
                 "Dip:", dip_ok,
                 "Sweep:", sweep_ok,
+                "Trend:", trend_ok,
+                "History:", history_ok,
                 "MoneyState:", "VAR" if symbol in money_state else "YOK",
                 "IC FILTRE",
                 flush=True
@@ -1881,6 +2321,8 @@ def run_bot():
             print("BTC:", btc_status, flush=True)
 
             cleanup_money_state()
+            cleanup_radar_history()
+            cleanup_money_memory()
 
             universe = build_universe()
             print("Taranacak coin:", len(universe), "MoneyState:", len(money_state), flush=True)
@@ -1900,7 +2342,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES RADAR MANAGER Bot Aktif", 200
+    return "BINANCE FUTURES V5 Bot Aktif", 200
 
 
 if __name__ == "__main__":
