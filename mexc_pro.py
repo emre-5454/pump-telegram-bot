@@ -15,9 +15,9 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V15"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V18"
 
-MAX_SYMBOLS = 250
+MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
 MIN_UNIVERSE_VOLATILITY = 0.8
 SLEEP_SECONDS = 120
@@ -46,8 +46,44 @@ MIN_EARLY_RS = 70
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
-MEXC_ELITE_MIN_SCORE = 92
+MEXC_ELITE_MIN_SCORE = 94
 MEXC_ELITE_COOLDOWN = 120 * 60
+
+# HISTORY_BUILDUP kalite filtresi: 100+ Elite yagmurunu azaltmak icin.
+HISTORY_BUILDUP_MIN_POINTS = 15
+HISTORY_BUILDUP_MIN_AGE_MIN = 30
+HISTORY_BUILDUP_MAX_GAIN = 6.0
+HISTORY_BUILDUP_MAX_RSI = 70
+HISTORY_BUILDUP_MIN_UNIQUE_RADARS = 3
+HISTORY_BUILDUP_MIN_MARKET_IMPACT = 1.5
+HISTORY_BUILDUP_MIN_VOLUME_POWER = 6.0
+HISTORY_BUILDUP_WEAK_MARKET_IMPACT = 1.0
+HISTORY_BUILDUP_WEAK_VOLUME_POWER = 4.0
+
+# VELVET tipi uzun sureli sessiz birikim icin ozel terfi.
+# Para gucu cok patlamasa bile 2-3 saatlik hafiza + yuksek RS + dusuk FOMO varsa Elite kapisina yaklastirir.
+HISTORY_LONG_MEMORY_MIN_POINTS = 15
+HISTORY_LONG_MEMORY_MIN_AGE_MIN = 120
+HISTORY_LONG_MEMORY_MAX_GAIN = 5.0
+HISTORY_LONG_MEMORY_MIN_RS = 85
+HISTORY_LONG_MEMORY_MAX_RSI = 68
+HISTORY_LONG_MEMORY_MIN_POWER = 2.5
+HISTORY_LONG_MEMORY_MIN_MARKET = 0.25
+
+# MONEY MEMORY / PARA HAFIZASI
+# Amaç: VELVET / BSB / SPACE / BR gibi tek mumda degil, parca parca para toplayip giden coinleri yakalamak.
+MONEY_MEMORY_EXPIRE_SECONDS = 60 * 60
+MONEY_MEMORY_BUCKET_SECONDS = 5 * 60
+MONEY_MEMORY_MIN_EVENT_USDT = 8_000
+MONEY_MEMORY_MIN_EVENT_MARKET = 0.03
+MONEY_MEMORY_MIN_EVENT_POWER = 1.15
+
+MONEY_MEMORY_MIN_TOTAL_USDT = 120_000
+MONEY_MEMORY_MIN_WAVES = 3
+MONEY_MEMORY_MIN_MARKET_60M = 0.60
+MONEY_MEMORY_MIN_15M_USDT = 20_000
+MONEY_MEMORY_MIN_30M_USDT = 45_000
+MONEY_MEMORY_MAX_GAIN_FROM_FIRST = 9.0
 
 sent_early = {}
 early_daily_counter = {}
@@ -69,6 +105,7 @@ sent_squeeze_explosion = {}
 watchlist = {}
 money_state = {}
 radar_history = {}
+money_memory = {}
 sent_mexc_elite = {}
 
 exchange = ccxt.mexc({
@@ -1888,6 +1925,13 @@ Ilk Hafiza Fiyati: {d.get('history_first_price',0):.8f}
 Hafizadan Sonra: %{d.get('history_price_gain',0):.2f}
 Max Para Etkisi: {d.get('history_money_max',0):.2f}x
 Max Hacim Gucu: {d.get('history_power_max',0):.2f}
+Long Memory Bonus: {'VAR' if d.get('history_long_memory_bonus') else 'YOK'}
+Money Memory Bonus: {'VAR' if d.get('money_memory_bonus') else 'YOK'}
+Para Hafiza 60dk: {int(d.get('money_memory_total_60m',0))} USDT
+Para Hafiza 30dk: {int(d.get('money_memory_total_30m',0))} USDT
+Para Hafiza 15dk: {int(d.get('money_memory_total_15m',0))} USDT
+Para Dalga Sayisi: {d.get('money_memory_waves_60m',0)}
+Toplam Market Etki 60dk: %{d.get('money_memory_market_60m',0):.3f}
 """
     elif module == "HISTORY_BUILDUP":
         extra = f"""
@@ -1898,6 +1942,13 @@ Ilk Hafiza Fiyati: {d.get('history_first_price',0):.8f}
 Hafizadan Sonra: %{d.get('history_price_gain',0):.2f}
 Max Para Etkisi: {d.get('history_money_max',0):.2f}x
 Max Hacim Gucu: {d.get('history_power_max',0):.2f}
+Long Memory Bonus: {'VAR' if d.get('history_long_memory_bonus') else 'YOK'}
+Money Memory Bonus: {'VAR' if d.get('money_memory_bonus') else 'YOK'}
+Para Hafiza 60dk: {int(d.get('money_memory_total_60m',0))} USDT
+Para Hafiza 30dk: {int(d.get('money_memory_total_30m',0))} USDT
+Para Hafiza 15dk: {int(d.get('money_memory_total_15m',0))} USDT
+Para Dalga Sayisi: {d.get('money_memory_waves_60m',0)}
+Toplam Market Etki 60dk: %{d.get('money_memory_market_60m',0):.3f}
 """
     elif module == "TREND_BUILDUP":
         extra = f"""
@@ -1965,6 +2016,181 @@ def cleanup_early_daily_counter():
 
 
 
+
+
+
+# =========================================================
+# MONEY MEMORY / PARA HAFIZASI
+# Son 60 dk parca parca gelen para akisini biriktirir.
+# Bot artik sadece "bu mumda ne kadar para girdi" degil,
+# "son 60 dk toplam ne kadar para birikti" diye de bakar.
+# =========================================================
+
+def cleanup_money_memory():
+    now = time.time()
+    for symbol in list(money_memory.keys()):
+        money_memory[symbol] = [
+            e for e in money_memory[symbol]
+            if now - e.get("time", 0) <= MONEY_MEMORY_EXPIRE_SECONDS
+        ]
+        if not money_memory[symbol]:
+            money_memory.pop(symbol, None)
+
+
+def record_money_memory(symbol, data_list):
+    """
+    Para hafizasi:
+    - Sadece anlamli para izlerini kaydeder.
+    - 5 dk icindeki ayni coin verilerini tek dalga gibi gunceller.
+    - VELVET/BSB/SPACE gibi parca parca para toplayan coinleri yakalamak icindir.
+    """
+    if not data_list:
+        return
+
+    now = time.time()
+    events = money_memory.setdefault(symbol, [])
+
+    for d in data_list:
+        if not d:
+            continue
+
+        usdt = float(d.get("usdt_vol", d.get("signal_usdt_vol", 0)) or 0)
+        market = float(d.get("market_impact_pct", 0) or 0)
+        power = float(d.get("volume_power", 0) or 0)
+        money = float(d.get("money_impact", 0) or 0)
+        price = float(d.get("price", d.get("entry", 0)) or 0)
+        rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+        module = d.get("module", "UNKNOWN")
+
+        meaningful = (
+            usdt >= MONEY_MEMORY_MIN_EVENT_USDT
+            or market >= MONEY_MEMORY_MIN_EVENT_MARKET
+            or power >= MONEY_MEMORY_MIN_EVENT_POWER
+        )
+        if not meaningful or price <= 0:
+            continue
+
+        # 5 dk icinde gelenleri ayni para dalgasi say.
+        same_bucket = None
+        for e in reversed(events):
+            if now - e.get("time", 0) <= MONEY_MEMORY_BUCKET_SECONDS:
+                same_bucket = e
+                break
+
+        if same_bucket:
+            same_bucket["time"] = now
+            same_bucket["usdt"] = max(same_bucket.get("usdt", 0), usdt)
+            same_bucket["market"] = max(same_bucket.get("market", 0), market)
+            same_bucket["power"] = max(same_bucket.get("power", 0), power)
+            same_bucket["money"] = max(same_bucket.get("money", 0), money)
+            same_bucket["price"] = price
+            same_bucket["rsi"] = rsi_value
+            mods = set(same_bucket.get("modules", []))
+            mods.add(module)
+            same_bucket["modules"] = list(mods)
+        else:
+            events.append({
+                "time": now,
+                "usdt": usdt,
+                "market": market,
+                "power": power,
+                "money": money,
+                "price": price,
+                "rsi": rsi_value,
+                "modules": [module],
+            })
+
+    cleanup_money_memory()
+
+
+def money_memory_summary(symbol):
+    cleanup_money_memory()
+    events = sorted(money_memory.get(symbol, []), key=lambda x: x.get("time", 0))
+    now = time.time()
+
+    if not events:
+        return {
+            "money_memory_total_60m": 0,
+            "money_memory_total_30m": 0,
+            "money_memory_total_15m": 0,
+            "money_memory_waves_60m": 0,
+            "money_memory_market_60m": 0,
+            "money_memory_power_max": 0,
+            "money_memory_money_max": 0,
+            "money_memory_age_min": 0,
+            "money_memory_first_price": 0,
+            "money_memory_gain": 0,
+            "money_memory_recent_ok": False,
+            "money_memory_text": "YOK",
+        }
+
+    last60 = [e for e in events if now - e.get("time", 0) <= 60 * 60]
+    last30 = [e for e in events if now - e.get("time", 0) <= 30 * 60]
+    last15 = [e for e in events if now - e.get("time", 0) <= 15 * 60]
+
+    def total_usdt(items):
+        return sum(float(e.get("usdt", 0) or 0) for e in items)
+
+    def total_market(items):
+        return sum(float(e.get("market", 0) or 0) for e in items)
+
+    first_price = next((e.get("price", 0) for e in last60 if e.get("price", 0) > 0), 0)
+    last_price = next((e.get("price", 0) for e in reversed(last60) if e.get("price", 0) > 0), 0)
+    gain = ((last_price - first_price) / first_price * 100) if first_price and last_price else 0
+    age_min = (now - last60[0].get("time", now)) / 60 if last60 else 0
+
+    modules = []
+    for e in last60:
+        for m in e.get("modules", []):
+            if m not in modules:
+                modules.append(m)
+
+    return {
+        "money_memory_total_60m": total_usdt(last60),
+        "money_memory_total_30m": total_usdt(last30),
+        "money_memory_total_15m": total_usdt(last15),
+        "money_memory_waves_60m": len(last60),
+        "money_memory_market_60m": total_market(last60),
+        "money_memory_power_max": max([e.get("power", 0) for e in last60] or [0]),
+        "money_memory_money_max": max([e.get("money", 0) for e in last60] or [0]),
+        "money_memory_age_min": age_min,
+        "money_memory_first_price": first_price,
+        "money_memory_gain": gain,
+        "money_memory_recent_ok": bool(last15 and total_usdt(last15) >= MONEY_MEMORY_MIN_15M_USDT),
+        "money_memory_text": ", ".join(modules) if modules else "YOK",
+    }
+
+
+def money_memory_buildup_ok(mem):
+    """
+    Son 60 dk biriken para gercek mi?
+    Tek mum pump degil; en az 3 dalga + son 15 dk devam + fomo olmayan fiyat ister.
+    """
+    if not mem:
+        return False
+
+    total60 = mem.get("money_memory_total_60m", 0)
+    total30 = mem.get("money_memory_total_30m", 0)
+    total15 = mem.get("money_memory_total_15m", 0)
+    waves = mem.get("money_memory_waves_60m", 0)
+    market60 = mem.get("money_memory_market_60m", 0)
+    gain = mem.get("money_memory_gain", 999)
+
+    enough_total = (
+        total60 >= MONEY_MEMORY_MIN_TOTAL_USDT
+        or market60 >= MONEY_MEMORY_MIN_MARKET_60M
+    )
+    still_flowing = (
+        total15 >= MONEY_MEMORY_MIN_15M_USDT
+        or total30 >= MONEY_MEMORY_MIN_30M_USDT
+    )
+
+    return (
+        enough_total
+        and waves >= MONEY_MEMORY_MIN_WAVES
+        and still_flowing
+        and gain <= MONEY_MEMORY_MAX_GAIN_FROM_FIRST
+    )
 
 
 RADAR_HISTORY_EXPIRE_SECONDS = 4 * 60 * 60
@@ -2052,6 +2278,7 @@ def radar_history_summary(symbol):
             "history_points": 0,
             "history_modules": [],
             "history_event_count": 0,
+            "history_unique_count": 0,
             "history_text": "YOK",
             "history_age_min": 0,
             "history_first_price": 0,
@@ -2114,6 +2341,7 @@ def radar_history_summary(symbol):
         "history_points": max(0, int(points)),
         "history_modules": modules,
         "history_event_count": len(events),
+        "history_unique_count": len(modules),
         "history_text": ", ".join(modules),
         "history_age_min": age_min,
         "history_first_price": first_price,
@@ -2124,6 +2352,104 @@ def radar_history_summary(symbol):
     }
 
 
+
+def history_long_memory_bonus_ok(d):
+    """
+    VELVET tipi sessiz yukselis istisnasi.
+    Normal HISTORY_BUILDUP para filtresi JUP gibi zayiflari elemek icin sert.
+    Ama 2-3 saat hafizada kalan, RS'i cok guclu, RSI sisirmemis ve fazla kacmamis coinlerde
+    hacim gucu orta seviyede olsa bile Elite adayina izin verir.
+    """
+    if not d:
+        return False
+
+    hp = d.get("history_points", 0)
+    age_min = d.get("history_age_min", 0)
+    gain = d.get("history_price_gain", 999)
+    rsi_value = d.get("rsi", d.get("rsi15", 999))
+    rs_value = d.get("rs", 0)
+    modules = set(d.get("history_modules", []) or [])
+
+    market_quality = max(d.get("market_impact_pct", 0), d.get("history_market_max", 0), d.get("money_memory_market_60m", 0))
+    power_quality = max(d.get("volume_power", 0), d.get("history_power_max", 0), d.get("money_memory_power_max", 0))
+    money_quality = max(d.get("money_impact", 0), d.get("history_money_max", 0), d.get("money_memory_money_max", 0))
+    money_mem_ok = money_memory_buildup_ok(d)
+
+    has_trend_story = bool(modules.intersection({"TREND_BUILDUP", "SQUEEZE_EXPLOSION", "WAKEUP"}))
+
+    return (
+        hp >= HISTORY_LONG_MEMORY_MIN_POINTS
+        and age_min >= HISTORY_LONG_MEMORY_MIN_AGE_MIN
+        and gain <= HISTORY_LONG_MEMORY_MAX_GAIN
+        and rs_value >= HISTORY_LONG_MEMORY_MIN_RS
+        and rsi_value <= HISTORY_LONG_MEMORY_MAX_RSI
+        and has_trend_story
+        and money_quality >= 1.25
+        and (
+            power_quality >= HISTORY_LONG_MEMORY_MIN_POWER
+            or market_quality >= HISTORY_LONG_MEMORY_MIN_MARKET
+            or money_mem_ok
+        )
+    )
+
+
+def history_buildup_quality_ok(d):
+    """
+    HISTORY_BUILDUP tek basina Elite olmasin.
+    JUP gibi market etki ve hacim gucu zayif sinyalleri eler.
+    SPX / FLOW gibi gercek para baskisi olanlari birakir.
+    """
+    if not d:
+        return False
+
+    hp = d.get("history_points", 0)
+    age_min = d.get("history_age_min", 0)
+    gain = d.get("history_price_gain", 999)
+    rsi_value = d.get("rsi", d.get("rsi15", 999))
+    unique_radars = len(set(d.get("history_modules", []) or []))
+
+    market_now = d.get("market_impact_pct", 0)
+    power_now = d.get("volume_power", 0)
+    market_max = d.get("history_market_max", 0)
+    power_max = d.get("history_power_max", 0)
+
+    mem_ok = money_memory_buildup_ok(d)
+    market_quality = max(market_now, market_max, d.get("money_memory_market_60m", 0))
+    power_quality = max(power_now, power_max, d.get("money_memory_power_max", 0))
+
+    if hp < HISTORY_BUILDUP_MIN_POINTS:
+        return False
+    if age_min < HISTORY_BUILDUP_MIN_AGE_MIN:
+        return False
+    if gain > HISTORY_BUILDUP_MAX_GAIN:
+        return False
+    if rsi_value > HISTORY_BUILDUP_MAX_RSI:
+        return False
+    if unique_radars < HISTORY_BUILDUP_MIN_UNIQUE_RADARS:
+        return False
+
+    # VELVET/BSB/SPACE tipi: uzun sure hafizada kalan, RS guclu, RSI sisirmemis sessiz trendler.
+    # Para tek mumda patlamasa bile 60 dk para hafizasi gucluyse gecsin.
+    if history_long_memory_bonus_ok(d):
+        d["history_long_memory_bonus"] = True
+        return True
+
+    # Son 60 dk parca parca para birikimi varsa JUP tipi tek zayif mumdan ayir.
+    if mem_ok:
+        d["money_memory_bonus"] = True
+        return True
+
+    # Asil para kapisi: ya coin hacmine gore ciddi etki, ya da gercek hacim gucu.
+    if not (market_quality >= HISTORY_BUILDUP_MIN_MARKET_IMPACT or power_quality >= HISTORY_BUILDUP_MIN_VOLUME_POWER):
+        return False
+
+    # JUP tipi zayif para girisini direkt ele.
+    # Tek basina market etki dusuk diye eleme; hacim gucu de zayifsa ele.
+    if market_quality < HISTORY_BUILDUP_WEAK_MARKET_IMPACT and power_quality < HISTORY_BUILDUP_WEAK_VOLUME_POWER:
+        return False
+
+    return True
+
 def build_history_signal(symbol, current_best):
     """
     Radar gecmisi kendi basina AL demek degil.
@@ -2132,21 +2458,49 @@ def build_history_signal(symbol, current_best):
     if not current_best:
         return None
     hist = radar_history_summary(symbol)
+    mem = money_memory_summary(symbol)
     hp = hist.get("history_points", 0)
     modules = set(hist.get("history_modules", []))
     rsi_value = current_best.get("rsi", current_best.get("rsi15", 0))
 
-    if hp < 10:
+    # HISTORY_BUILDUP artik cok kolay Elite olmamali.
+    # Once temel hafiza yas/gain/rsi/radar sayisi filtresi uygulanir.
+    if hp < HISTORY_BUILDUP_MIN_POINTS:
         return None
-    if hist.get("history_price_gain", 0) > 10:
+    if hist.get("history_age_min", 0) < HISTORY_BUILDUP_MIN_AGE_MIN:
         return None
-    if rsi_value >= 76:
+    if hist.get("history_price_gain", 0) > HISTORY_BUILDUP_MAX_GAIN:
+        return None
+    if rsi_value > HISTORY_BUILDUP_MAX_RSI:
+        return None
+    if len(modules) < HISTORY_BUILDUP_MIN_UNIQUE_RADARS:
         return None
 
     # Uyanis icin en az para/sikisma/trend/donus kanitlarindan biri olmali.
     has_wakeup = bool(modules.intersection({"WAKEUP", "MONEY", "SQUEEZE", "SQUEEZE_EXPLOSION", "TREND_BUILDUP", "EARLY_CONFIRM", "SAFE", "V_DIP_RECOVERY"}))
     if not has_wakeup:
         return None
+
+    # Para kalitesi: JUP gibi zayif HISTORY_BUILDUP'lar burada elenir.
+    current_market = current_best.get("market_impact_pct", 0)
+    current_power = current_best.get("volume_power", 0)
+    history_market = hist.get("history_market_max", 0)
+    history_power = hist.get("history_power_max", 0)
+    market_quality = max(current_market, history_market)
+    power_quality = max(current_power, history_power)
+
+    # Gecici dict ile VELVET tipi uzun hafiza istisnasini kontrol et.
+    tmp = dict(current_best)
+    tmp.update(hist)
+    tmp.update(mem)
+    long_memory_ok = history_long_memory_bonus_ok(tmp)
+    money_memory_ok = money_memory_buildup_ok(mem)
+
+    if not long_memory_ok and not money_memory_ok:
+        if not (market_quality >= HISTORY_BUILDUP_MIN_MARKET_IMPACT or power_quality >= HISTORY_BUILDUP_MIN_VOLUME_POWER):
+            return None
+        if market_quality < HISTORY_BUILDUP_WEAK_MARKET_IMPACT and power_quality < HISTORY_BUILDUP_WEAK_VOLUME_POWER:
+            return None
 
     out = dict(current_best)
     out["module"] = "HISTORY_BUILDUP"
@@ -2156,13 +2510,24 @@ def build_history_signal(symbol, current_best):
     out["history_modules"] = hist.get("history_modules", [])
     out["history_text"] = hist.get("history_text", "YOK")
     out["history_event_count"] = hist.get("history_event_count", 0)
+    out["history_unique_count"] = hist.get("history_unique_count", len(hist.get("history_modules", [])))
     out["history_age_min"] = hist.get("history_age_min", 0)
     out["history_first_price"] = hist.get("history_first_price", 0)
     out["history_price_gain"] = hist.get("history_price_gain", 0)
     out["history_money_max"] = hist.get("history_money_max", 0)
     out["history_power_max"] = hist.get("history_power_max", 0)
     out["history_market_max"] = hist.get("history_market_max", 0)
-    out["reasons"] = ["Radar hafizasi gucleniyor", "Son 4 saatte radar evrimi var", hist.get("history_text", "")]
+    out.update(mem)
+    out["history_quality_market"] = max(out.get("market_impact_pct", 0), out.get("history_market_max", 0), out.get("money_memory_market_60m", 0))
+    out["history_quality_power"] = max(out.get("volume_power", 0), out.get("history_power_max", 0), out.get("money_memory_power_max", 0))
+    out["history_long_memory_bonus"] = bool(long_memory_ok)
+    out["money_memory_bonus"] = bool(money_memory_ok)
+    if long_memory_ok:
+        out["reasons"] = ["Radar hafizasi gucleniyor", "Uzun sureli sessiz birikim", "Long Memory bonus aktif", hist.get("history_text", "")]
+    elif money_memory_ok:
+        out["reasons"] = ["Radar hafizasi gucleniyor", "Son 60 dk para birikimi var", "Money Memory bonus aktif", hist.get("history_text", "")]
+    else:
+        out["reasons"] = ["Radar hafizasi gucleniyor", "Son 4 saatte radar evrimi var", "History para kalite filtresi gecti", hist.get("history_text", "")]
     return out
 
 def radar_strength_points(module, support_modules=None):
@@ -2316,11 +2681,16 @@ def elite_combo_allowed(best, support=None):
 
     history_exception = (
         module == "HISTORY_BUILDUP"
-        and best.get("history_points", 0) >= 14
-        and best.get("history_price_gain", 0) <= 8
-        and money >= 1.25
-        and power >= 2.2
-        and rsi_value <= 74
+        and history_buildup_quality_ok(best)
+        and (
+            (
+                (money >= 1.25 or best.get("history_money_max", 0) >= 1.8)
+                and (power >= 2.2 or best.get("history_power_max", 0) >= HISTORY_BUILDUP_MIN_VOLUME_POWER)
+                and rsi_value <= HISTORY_BUILDUP_MAX_RSI
+            )
+            or history_long_memory_bonus_ok(best)
+            or money_memory_buildup_ok(best)
+        )
     )
     if history_exception:
         return True
@@ -2398,6 +2768,13 @@ Ilk Hafiza Fiyati: {d.get('history_first_price',0):.8f}
 Hafizadan Sonra: %{d.get('history_price_gain',0):.2f}
 Max Para Etkisi: {d.get('history_money_max',0):.2f}x
 Max Hacim Gucu: {d.get('history_power_max',0):.2f}
+Long Memory Bonus: {'VAR' if d.get('history_long_memory_bonus') else 'YOK'}
+Money Memory Bonus: {'VAR' if d.get('money_memory_bonus') else 'YOK'}
+Para Hafiza 60dk: {int(d.get('money_memory_total_60m',0))} USDT
+Para Hafiza 30dk: {int(d.get('money_memory_total_30m',0))} USDT
+Para Hafiza 15dk: {int(d.get('money_memory_total_15m',0))} USDT
+Para Dalga Sayisi: {d.get('money_memory_waves_60m',0)}
+Toplam Market Etki 60dk: %{d.get('money_memory_market_60m',0):.3f}
 """
     elif module == "HISTORY_BUILDUP":
         extra = f"""
@@ -2408,6 +2785,13 @@ Ilk Hafiza Fiyati: {d.get('history_first_price',0):.8f}
 Hafizadan Sonra: %{d.get('history_price_gain',0):.2f}
 Max Para Etkisi: {d.get('history_money_max',0):.2f}x
 Max Hacim Gucu: {d.get('history_power_max',0):.2f}
+Long Memory Bonus: {'VAR' if d.get('history_long_memory_bonus') else 'YOK'}
+Money Memory Bonus: {'VAR' if d.get('money_memory_bonus') else 'YOK'}
+Para Hafiza 60dk: {int(d.get('money_memory_total_60m',0))} USDT
+Para Hafiza 30dk: {int(d.get('money_memory_total_30m',0))} USDT
+Para Hafiza 15dk: {int(d.get('money_memory_total_15m',0))} USDT
+Para Dalga Sayisi: {d.get('money_memory_waves_60m',0)}
+Toplam Market Etki 60dk: %{d.get('money_memory_market_60m',0):.3f}
 """
     elif module == "TREND_BUILDUP":
         extra = f"""
@@ -2777,14 +3161,42 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
 
     if module == "HISTORY_BUILDUP":
         hp = d.get("history_points", 0)
-        if hp >= 18:
-            score += 22
-        elif hp >= 14:
+        market_quality = max(d.get("market_impact_pct", 0), d.get("history_market_max", 0), d.get("money_memory_market_60m", 0))
+        power_quality = max(d.get("volume_power", 0), d.get("history_power_max", 0), d.get("money_memory_power_max", 0))
+        mem_ok = money_memory_buildup_ok(d)
+
+        if hp >= 22:
+            score += 20
+        elif hp >= 18:
             score += 16
-        elif hp >= 12:
+        elif hp >= HISTORY_BUILDUP_MIN_POINTS:
             score += 10
-        if d.get("history_price_gain", 0) > 8:
-            score -= 12
+
+        if history_long_memory_bonus_ok(d):
+            score += 12
+        if mem_ok:
+            score += 14
+
+        # Para gucu olmadan HISTORY_BUILDUP Elite puani sisirmesin.
+        if power_quality >= 8:
+            score += 4
+        elif power_quality >= 4:
+            score += 2
+
+        if market_quality >= 2.0:
+            score += 4
+        elif market_quality >= 1.0:
+            score += 2
+
+        if not history_long_memory_bonus_ok(d):
+            if power_quality < 3:
+                score -= 15
+            if market_quality < 1.0:
+                score -= 10
+        if d.get("history_price_gain", 0) > HISTORY_BUILDUP_MAX_GAIN:
+            score -= 15
+        if not history_buildup_quality_ok(d):
+            score -= 25
 
     return max(0, min(100, int(score)))
 
@@ -2931,14 +3343,20 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         )
 
     if module == "HISTORY_BUILDUP":
+        market_quality = max(market_impact_pct, best.get("history_market_max", 0), best.get("money_memory_market_60m", 0))
+        power_quality = max(power, best.get("history_power_max", 0), best.get("money_memory_power_max", 0))
+        mem_ok = money_memory_buildup_ok(best)
+        normal_history_ok = (
+            history_buildup_quality_ok(best)
+            and (money >= 1.25 or best.get("history_money_max", 0) >= 1.8)
+            and (power >= 2.2 or power_quality >= HISTORY_BUILDUP_MIN_VOLUME_POWER)
+            and (market_quality >= HISTORY_BUILDUP_MIN_MARKET_IMPACT or power_quality >= HISTORY_BUILDUP_MIN_VOLUME_POWER)
+            and rsi_value <= HISTORY_BUILDUP_MAX_RSI
+        )
+        long_memory_ok = history_long_memory_bonus_ok(best)
         return (
-            best.get("history_points", 0) >= 14
-            and best.get("history_price_gain", 0) <= 8
-            and money >= 1.25
-            and power >= 2.2
-            and (market_impact_pct >= 0.05 or usdt_vol >= 75000)
-            and rsi_value <= 74
-            and (best.get("obv_up") or best.get("macd_turn") or best.get("bb_expanding") or "SQUEEZE" in support_set or "TREND_BUILDUP" in support_set)
+            (normal_history_ok or long_memory_ok or mem_ok)
+            and (best.get("obv_up") or best.get("macd_turn") or best.get("bb_expanding") or "SQUEEZE" in support_set or "TREND_BUILDUP" in support_set or "SQUEEZE_EXPLOSION" in support_set or "MONEY" in support_set or long_memory_ok)
         )
 
     if module == "SQUEEZE":
@@ -3040,6 +3458,30 @@ def analyze(item, btc_ok, btc_status):
         for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, squeeze_explosion_data, trend_data, vdip_data, wakeup_data]:
             enrich_market_impact(_d, daily_qv)
 
+        # Para hafizasi: sadece gecerli radarlar degil, anlamli WAKEUP/TREND izleri de para dalgasi olarak kaydedilir.
+        money_seed = []
+        for ok_flag, data_item in [
+            (wakeup_ok, wakeup_data),
+            (early_ok, early_data),
+            (early_confirm_ok, early_confirm_data),
+            (money_ok, money_data),
+            (momentum_ok, momentum_data),
+            (watch_ok, watch_data),
+            (safe_ok, safe_data),
+            (squeeze_ok, squeeze_data),
+            (squeeze_explosion_ok, squeeze_explosion_data),
+            (trend_ok, trend_data),
+            (vdip_ok, vdip_data),
+            (reaction_ok, reaction_data),
+            (strong_wick_ok, strong_wick_data),
+        ]:
+            if ok_flag and data_item:
+                money_seed.append(data_item)
+        if money_seed:
+            record_money_memory(symbol, money_seed)
+        else:
+            cleanup_money_memory()
+
         if early_ok: signals.append(early_data)
         if early_confirm_ok: signals.append(early_confirm_data)
         if money_ok: signals.append(money_data)
@@ -3094,6 +3536,7 @@ def run_bot():
             cleanup_watchlist()
             cleanup_money_state()
             cleanup_radar_history()
+            cleanup_money_memory()
             universe = build_universe()
             print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), flush=True)
             for item in universe:
@@ -3109,7 +3552,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V13 Bot Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V16 Bot Aktif", 200
 
 
 if __name__ == "__main__":
