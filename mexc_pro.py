@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V19"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V20"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -910,6 +910,8 @@ def squeeze_explosion_signal(symbol, rs):
         "box_hours": 8.0,
         "box_range_pct": box_range_pct,
         "breakout_strength": breakout_strength,
+        "upper_wick": float(m15.upper_wick),
+        "body_ratio": float(m15.body_ratio),
         "price_gain_15m": price_gain_15m,
         "price_gain_30m": price_gain_30m,
         "obv_up": obv_up,
@@ -2565,10 +2567,10 @@ def radar_strength_points(module, support_modules=None):
 
 def squeeze_explosion_elite_exception(best):
     """
-    V19 BSB FIX:
-    SQUEEZE_EXPLOSION bazen tek radar olarak gelir ama OBV + ust bant + hacim gucu
-    birlikteyse BSB gibi hareketler Elite kapisindan gecmelidir.
-    Bu kural her squeeze'i degil, gercek para destekli ilk patlamayi terfi eder.
+    V20 BSB / SILVER FIX:
+    SQUEEZE_EXPLOSION tek radar olarak Elite'e gelebilir; ama sadece devam alicisi olan,
+    ust fitili kontrollu, OBV destekli ve RSI sisirmemis kirilimlar gecsin.
+    SILVER gibi ilk patlama sonrasi satis yiyen ust fitilli mumlar burada elenir.
     """
     if not best or best.get("module") != "SQUEEZE_EXPLOSION":
         return False
@@ -2579,34 +2581,41 @@ def squeeze_explosion_elite_exception(best):
     usdt_vol = best.get("usdt_vol", 0)
     market_impact_pct = best.get("market_impact_pct", 0)
     rsi_value = best.get("rsi", best.get("rsi15", 0))
+    upper_wick = best.get("upper_wick", 0.0)
+    body_ratio = best.get("body_ratio", 0.0)
 
     has_break = bool(best.get("range_break") or best.get("upper_break"))
-    has_flow = bool(best.get("obv_up") or best.get("macd_turn"))
+    # SQUEEZE elite icin OBV zorunlu. MACD tek basina yeterli degil.
+    has_flow = bool(best.get("obv_up"))
     not_late = (
-        best.get("price_gain_15m", 0) <= 8
-        and best.get("price_gain_30m", 0) <= 14
+        best.get("price_gain_15m", 0) <= 6.5
+        and best.get("price_gain_30m", 0) <= 12
         and best.get("dist_from_low", 0) <= 12
     )
     enough_money = (
-        (money >= 1.60 and power >= 3.50)
-        or (money >= 1.45 and power >= 3.00 and market_impact_pct >= 1.0)
+        (money >= 1.70 and power >= 3.00)
+        or (money >= 1.55 and power >= 2.70 and market_impact_pct >= 1.0)
     )
     enough_size = (
         usdt_vol >= 50_000
         or market_impact_pct >= 0.08
+    )
+    candle_quality = (
+        upper_wick <= 0.35
+        and body_ratio >= 0.35
     )
 
     return (
         has_break
         and best.get("bb_expanding", False)
         and has_flow
-        and vol_ratio >= 1.60
+        and candle_quality
+        and vol_ratio >= 1.50
         and enough_money
         and enough_size
-        and 45 <= rsi_value <= 76
+        and 45 <= rsi_value <= 68
         and not_late
     )
-
 
 def elite_combo_allowed(best, support=None):
     """
@@ -2702,22 +2711,9 @@ def elite_combo_allowed(best, support=None):
     if v_dip_exception:
         return True
 
-    # Yatay sikisma patlamasi: JELLYJELLY / ASTEROID / BSB tipi ilk kirilim.
-    # V19: range_break olmasa bile ust bant + OBV + hacim gucu varsa tek radar Elite kapisina aday olabilir.
-    squeeze_explosion_exception = (
-        (
-            module == "SQUEEZE_EXPLOSION"
-            and best.get("box_hours", 0) >= 2
-            and (best.get("breakout_strength", 0) >= 1.0 or best.get("upper_break"))
-            and money >= 1.35
-            and power >= 2.5
-            and (best.get("market_impact_pct", 0) >= 0.04 or best.get("usdt_vol", 0) >= 50_000)
-            and rsi_value <= 78
-            and best.get("price_gain_30m", 0) <= 12
-        )
-        or squeeze_explosion_elite_exception(best)
-    )
-    if squeeze_explosion_exception:
+    # Yatay sikisma patlamasi: BSB tipi tek radar ancak kalite filtresinden gecerse Elite olur.
+    # V20: SILVER gibi ust fitilli / OBV zayif / RSI sisik squeeze'ler elensin.
+    if squeeze_explosion_elite_exception(best):
         return True
 
     # Para kalitesi istisnasi: radar sayisi az olsa bile gercek para cok gucluyse Elite kapisina aday.
@@ -2756,12 +2752,65 @@ def mexc_elite_score_signal(d, support_modules=None, btc_status=""):
 
 
 
+
+def mexc_elite_gold_signal(d, support_modules=None):
+    """
+    Ayni Elite kanalinda GOLD etiketi:
+    yeni kanal acmadan, para hafizasi + coklu para dalgasi + radar destegi olanlari ayirir.
+    XPL / JELLYJELLY / ESPORTS tipi sinyaller burada one cikar.
+    """
+    support_modules = support_modules or []
+    module = d.get("module", "UNKNOWN") if d else "UNKNOWN"
+    radar_count = 1 + len(support_modules)
+    money_memory_bonus = bool(d.get("money_memory_bonus") or money_memory_buildup_ok(d))
+    money_wave_count = d.get("money_memory_waves_60m", 0)
+    total_market_impact_60m = d.get("money_memory_market_60m", 0)
+    history_points = d.get("history_points", 0)
+    volume_power = d.get("volume_power", 0)
+    money_impact = d.get("money_impact", 0)
+    rsi_value = d.get("rsi", d.get("rsi15", 100))
+
+    memory_gold = (
+        money_memory_bonus
+        and money_wave_count >= 5
+        and total_market_impact_60m >= 20
+        and radar_count >= 2
+        and rsi_value <= 72
+    )
+
+    strong_money_gold = (
+        radar_count >= 2
+        and money_impact >= 5.0
+        and volume_power >= 20
+        and rsi_value <= 72
+    )
+
+    history_gold = (
+        module == "HISTORY_BUILDUP"
+        and money_memory_bonus
+        and history_points >= 20
+        and money_wave_count >= 4
+        and total_market_impact_60m >= 10
+        and rsi_value <= 70
+    )
+
+    squeeze_gold = (
+        module == "SQUEEZE_EXPLOSION"
+        and squeeze_explosion_elite_exception(d)
+        and radar_count >= 2
+        and (money_wave_count >= 3 or total_market_impact_60m >= 10 or volume_power >= 8)
+    )
+
+    return bool(memory_gold or strong_money_gold or history_gold or squeeze_gold)
+
 def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
     support_text = ", ".join(support_modules) if support_modules else "YOK"
     radar_count = 1 + len(support_modules)
     radar_points = radar_strength_points(module, support_modules)
+    elite_gold = mexc_elite_gold_signal(d, support_modules)
+    title = "🔥 MEXC ELITE GOLD AL ONAY" if elite_gold else "MEXC ELITE AL ONAY"
 
     price = d.get("price", d.get("entry", 0))
     entry = d.get("entry", price)
@@ -2856,7 +2905,7 @@ MACD Toparlanma: {'VAR' if d.get('macd_turn') else 'YOK'}
 """
 
     return f"""
-MEXC ELITE AL ONAY
+{title}
 
 Coin: {symbol}
 Mod: {module}
@@ -2888,6 +2937,7 @@ Ek Gecen Radarlar:
 
 Toplam Radar: {radar_count}
 Radar Kombinasyon Puani: {radar_points}
+Elite Gold: {'VAR' if elite_gold else 'YOK'}
 
 {extra}
 
@@ -3115,9 +3165,12 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     if money_quality_upgrade(d):
         score += 22
 
-    # V19 BSB FIX: guclu SQUEEZE_EXPLOSION tek radar kalsa bile kalite puani alsin.
-    if squeeze_explosion_elite_exception(d):
-        score += 18
+    # V20 BSB/SILVER FIX: kaliteli SQUEEZE_EXPLOSION odullensin, zayif ust fitilli squeeze cezalandirilsin.
+    if module == "SQUEEZE_EXPLOSION":
+        if squeeze_explosion_elite_exception(d):
+            score += 18
+        else:
+            score -= 18
 
     # Erken giris odulu.
     if dist <= 3:
@@ -3426,21 +3479,8 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         )
 
     if module == "SQUEEZE_EXPLOSION":
-        return (
-            squeeze_explosion_elite_exception(best)
-            or (
-                money >= 1.6
-                and power >= 3.5
-                and vol_ratio >= 1.6
-                and usdt_vol >= 50_000
-                and (market_impact_pct >= 0.05 or usdt_vol >= 100_000)
-                and rsi_value <= 76
-                and best.get("price_gain_15m", 0) <= 8
-                and best.get("price_gain_30m", 0) <= 14
-                and (best.get("range_break") or best.get("upper_break"))
-                and (best.get("obv_up") or best.get("macd_turn"))
-            )
-        )
+        # V20: SILVER filtresi. Sadece kaliteli squeeze patlamasi AL kapisindan gecer.
+        return squeeze_explosion_elite_exception(best)
 
     if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
         return (
