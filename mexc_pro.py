@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V18"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V19"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -2562,6 +2562,52 @@ def radar_strength_points(module, support_modules=None):
     return sum(weights.get(m, 0) for m in mods)
 
 
+
+def squeeze_explosion_elite_exception(best):
+    """
+    V19 BSB FIX:
+    SQUEEZE_EXPLOSION bazen tek radar olarak gelir ama OBV + ust bant + hacim gucu
+    birlikteyse BSB gibi hareketler Elite kapisindan gecmelidir.
+    Bu kural her squeeze'i degil, gercek para destekli ilk patlamayi terfi eder.
+    """
+    if not best or best.get("module") != "SQUEEZE_EXPLOSION":
+        return False
+
+    money = best.get("money_impact", 0)
+    power = best.get("volume_power", 0)
+    vol_ratio = best.get("vol_ratio", 0)
+    usdt_vol = best.get("usdt_vol", 0)
+    market_impact_pct = best.get("market_impact_pct", 0)
+    rsi_value = best.get("rsi", best.get("rsi15", 0))
+
+    has_break = bool(best.get("range_break") or best.get("upper_break"))
+    has_flow = bool(best.get("obv_up") or best.get("macd_turn"))
+    not_late = (
+        best.get("price_gain_15m", 0) <= 8
+        and best.get("price_gain_30m", 0) <= 14
+        and best.get("dist_from_low", 0) <= 12
+    )
+    enough_money = (
+        (money >= 1.60 and power >= 3.50)
+        or (money >= 1.45 and power >= 3.00 and market_impact_pct >= 1.0)
+    )
+    enough_size = (
+        usdt_vol >= 50_000
+        or market_impact_pct >= 0.08
+    )
+
+    return (
+        has_break
+        and best.get("bb_expanding", False)
+        and has_flow
+        and vol_ratio >= 1.60
+        and enough_money
+        and enough_size
+        and 45 <= rsi_value <= 76
+        and not_late
+    )
+
+
 def elite_combo_allowed(best, support=None):
     """
     Elite AL kapisi: genel kural 3 radar veya guclu erken istisna.
@@ -2656,16 +2702,20 @@ def elite_combo_allowed(best, support=None):
     if v_dip_exception:
         return True
 
-    # Yatay sikisma patlamasi: JELLYJELLY / ASTEROID tipi ilk kirilim.
+    # Yatay sikisma patlamasi: JELLYJELLY / ASTEROID / BSB tipi ilk kirilim.
+    # V19: range_break olmasa bile ust bant + OBV + hacim gucu varsa tek radar Elite kapisina aday olabilir.
     squeeze_explosion_exception = (
-        module == "SQUEEZE_EXPLOSION"
-        and best.get("box_hours", 0) >= 2
-        and best.get("breakout_strength", 0) >= 1.0
-        and money >= 1.35
-        and power >= 2.5
-        and best.get("market_impact_pct", 0) >= 0.04
-        and rsi_value <= 78
-        and best.get("price_gain_30m", 0) <= 12
+        (
+            module == "SQUEEZE_EXPLOSION"
+            and best.get("box_hours", 0) >= 2
+            and (best.get("breakout_strength", 0) >= 1.0 or best.get("upper_break"))
+            and money >= 1.35
+            and power >= 2.5
+            and (best.get("market_impact_pct", 0) >= 0.04 or best.get("usdt_vol", 0) >= 50_000)
+            and rsi_value <= 78
+            and best.get("price_gain_30m", 0) <= 12
+        )
+        or squeeze_explosion_elite_exception(best)
     )
     if squeeze_explosion_exception:
         return True
@@ -3065,6 +3115,10 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     if money_quality_upgrade(d):
         score += 22
 
+    # V19 BSB FIX: guclu SQUEEZE_EXPLOSION tek radar kalsa bile kalite puani alsin.
+    if squeeze_explosion_elite_exception(d):
+        score += 18
+
     # Erken giris odulu.
     if dist <= 3:
         score += 14
@@ -3369,6 +3423,23 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and dist <= 12
             and rsi_value <= 76
             and (best.get("obv_up") or best.get("macd_turn"))
+        )
+
+    if module == "SQUEEZE_EXPLOSION":
+        return (
+            squeeze_explosion_elite_exception(best)
+            or (
+                money >= 1.6
+                and power >= 3.5
+                and vol_ratio >= 1.6
+                and usdt_vol >= 50_000
+                and (market_impact_pct >= 0.05 or usdt_vol >= 100_000)
+                and rsi_value <= 76
+                and best.get("price_gain_15m", 0) <= 8
+                and best.get("price_gain_30m", 0) <= 14
+                and (best.get("range_break") or best.get("upper_break"))
+                and (best.get("obv_up") or best.get("macd_turn"))
+            )
         )
 
     if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
