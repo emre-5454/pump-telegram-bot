@@ -15,12 +15,20 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V20"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V22"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
 MIN_UNIVERSE_VOLATILITY = 0.8
 SLEEP_SECONDS = 120
+
+# STOCK / tokenized stock ürünlerini tarama dışı bırak.
+# Örnek: ASTSSTOCK/USDT:USDT, TSLAStock benzeri semboller.
+EXCLUDED_SYMBOL_KEYWORDS = ["STOCK"]
+
+def is_excluded_symbol(symbol):
+    s = str(symbol).upper()
+    return any(k in s for k in EXCLUDED_SYMBOL_KEYWORDS)
 
 COOLDOWN_EARLY = 6 * 60 * 60
 EARLY_MAX_PER_SYMBOL_PER_DAY = 1
@@ -84,6 +92,16 @@ MONEY_MEMORY_MIN_MARKET_60M = 0.60
 MONEY_MEMORY_MIN_15M_USDT = 20_000
 MONEY_MEMORY_MIN_30M_USDT = 45_000
 MONEY_MEMORY_MAX_GAIN_FROM_FIRST = 9.0
+
+# V21 COIN HACMINE GORE ELITE KAPISI
+# Amaç: mutlak hacim buyuk gorunse bile, coinin 24s hacmine gore etkisiz kalan sinyalleri azaltmak.
+# Market Etki = sinyal_usdt_hacim / 24s_quote_volume * 100
+MEXC_ELITE_MIN_MARKET_IMPACT = 0.20
+MEXC_ELITE_MIN_HISTORY_MARKET_QUALITY = 1.00
+MEXC_ELITE_MIN_GOLD_MARKET_IMPACT = 1.00
+MEXC_ELITE_STRONG_MEMORY_MARKET_60M = 20.0
+MEXC_ELITE_STRONG_ABS_USDT = 250_000
+MEXC_ELITE_DIP_MIN_MARKET_IMPACT = 0.05
 
 sent_early = {}
 early_daily_counter = {}
@@ -218,6 +236,8 @@ def build_universe():
         tickers = exchange.fetch_tickers(symbols)
         rows = []
         for s in symbols:
+            if is_excluded_symbol(s):
+                continue
             t = tickers.get(s, {})
             qv = t.get("quoteVolume") or 0
             pct = t.get("percentage") or 0
@@ -2770,10 +2790,12 @@ def mexc_elite_gold_signal(d, support_modules=None):
     money_impact = d.get("money_impact", 0)
     rsi_value = d.get("rsi", d.get("rsi15", 100))
 
+    current_market_impact = d.get("market_impact_pct", 0)
+
     memory_gold = (
         money_memory_bonus
         and money_wave_count >= 5
-        and total_market_impact_60m >= 20
+        and total_market_impact_60m >= MEXC_ELITE_STRONG_MEMORY_MARKET_60M
         and radar_count >= 2
         and rsi_value <= 72
     )
@@ -2782,6 +2804,7 @@ def mexc_elite_gold_signal(d, support_modules=None):
         radar_count >= 2
         and money_impact >= 5.0
         and volume_power >= 20
+        and current_market_impact >= MEXC_ELITE_MIN_GOLD_MARKET_IMPACT
         and rsi_value <= 72
     )
 
@@ -2791,6 +2814,7 @@ def mexc_elite_gold_signal(d, support_modules=None):
         and history_points >= 20
         and money_wave_count >= 4
         and total_market_impact_60m >= 10
+        and (current_market_impact >= MEXC_ELITE_MIN_GOLD_MARKET_IMPACT or total_market_impact_60m >= MEXC_ELITE_STRONG_MEMORY_MARKET_60M)
         and rsi_value <= 70
     )
 
@@ -2798,6 +2822,7 @@ def mexc_elite_gold_signal(d, support_modules=None):
         module == "SQUEEZE_EXPLOSION"
         and squeeze_explosion_elite_exception(d)
         and radar_count >= 2
+        and current_market_impact >= MEXC_ELITE_MIN_GOLD_MARKET_IMPACT
         and (money_wave_count >= 3 or total_market_impact_60m >= 10 or volume_power >= 8)
     )
 
@@ -3061,6 +3086,75 @@ def radar_support_score(module, support_modules):
     return score
 
 
+
+def mexc_relative_market_gate_ok(best, support=None):
+    """
+    V21 COIN HACMINE GORE ELITE FILTRESI:
+    Sinyal hacmi coinin kendi 24s hacmine gore anlamli degilse Elite AL sayisini azaltir.
+    Ama BSB/XPL/LIT gibi para hafizasi guclu coinleri kacirmamak icin memory istisnasi vardir.
+    """
+    if not best:
+        return False
+
+    support = support or []
+    module = best.get("module", "UNKNOWN")
+    market_now = float(best.get("market_impact_pct", 0) or 0)
+    market_quality = max(
+        market_now,
+        float(best.get("history_market_max", 0) or 0),
+        float(best.get("money_memory_market_60m", 0) or 0),
+    )
+    usdt_vol = float(best.get("usdt_vol", best.get("signal_usdt_vol", 0)) or 0)
+    money = float(best.get("money_impact", 0) or 0)
+    power = float(best.get("volume_power", 0) or 0)
+    waves = int(best.get("money_memory_waves_60m", 0) or 0)
+    mem_bonus = bool(best.get("money_memory_bonus") or money_memory_buildup_ok(best))
+    long_mem = bool(history_long_memory_bonus_ok(best))
+    total_market_60m = float(best.get("money_memory_market_60m", 0) or 0)
+
+    strong_memory = (
+        mem_bonus
+        and waves >= MONEY_MEMORY_MIN_WAVES
+        and total_market_60m >= MEXC_ELITE_STRONG_MEMORY_MARKET_60M
+    )
+    strong_abs_money = (
+        usdt_vol >= MEXC_ELITE_STRONG_ABS_USDT
+        and money >= 2.0
+        and power >= 5.0
+    )
+
+    # Dip/sweep/V-dip sinyallerinde anlik market etki bazen dusuk kalabilir; yine de minimum etki aransin.
+    if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
+        return (
+            market_now >= MEXC_ELITE_DIP_MIN_MARKET_IMPACT
+            or usdt_vol >= 75_000
+            or strong_memory
+        )
+
+    # HISTORY_BUILDUP icin tek mum degil, 60dk toplam market etkisi ve radar hafizasi dikkate alinir.
+    if module == "HISTORY_BUILDUP":
+        return (
+            market_quality >= MEXC_ELITE_MIN_HISTORY_MARKET_QUALITY
+            or strong_memory
+            or long_mem
+            or strong_abs_money
+        )
+
+    # SQUEEZE_EXPLOSION zaten ayrica kalite filtresinden geciyor; burada coin hacmine gore zayif kalanlari kes.
+    if module == "SQUEEZE_EXPLOSION":
+        return (
+            market_now >= MEXC_ELITE_MIN_MARKET_IMPACT
+            or strong_memory
+            or strong_abs_money
+        )
+
+    # Genel AL kapisi: coin hacmine gore anlamli etki ya da guclu para hafizasi/absolute para lazim.
+    return (
+        market_now >= MEXC_ELITE_MIN_MARKET_IMPACT
+        or strong_memory
+        or strong_abs_money
+    )
+
 def entry_quality_score(d, support_modules=None, btc_status=""):
     """
     Elite artik 'gucu' degil 'giris kalitesini' puanlar.
@@ -3160,6 +3254,18 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         score += 4
     elif market_impact_score <= 15 and usdt_vol < 50000:
         score -= 4
+
+    # V21: Coin hacmine gore etki zayifsa puan sisirmesin.
+    # Bu, hacmi cok buyuk coinlerde kucuk para akisinin 100/100 yapmasini azaltir.
+    market_quality_for_score = max(market_impact_pct, d.get("history_market_max", 0), d.get("money_memory_market_60m", 0))
+    if market_quality_for_score >= 20:
+        score += 8
+    elif market_quality_for_score >= 5:
+        score += 5
+    elif market_quality_for_score >= 1:
+        score += 2
+    elif market_impact_pct < 0.20 and usdt_vol < MEXC_ELITE_STRONG_ABS_USDT:
+        score -= 12
 
     # Para Kalitesi Terfisi: H gibi tek radar ama cok guclu para girisi olanlari odullendir.
     if money_quality_upgrade(d):
@@ -3342,12 +3448,9 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         if fomo > 12:
             return False
 
-    # Coin hacmine gore para etkisi kapisi.
-    # Mutlak hacim yuksek olsa bile, 24s hacmine gore cok zayifsa AL kapisindan gecmesin.
-    if market_impact_pct < 0.05 and usdt_vol < 100000:
-        return False
-
-    if market_impact_pct < 0.03 and module not in ("DIP_SWEEP", "ELITE_WHALE"):
+    # V21 Coin hacmine gore para etkisi kapisi.
+    # Mutlak hacim tek basina yeterli degil; sinyal coinin 24s hacmine gore de anlamli olmali.
+    if not mexc_relative_market_gate_ok(best, support):
         return False
 
     # Elite icin radar kombinasyonu: genel olarak 3 radar veya guclu erken/dip istisnasi gerekir.
