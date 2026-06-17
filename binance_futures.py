@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V5"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V9"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -76,6 +76,12 @@ sent_history_buildup = {}
 money_state = {}
 radar_history = {}
 money_memory = {}
+
+# V8 OI / Open Interest hafizasi
+# Fiyat yukari giderken OI artiyorsa yeni long destegi,
+# fiyat yukari giderken OI dusuyorsa short kapama rallisi olarak yorumlanir.
+OI_CACHE_SECONDS = 90
+oi_cache = {}
 
 exchange = ccxt.binanceusdm({
     "enableRateLimit": True,
@@ -200,6 +206,85 @@ def get_funding(symbol):
     except Exception:
         return {"ok": True, "rate": 0, "status": "VERI YOK"}
 
+
+
+def binance_symbol_id(symbol):
+    """CCXT sembolunu Binance futures API sembolune cevirir. BTC/USDT:USDT -> BTCUSDT"""
+    try:
+        return symbol.split('/')[0].replace(':USDT', '') + 'USDT'
+    except Exception:
+        return str(symbol).replace('/', '').replace(':USDT', '')
+
+
+def fetch_oi_change(symbol, period="15m", limit=6):
+    """Binance Futures openInterestHist verisinden yuzdesel OI degisimi hesaplar."""
+    cache_key = f"{symbol}_{period}_{limit}"
+    now = time.time()
+    cached = oi_cache.get(cache_key)
+    if cached and now - cached.get("time", 0) < OI_CACHE_SECONDS:
+        return cached.get("data")
+
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/futures/data/openInterestHist",
+            params={"symbol": binance_symbol_id(symbol), "period": period, "limit": limit},
+            timeout=10,
+        )
+        data = r.json()
+        if not isinstance(data, list) or len(data) < 2:
+            out = {"ok": False, "change_pct": 0.0, "first_oi": 0.0, "last_oi": 0.0}
+        else:
+            first = float(data[0].get("sumOpenInterest", 0) or 0)
+            last = float(data[-1].get("sumOpenInterest", 0) or 0)
+            change = ((last - first) / first * 100) if first > 0 else 0.0
+            out = {"ok": True, "change_pct": change, "first_oi": first, "last_oi": last}
+    except Exception as e:
+        print("OI veri hata:", symbol, period, e, flush=True)
+        out = {"ok": False, "change_pct": 0.0, "first_oi": 0.0, "last_oi": 0.0}
+
+    oi_cache[cache_key] = {"time": now, "data": out}
+    return out
+
+
+def get_oi_context(symbol, price_gain_hint=0.0):
+    """15m ve 1h OI degisiminden hareketin long mu short kapama mi oldugunu yorumlar."""
+    oi15 = fetch_oi_change(symbol, "15m", 6)
+    oi1h = fetch_oi_change(symbol, "1h", 6)
+    oi15_pct = oi15.get("change_pct", 0.0)
+    oi1h_pct = oi1h.get("change_pct", 0.0)
+
+    long_supported = (oi15_pct >= 2.0 or oi1h_pct >= 4.0)
+    strong_long_supported = (oi15_pct >= 5.0 or oi1h_pct >= 8.0)
+    short_cover = (price_gain_hint >= 0.4 and oi15_pct <= -1.5 and oi1h_pct <= 0.5)
+    oi_weak = (oi15_pct < 0 and oi1h_pct < 1.0)
+
+    if strong_long_supported:
+        status = "GUCLU LONG DESTEKLI"
+    elif long_supported:
+        status = "LONG DESTEKLI"
+    elif short_cover:
+        status = "SHORT KAPAMA RALLISI"
+    elif oi_weak:
+        status = "OI ZAYIF"
+    else:
+        status = "OI NOTR"
+
+    return {
+        "oi_ok": bool(oi15.get("ok") or oi1h.get("ok")),
+        "oi_15m_pct": oi15_pct,
+        "oi_1h_pct": oi1h_pct,
+        "oi_status": status,
+        "oi_long_supported": long_supported,
+        "oi_strong_long_supported": strong_long_supported,
+        "oi_short_cover": short_cover,
+        "oi_weak": oi_weak,
+    }
+
+
+def attach_oi_context(d, oi_context):
+    if d and oi_context:
+        d.update(oi_context)
+    return d
 
 def btc_filter():
     df = fetch_df("BTC/USDT:USDT", "15m", 120)
@@ -1890,8 +1975,10 @@ def select_best_signal(signals):
 
 sent_elite = {}
 
-ELITE_MIN_SCORE = 88
-ELITE_COOLDOWN = 120 * 60
+ELITE_MIN_SCORE = 92
+ELITE_COOLDOWN = 6 * 60 * 60
+ELITE_DAILY_LIMIT = 25
+elite_daily_counter = {}
 
 
 def radar_combo_score(best, support_modules=None):
@@ -1912,6 +1999,11 @@ def radar_combo_score(best, support_modules=None):
 
 
 def elite_score_signal(d, support_modules=None):
+    """
+    V8 Elite puanlama + OI destegi:
+    Amaç her sinyali 100 yapmak değil; SPX/BIO gibi saldırı sinyali ile
+    LUMIA/EDEN tipi sınır sinyali ayırmak.
+    """
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
 
@@ -1924,76 +2016,200 @@ def elite_score_signal(d, support_modules=None):
     power_growth = d.get("power_growth", 1)
     rsi_value = d.get("rsi", d.get("rsi15", 0))
     combo_score, radar_count = radar_combo_score(d, support_modules)
-    market_impact_score = d.get("market_impact_score", 0)
     market_impact_pct = d.get("market_impact_pct", 0)
 
-    if market_impact_score >= 15:
-        score += 14
-    elif market_impact_score >= 10:
-        score += 10
-    elif market_impact_score >= 6:
-        score += 6
-    elif market_impact_score >= 3:
-        score += 3
-
-    if rs >= 85: score += 12
-    elif rs >= 75: score += 8
-    elif rs >= 65: score += 5
-
-    if money_impact >= 2.2: score += 16
-    elif money_impact >= 1.8: score += 12
-    elif money_impact >= 1.45: score += 8
-
-    if volume_power >= 5: score += 16
-    elif volume_power >= 3.5: score += 12
-    elif volume_power >= 2.8: score += 8
-
-    if module == "SAFE": score += 28
-    elif module == "MONEY_ACCEL": score += 26
-    elif module == "SWEEP": score += 22
-    elif module == "DIP": score += 14
-    elif module == "MONEY": score += 8
-    elif module == "TREND_BUILDUP": score += 18
-    elif module == "HISTORY_BUILDUP": score += 24
-    elif module == "MOMENTUM": score -= 10
-    elif module == "EARLY": score += 5
-
-    if "SAFE" in support_modules: score += 18
-    if "MONEY_ACCEL" in support_modules or "MONEY" in support_modules: score += 12
-    if "EARLY" in support_modules: score += 6
-    if "SWEEP" in support_modules: score += 12
-    if "DIP" in support_modules: score += 8
-    if "MOMENTUM" in support_modules: score -= 4
-    if "TREND_BUILDUP" in support_modules: score += 10
-    if "HISTORY_BUILDUP" in support_modules: score += 12
-
-    if combo_score >= 5: score += 12
-    elif combo_score >= 4: score += 8
-
-    if 0.6 <= price_gain <= 4.5: score += 10
-    elif price_gain > 6: score -= 18
-
-    if money_growth >= 1.35: score += 8
-    elif money_growth >= 1.15: score += 5
-
-    if power_growth >= 1.5: score += 8
-    elif power_growth >= 1.2: score += 5
-
-    if d.get("money_memory_bonus"):
+    # OI destegi: para/hacim long tarafindan mi geliyor ayirmaya calisir.
+    if d.get("oi_strong_long_supported"):
         score += 12
-    if d.get("money_wave_count", 0) >= 3:
+    elif d.get("oi_long_supported"):
+        score += 7
+    elif d.get("oi_short_cover"):
+        score -= 10
+    elif d.get("oi_weak"):
+        score -= 5
+
+    # Market etkisi: yüzdelik değer doğrudan puanlanır.
+    if market_impact_pct >= 10:
+        score += 18
+    elif market_impact_pct >= 3:
+        score += 15
+    elif market_impact_pct >= 1:
+        score += 11
+    elif market_impact_pct >= 0.35:
+        score += 7
+    elif market_impact_pct >= 0.10:
+        score += 4
+
+    # RS iyi ama tek başına karar verdirmez.
+    if rs >= 85:
+        score += 10
+    elif rs >= 75:
+        score += 7
+    elif rs >= 65:
+        score += 4
+
+    # Anlık para kalitesi.
+    if money_impact >= 10:
+        score += 22
+    elif money_impact >= 5:
+        score += 19
+    elif money_impact >= 2.5:
+        score += 16
+    elif money_impact >= 2.0:
+        score += 13
+    elif money_impact >= 1.7:
+        score += 9
+    elif money_impact >= 1.45:
         score += 5
-    if d.get("history_points", 0) >= 18:
+
+    if volume_power >= 100:
+        score += 24
+    elif volume_power >= 50:
+        score += 21
+    elif volume_power >= 15:
+        score += 18
+    elif volume_power >= 8:
+        score += 15
+    elif volume_power >= 5:
+        score += 12
+    elif volume_power >= 3.5:
+        score += 8
+    elif volume_power >= 2.8:
+        score += 4
+
+    # Mod katsayısı: SAFE en güçlü; MONEY_ACCEL tek başına 100 yapmasın.
+    if module == "SAFE":
+        score += 22
+    elif module == "MONEY_ACCEL":
+        score += 14
+    elif module == "SWEEP":
+        score += 17
+    elif module == "DIP":
+        score += 11
+    elif module == "MONEY":
+        score += 7
+    elif module == "TREND_BUILDUP":
+        score += 15
+    elif module == "HISTORY_BUILDUP":
+        score += 17
+    elif module == "MOMENTUM":
+        score -= 12
+    elif module == "EARLY":
+        score += 4
+
+    # Destek radarlar.
+    if "SAFE" in support_modules:
+        score += 12
+    if "MONEY_ACCEL" in support_modules or "MONEY" in support_modules:
+        score += 8
+    if "EARLY" in support_modules:
+        score += 4
+    if "SWEEP" in support_modules:
+        score += 8
+    if "DIP" in support_modules:
+        score += 5
+    if "MOMENTUM" in support_modules:
+        score -= 3
+    if "TREND_BUILDUP" in support_modules:
+        score += 7
+    if "HISTORY_BUILDUP" in support_modules:
         score += 8
 
-    if 45 <= rsi_value <= 68: score += 8
-    elif rsi_value >= 76: score -= 18
-    elif rsi_value >= 72: score -= 8
+    if combo_score >= 7:
+        score += 12
+    elif combo_score >= 5:
+        score += 9
+    elif combo_score >= 4:
+        score += 5
+
+    # Fiyat henüz kaçmadıysa bonus, kaçtıysa ceza.
+    if 0.4 <= price_gain <= 3.5:
+        score += 9
+    elif 3.5 < price_gain <= 5.0:
+        score += 4
+    elif price_gain > 6:
+        score -= 20
+
+    # Büyüme var ama mutlak kalite yoksa tek başına yeterli olmasın.
+    if money_growth >= 3.0:
+        score += 7
+    elif money_growth >= 1.35:
+        score += 5
+    elif money_growth >= 1.15:
+        score += 3
+
+    if power_growth >= 5.0:
+        score += 7
+    elif power_growth >= 1.5:
+        score += 5
+    elif power_growth >= 1.2:
+        score += 3
+
+    # Para hafızası / radar hafızası: yavaş yükselenleri korur.
+    if d.get("money_memory_bonus"):
+        score += 10
+    if d.get("money_wave_count", 0) >= 5:
+        score += 7
+    elif d.get("money_wave_count", 0) >= 3:
+        score += 4
+    if d.get("money_mem_60m", 0) >= 1_000_000:
+        score += 8
+    elif d.get("money_mem_60m", 0) >= 500_000:
+        score += 6
+    elif d.get("money_mem_60m", 0) >= 250_000:
+        score += 3
+    if d.get("history_points", 0) >= 40:
+        score += 10
+    elif d.get("history_points", 0) >= 25:
+        score += 7
+    elif d.get("history_points", 0) >= 18:
+        score += 4
+
+    # RSI: sağlıklı bölge bonus, aşırı bölge ceza.
+    if 45 <= rsi_value <= 66:
+        score += 8
+    elif 35 <= rsi_value < 45:
+        score += 3
+    elif 66 < rsi_value <= 70:
+        score += 2
+    elif rsi_value >= 76:
+        score -= 20
+    elif rsi_value >= 72:
+        score -= 10
+
+    # MONEY_ACCEL için ekstra denge: mutlak para yoksa büyüme puanı fazla şişirmesin.
+    if module == "MONEY_ACCEL":
+        if money_impact < 2.0 and volume_power < 4.0 and market_impact_pct < 1.0:
+            score -= 14
+        if money_impact < 1.8 and volume_power < 3.5:
+            score -= 10
+
+    # V9: HISTORY_BUILDUP tek dalga para ile 100/100 olmasın.
+    # MAGMA gibi gidenler Elite kalabilir; fakat GOLD/100 kalitesi için para dalgası ve hafıza şartı aranır.
+    if module == "HISTORY_BUILDUP":
+        if not d.get("money_memory_bonus"):
+            score -= 10
+        if d.get("money_wave_count", 0) < 3:
+            score -= 10
+        if d.get("money_wave_count", 0) <= 1 and not d.get("money_memory_bonus"):
+            score -= 8
+        if d.get("history_points", 0) < 20 and not d.get("money_memory_bonus"):
+            score -= 6
+
+    # V9: OI karar ağırlığı artırıldı.
+    if d.get("oi_strong_long_supported"):
+        score += 3
+    elif d.get("oi_long_supported"):
+        score += 2
+    elif d.get("oi_short_cover"):
+        score -= 5
+    elif d.get("oi_weak"):
+        score -= 3
 
     if is_fomo_block(d):
         score -= 30
 
-    return max(0, min(100, score))
+    return max(0, min(100, int(round(score))))
 
 
 def is_elite_al_candidate(best, support_modules=None):
@@ -2020,9 +2236,49 @@ def is_elite_al_candidate(best, support_modules=None):
     if rsi_value > 72:
         return False, "RSI_YUKSEK"
 
+    # OI kontrolu: Veri varsa ve hareket short kapama gibi duruyorsa,
+    # sadece cok guclu para/SAFE yapisi gecsin.
+    if best.get("oi_short_cover"):
+        strong_exception = (
+            module == "SAFE"
+            or best.get("money_impact", 0) >= 8
+            or best.get("volume_power", 0) >= 50
+            or best.get("market_impact_pct", 0) >= 10
+        )
+        if not strong_exception:
+            return False, "OI_SHORT_KAPAMA_RISKI"
+
     # Binance karar botu: en az guclu bir ana radar veya 2 destek ister.
-    if module in ("SAFE", "MONEY_ACCEL") and combo_score >= 3:
-        return True, "SAFE_MONEY_ONAY"
+    if module == "SAFE" and combo_score >= 3:
+        return True, "SAFE_ONAY"
+
+    # V6 MONEY_ACCEL kalite kapisi:
+    # SPX gibi canavar para patlamasini kacirmasin,
+    # LUMIA gibi sadece buyume orani yuksek ama mutlak para zayif olanlari elesin.
+    if module == "MONEY_ACCEL" and combo_score >= 3:
+        monster_money = (
+            best.get("money_impact", 0) >= 8.0
+            or best.get("volume_power", 0) >= 50.0
+            or best.get("market_impact_pct", 0) >= 10.0
+        )
+        normal_money_quality = (
+            best.get("money_impact", 0) >= 2.5
+            or best.get("volume_power", 0) >= 5.0
+            or (
+                best.get("market_impact_pct", 0) >= 1.0
+                and best.get("money_impact", 0) >= 1.8
+                and best.get("volume_power", 0) >= 3.5
+            )
+        )
+        supported_money_quality = (
+            (radar_count >= 2 or money_memory_ok or history_ok)
+            and best.get("money_impact", 0) >= 1.8
+            and best.get("volume_power", 0) >= 3.5
+            and best.get("market_impact_pct", 0) >= 0.7
+        )
+        if monster_money or normal_money_quality or supported_money_quality:
+            return True, "MONEY_ACCEL_ONAY"
+        return False, "MONEY_ACCEL_PARA_KALITESI_ZAYIF"
 
     if module == "SWEEP" and combo_score >= 4 and best.get("lower_wick", 0) >= 0.45:
         return True, "SWEEP_ONAY"
@@ -2048,12 +2304,68 @@ def is_elite_al_candidate(best, support_modules=None):
     return False, "RADAR_KOMBINASYON_YETERSIZ"
 
 
+
+def is_elite_gold_signal(d, elite_score=0, support_modules=None):
+    """
+    V9 ELITE GOLD etiketi:
+    Yeni kanal acmadan, Elite mesajinin icinde en guclu adaylari isaretler.
+    Amaç 150 Elite icinden SPX/HIGH/BIO/MAGMA tipi 10-20 sinyali ayirmak.
+    """
+    support_modules = support_modules or []
+    combo_score, radar_count = radar_combo_score(d, support_modules)
+    module = d.get("module", "UNKNOWN")
+
+    money_memory_bonus = bool(d.get("money_memory_bonus"))
+    history_points = d.get("history_points", 0)
+    waves = d.get("money_wave_count", 0)
+    market_score = d.get("market_impact_score", 0)
+    market_pct = d.get("market_impact_pct", 0)
+    money_impact = d.get("money_impact", 0)
+    volume_power = d.get("volume_power", 0)
+    rsi_value = d.get("rsi", d.get("rsi15", 0))
+
+    oi_long = bool(d.get("oi_long_supported") or d.get("oi_strong_long_supported"))
+    oi_strong = bool(d.get("oi_strong_long_supported"))
+    oi_bad = bool(d.get("oi_short_cover") or d.get("oi_weak"))
+
+    if is_fomo_block(d) or oi_bad or not (42 <= rsi_value <= 70):
+        return False
+
+    # 1) Birikimli GOLD: VELVET/HIGH/MAGMA tarzı radar+para hafızası.
+    buildup_gold = (
+        money_memory_bonus
+        and history_points >= 20
+        and waves >= 3
+        and market_score >= 10
+        and (oi_long or oi_strong)
+        and radar_count >= 2
+        and elite_score >= 92
+    )
+
+    # 2) Agresif para GOLD: SPX/BIO tarzı anlık para saldırısı.
+    attack_gold = (
+        elite_score >= 95
+        and (
+            money_impact >= 5.0
+            or volume_power >= 20.0
+            or market_pct >= 3.0
+        )
+        and (oi_long or oi_strong or volume_power >= 50.0)
+        and radar_count >= 2
+        and module in ("SAFE", "MONEY_ACCEL", "HISTORY_BUILDUP", "TREND_BUILDUP")
+    )
+
+    return bool(buildup_gold or attack_gold)
+
 def format_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
     support_text = ", ".join(support_modules) if support_modules else "YOK"
     combo_score, radar_count = radar_combo_score(d, support_modules)
     levels = build_entry_levels(d)
+    elite_gold = is_elite_gold_signal(d, elite_score, support_modules)
+    title = "🔥 BINANCE ELITE GOLD AL ONAY" if elite_gold else "BINANCE ELITE AL ONAY"
+    gold_note = "🔥 ELITE GOLD: VAR" if elite_gold else "ELITE GOLD: YOK"
 
     extra = ""
     if module in ("MONEY_ACCEL", "MONEY", "MOMENTUM"):
@@ -2100,11 +2412,12 @@ Toplam Market Etki 60dk: %{d.get('money_market_60m', 0):.3f}
 """
 
     return f"""
-BINANCE ELITE AL ONAY
+{title}
 
 Coin: {symbol}
 Mod: {module}
 Karar: AL
+{gold_note}
 Elite Giris Skoru: {elite_score}/100
 
 Giris: {levels['entry']:.8f}
@@ -2132,6 +2445,10 @@ RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
 FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
 
+OI 15m: %{d.get('oi_15m_pct', 0):.2f}
+OI 1h: %{d.get('oi_1h_pct', 0):.2f}
+OI Yorum: {d.get('oi_status', 'OI VERI YOK')}
+
 Ek Gecen Radarlar:
 {support_text}
 
@@ -2142,6 +2459,27 @@ Bu mesaj Binance karar botunda AL kapisindan gecen sinyal icin atilir.
 Momentum tek basina AL degildir. FOMO / gec giris / yuksek RSI elendi.
 """.strip()
 
+
+
+def elite_day_key():
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+def cleanup_elite_daily_counter():
+    today = elite_day_key()
+    for k in list(elite_daily_counter.keys()):
+        if not k.startswith(today + "_"):
+            elite_daily_counter.pop(k, None)
+
+def can_send_elite_today():
+    cleanup_elite_daily_counter()
+    today = elite_day_key()
+    sent_count = sum(v for k, v in elite_daily_counter.items() if k.startswith(today + "_"))
+    return sent_count < ELITE_DAILY_LIMIT
+
+def mark_elite_sent_today(symbol):
+    cleanup_elite_daily_counter()
+    key = elite_day_key() + "_" + symbol
+    elite_daily_counter[key] = elite_daily_counter.get(key, 0) + 1
 
 def send_elite_signal(symbol, best, support):
     if not ELITE_CHAT_ID:
@@ -2154,14 +2492,22 @@ def send_elite_signal(symbol, best, support):
 
     elite_score = elite_score_signal(best, support)
     if elite_score < ELITE_MIN_SCORE:
+        print("ELITE SCORE LOW:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
         return False
 
-    key = symbol + "_ELITE_AL_" + best.get("module", "UNKNOWN")
+    if not can_send_elite_today():
+        print("ELITE DAILY LIMIT:", ELITE_DAILY_LIMIT, flush=True)
+        return False
+
+    # V8: ayni coin farkli modla pes pese Elite atmasin.
+    key = symbol + "_ELITE_AL"
     if not can_send(sent_elite, key, ELITE_COOLDOWN):
         return False
 
+    elite_gold = is_elite_gold_signal(best, elite_score, support)
     send_telegram(format_elite_signal(symbol, best, elite_score, support), ELITE_CHAT_ID)
-    print("ELITE AL SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+    mark_elite_sent_today(symbol)
+    print("ELITE GOLD SEND:" if elite_gold else "ELITE AL SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
     return True
 def send_selected_signal(symbol, signals, funding, btc_status):
     if not signals:
@@ -2210,6 +2556,7 @@ def analyze(item, btc_ok, btc_status):
 
     try:
         signals = []
+        oi_context = None
 
         early_ok, early_data = early_radar(symbol, rs)
         if early_data:
@@ -2265,6 +2612,15 @@ def analyze(item, btc_ok, btc_status):
         if history_data:
             history_data = attach_market_impact(history_data, item)
             history_data.update(money_memory_summary(symbol))
+
+        # V8: OI yorumunu tum aday sinyallere ekle.
+        oi_ref = history_data or safe_data or money_data or trend_data or early_data or momentum_data or sweep_data or dip_data
+        oi_price_gain = 0.0
+        if oi_ref:
+            oi_price_gain = oi_ref.get("price_gain_from_first", oi_ref.get("price_gain_15m", 0.0))
+        oi_context = get_oi_context(symbol, oi_price_gain)
+        for _sig in [early_data, money_data, momentum_data, safe_data, dip_data, sweep_data, trend_data, history_data]:
+            attach_oi_context(_sig, oi_context)
 
         if early_ok:
             signals.append(early_data)
@@ -2342,7 +2698,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES V5 Bot Aktif", 200
+    return "BINANCE FUTURES V8 Bot Aktif", 200
 
 
 if __name__ == "__main__":
