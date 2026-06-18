@@ -1,4 +1,4 @@
-# Binance Futures SAFE ENTRY DECISION BOT V12
+# Binance Futures SAFE ENTRY DECISION BOT V13
 # Binance MEXC kopyasi degil: Money Acceleration + Safe Entry + Elite AL + FOMO Block mantigi.
 # Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, ELITE_CHAT_ID
 
@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V12"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V13"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -2222,15 +2222,23 @@ def elite_score_signal(d, support_modules=None):
     elif d.get("oi_weak"):
         score -= 5
 
-    # V11 Delta / Taker Flow destegi: alici baskini varsa odul, satici baskini varsa ceza.
+    # V13 Delta / Taker Flow destegi:
+    # AIO tipi "OI long destekli ama Net Delta satici baskin" sinyallerini daha sert cezalandirir.
     if d.get("strong_buyer_dominant"):
-        score += 12
+        score += 14
     elif d.get("buyer_dominant"):
-        score += 7
+        score += 8
     elif d.get("strong_seller_dominant"):
-        score -= 18
+        score -= 30
     elif d.get("seller_dominant"):
-        score -= 10
+        score -= 18
+
+    # Net delta negatifse para var ama anlik emir akisi satici tarafta olabilir.
+    # Bu durumda Elite skoru yapay olarak 100'e sisirilmesin.
+    if d.get("net_delta_15m", 0) < 0:
+        score -= 6
+    if d.get("delta_ratio_15m", 0) <= -8:
+        score -= 6
 
     # V12 Fast Money Bonus: ani para + hacim + market etki birlikteyse ekstra kalite puani.
     if d.get("fast_money_bonus"):
@@ -2456,14 +2464,22 @@ def is_elite_al_candidate(best, support_modules=None):
         if not strong_exception:
             return False, "OI_SHORT_KAPAMA_RISKI"
 
-    # V11 Delta kontrolu: alici/satici akisi net saticiysa sadece cok guclu istisnalar gecsin.
-    if best.get("strong_seller_dominant") or (best.get("seller_dominant") and best.get("net_delta_15m", 0) < 0):
+    # V13 Delta kontrolu:
+    # AIO orneginde gordugumuz gibi market etki cok yuksek olsa bile Net Delta satici baskinsa
+    # bu para fiyatı yukari tasimayabilir. Bu yuzden market impact tek basina istisna degildir.
+    if best.get("strong_seller_dominant"):
+        if module not in ("DIP", "SWEEP"):
+            return False, "GUCLU_SATICI_DELTA_BASKIN"
+
+    if best.get("seller_dominant") and best.get("net_delta_15m", 0) < 0:
         delta_exception = (
-            module == "DIP"
-            or module == "SWEEP"
-            or best.get("money_impact", 0) >= 8
-            or best.get("volume_power", 0) >= 50
-            or best.get("market_impact_pct", 0) >= 10
+            module in ("DIP", "SWEEP")
+            or (
+                best.get("volume_power", 0) >= 60
+                and best.get("money_impact", 0) >= 6
+                and best.get("oi_strong_long_supported")
+                and best.get("net_delta_1h", 0) >= 0
+            )
         )
         if not delta_exception:
             return False, "SATICI_DELTA_BASKIN"
@@ -2573,7 +2589,7 @@ def gold_trend_guard(symbol, d):
 
 def is_elite_gold_signal(d, elite_score=0, support_modules=None, symbol=None):
     """
-    V10 ELITE GOLD etiketi:
+    V13 ELITE GOLD etiketi:
     V9 Gold filtresine ek olarak anlik dusus/geri cekilme korumasi eklendi.
     TRUST tipi tepe sonrasi satis yiyen coinler Gold olmaz.
     """
