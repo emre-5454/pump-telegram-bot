@@ -1,4 +1,4 @@
-# Binance Futures SAFE ENTRY DECISION BOT V4
+# Binance Futures SAFE ENTRY DECISION BOT V12
 # Binance MEXC kopyasi degil: Money Acceleration + Safe Entry + Elite AL + FOMO Block mantigi.
 # Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, ELITE_CHAT_ID
 
@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V9"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V12"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -82,6 +82,11 @@ money_memory = {}
 # fiyat yukari giderken OI dusuyorsa short kapama rallisi olarak yorumlanir.
 OI_CACHE_SECONDS = 90
 oi_cache = {}
+
+# V11 Taker Buy/Sell Flow / Net Delta
+# Binance Futures takerlongshortRatio verisi ile agresif alici-satici baskisini olcer.
+TAKER_FLOW_CACHE_SECONDS = 90
+taker_flow_cache = {}
 
 exchange = ccxt.binanceusdm({
     "enableRateLimit": True,
@@ -284,6 +289,144 @@ def get_oi_context(symbol, price_gain_hint=0.0):
 def attach_oi_context(d, oi_context):
     if d and oi_context:
         d.update(oi_context)
+    return d
+
+
+def fetch_taker_flow(symbol, period="15m", limit=4):
+    """Binance Futures Taker Buy/Sell Volume verisinden long/short akisi ve net delta hesaplar."""
+    cache_key = f"{symbol}_{period}_{limit}"
+    now = time.time()
+    cached = taker_flow_cache.get(cache_key)
+    if cached and now - cached.get("time", 0) < TAKER_FLOW_CACHE_SECONDS:
+        return cached.get("data")
+
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/futures/data/takerlongshortRatio",
+            params={"symbol": binance_symbol_id(symbol), "period": period, "limit": limit},
+            timeout=10,
+        )
+        data = r.json()
+        if not isinstance(data, list) or not data:
+            out = {
+                "ok": False,
+                "long_flow_usdt": 0.0,
+                "short_flow_usdt": 0.0,
+                "net_delta_usdt": 0.0,
+                "delta_ratio": 0.0,
+                "buy_ratio_pct": 0.0,
+                "sell_ratio_pct": 0.0,
+                "status": "DELTA VERI YOK",
+            }
+        else:
+            buy_vol = 0.0
+            sell_vol = 0.0
+            for x in data:
+                # Endpoint bazi cevaplarda buyVol/sellVol, bazi dokumanlarda takerBuyVol/takerSellVol seklinde gelebilir.
+                buy_vol += float(x.get("buyVol", x.get("takerBuyVol", 0)) or 0)
+                sell_vol += float(x.get("sellVol", x.get("takerSellVol", 0)) or 0)
+
+            # buyVol/sellVol coin miktari gibi gelir; USDT karsiligina cevirmek icin son fiyati kullan.
+            ticker = exchange.fetch_ticker(symbol)
+            last_price = float(ticker.get("last") or ticker.get("close") or 0)
+            long_flow = buy_vol * last_price
+            short_flow = sell_vol * last_price
+            total = long_flow + short_flow
+            net_delta = long_flow - short_flow
+            delta_ratio = (net_delta / total * 100) if total > 0 else 0.0
+            buy_ratio = (long_flow / total * 100) if total > 0 else 0.0
+            sell_ratio = (short_flow / total * 100) if total > 0 else 0.0
+
+            if delta_ratio >= 18:
+                status = "GUCLU ALICI BASKIN"
+            elif delta_ratio >= 8:
+                status = "ALICI BASKIN"
+            elif delta_ratio <= -18:
+                status = "GUCLU SATICI BASKIN"
+            elif delta_ratio <= -8:
+                status = "SATICI BASKIN"
+            else:
+                status = "DELTA NOTR"
+
+            out = {
+                "ok": True,
+                "long_flow_usdt": long_flow,
+                "short_flow_usdt": short_flow,
+                "net_delta_usdt": net_delta,
+                "delta_ratio": delta_ratio,
+                "buy_ratio_pct": buy_ratio,
+                "sell_ratio_pct": sell_ratio,
+                "status": status,
+            }
+    except Exception as e:
+        print("Taker flow hata:", symbol, period, e, flush=True)
+        out = {
+            "ok": False,
+            "long_flow_usdt": 0.0,
+            "short_flow_usdt": 0.0,
+            "net_delta_usdt": 0.0,
+            "delta_ratio": 0.0,
+            "buy_ratio_pct": 0.0,
+            "sell_ratio_pct": 0.0,
+            "status": "DELTA VERI YOK",
+        }
+
+    taker_flow_cache[cache_key] = {"time": now, "data": out}
+    return out
+
+
+def get_taker_flow_context(symbol):
+    """Son 15m ve yaklasik 1h taker akisini birlestirir."""
+    f15 = fetch_taker_flow(symbol, "15m", 2)
+    f1h = fetch_taker_flow(symbol, "1h", 2)
+
+    long15 = f15.get("long_flow_usdt", 0.0)
+    short15 = f15.get("short_flow_usdt", 0.0)
+    delta15 = f15.get("net_delta_usdt", 0.0)
+    ratio15 = f15.get("delta_ratio", 0.0)
+
+    long1h = f1h.get("long_flow_usdt", 0.0)
+    short1h = f1h.get("short_flow_usdt", 0.0)
+    delta1h = f1h.get("net_delta_usdt", 0.0)
+    ratio1h = f1h.get("delta_ratio", 0.0)
+
+    buyer_dominant = ratio15 >= 8 or ratio1h >= 8
+    strong_buyer_dominant = ratio15 >= 18 or ratio1h >= 18
+    seller_dominant = ratio15 <= -8 or ratio1h <= -8
+    strong_seller_dominant = ratio15 <= -18 or ratio1h <= -18
+
+    if strong_buyer_dominant:
+        status = "GUCLU ALICI BASKIN"
+    elif buyer_dominant:
+        status = "ALICI BASKIN"
+    elif strong_seller_dominant:
+        status = "GUCLU SATICI BASKIN"
+    elif seller_dominant:
+        status = "SATICI BASKIN"
+    else:
+        status = "DELTA NOTR"
+
+    return {
+        "taker_ok": bool(f15.get("ok") or f1h.get("ok")),
+        "long_flow_15m": long15,
+        "short_flow_15m": short15,
+        "net_delta_15m": delta15,
+        "delta_ratio_15m": ratio15,
+        "long_flow_1h": long1h,
+        "short_flow_1h": short1h,
+        "net_delta_1h": delta1h,
+        "delta_ratio_1h": ratio1h,
+        "delta_status": status,
+        "buyer_dominant": buyer_dominant,
+        "strong_buyer_dominant": strong_buyer_dominant,
+        "seller_dominant": seller_dominant,
+        "strong_seller_dominant": strong_seller_dominant,
+    }
+
+
+def attach_taker_flow_context(d, taker_context):
+    if d and taker_context:
+        d.update(taker_context)
     return d
 
 def btc_filter():
@@ -489,6 +632,7 @@ def attach_market_impact(d, item):
     d["market_impact_pct"] = market_impact_pct
     d["market_impact_score"] = score
 
+    apply_fast_money_bonus(d)
     return d
 
 
@@ -516,6 +660,45 @@ def market_impact_ok(d):
 
 
 
+
+
+
+def apply_fast_money_bonus(d):
+    """
+    V12 FAST MONEY BONUS:
+    AGT/ESPORTS tipi hafiza olusmadan ani para-hacim patlamasi yapan coinleri one cikarir.
+    Bu tek basina AL degildir; sadece radar/hafiza/elite puanina kontrollu bonus verir.
+    """
+    if not d:
+        return d
+
+    volume_ratio = max(
+        float(d.get("vol_ratio", 0) or 0),
+        float(d.get("vol_ratio_1h", 0) or 0),
+        float(d.get("vol_ratio_15m", 0) or 0),
+    )
+    para_etkisi = float(d.get("money_impact", 0) or 0)
+    market_impact = float(d.get("market_impact_pct", 0) or 0)
+    rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+
+    fast_money_bonus = (
+        para_etkisi >= 3.0
+        and volume_ratio >= 3.0
+        and market_impact >= 1.0
+        and rsi_value <= 75
+    )
+
+    d["fast_money_bonus"] = bool(fast_money_bonus)
+    d["fast_money_volume_ratio"] = volume_ratio
+
+    if fast_money_bonus and not d.get("_fast_money_score_applied"):
+        d["score"] = d.get("score", 0) + 3
+        d["_fast_money_score_applied"] = True
+        reasons = d.setdefault("reasons", [])
+        if "FAST MONEY BONUS" not in reasons:
+            reasons.append("FAST MONEY BONUS")
+
+    return d
 
 def cleanup_radar_history():
     now = time.time()
@@ -545,6 +728,7 @@ def record_radar_history(symbol, signals):
                     "volume_power": max(e.get("volume_power", 0), d.get("volume_power", 0)),
                     "market_impact_pct": max(e.get("market_impact_pct", 0), d.get("market_impact_pct", 0)),
                     "rsi": d.get("rsi", d.get("rsi15", e.get("rsi", 0))),
+                    "fast_money_bonus": bool(e.get("fast_money_bonus") or d.get("fast_money_bonus")),
                 })
                 duplicate = True
                 break
@@ -559,6 +743,7 @@ def record_radar_history(symbol, signals):
             "volume_power": d.get("volume_power", 0),
             "market_impact_pct": d.get("market_impact_pct", 0),
             "rsi": d.get("rsi", d.get("rsi15", 0)),
+            "fast_money_bonus": bool(d.get("fast_money_bonus")),
         })
     cleanup_radar_history()
 
@@ -567,7 +752,7 @@ def radar_history_summary(symbol):
     cleanup_radar_history()
     events = sorted(radar_history.get(symbol, []), key=lambda x: x.get("time", 0))
     if not events:
-        return {"history_points": 0, "history_modules": [], "history_text": "YOK", "history_age_min": 0, "history_first_price": 0, "history_price_gain": 0, "history_money_max": 0, "history_power_max": 0, "history_market_max": 0, "history_unique_count": 0}
+        return {"history_points": 0, "history_modules": [], "history_text": "YOK", "history_age_min": 0, "history_first_price": 0, "history_price_gain": 0, "history_money_max": 0, "history_power_max": 0, "history_market_max": 0, "history_unique_count": 0, "fast_money_count": 0, "fast_money_bonus": False}
     modules = []
     for e in events:
         m = e.get("module", "UNKNOWN")
@@ -585,6 +770,9 @@ def radar_history_summary(symbol):
         points += 4
     if "MOMENTUM" in s and ("MONEY" in s or "MONEY_ACCEL" in s or "TREND_BUILDUP" in s):
         points += 3
+    fast_money_count = sum(1 for e in events if e.get("fast_money_bonus"))
+    if fast_money_count > 0:
+        points += 4
     first = events[0]
     last = events[-1]
     first_price = first.get("price", 0)
@@ -601,6 +789,8 @@ def radar_history_summary(symbol):
         "history_power_max": max(e.get("volume_power", 0) for e in events),
         "history_market_max": max(e.get("market_impact_pct", 0) for e in events),
         "history_unique_count": len(modules),
+        "fast_money_count": fast_money_count,
+        "fast_money_bonus": fast_money_count > 0,
     }
 
 
@@ -795,6 +985,9 @@ def build_history_signal(symbol, rs, latest_signals=None):
     d = dict(ref)
     d.update(hist)
     d.update(mem)
+    if hist.get("fast_money_bonus"):
+        d["fast_money_bonus"] = True
+        d["fast_money_count"] = hist.get("fast_money_count", 0)
     d["module"] = "HISTORY_BUILDUP"
     d["priority"] = 36
     d["score"] = max(ref.get("score", 0), int(points))
@@ -1883,6 +2076,7 @@ Para Hafiza 30dk: {int(d.get('money_mem_30m', 0))} USDT
 Para Hafiza 15dk: {int(d.get('money_mem_15m', 0))} USDT
 Para Dalga Sayisi: {d.get('money_wave_count', 0)}
 Toplam Market Etki 60dk: %{d.get('money_market_60m', 0):.3f}
+Fast Money Hafiza: {"VAR" if d.get("fast_money_bonus") else "YOK"}
 """
         decision = "Radar hafizasi ve para hafizasi guclendi. AL icin Elite kapisi beklenir."
 
@@ -2027,6 +2221,20 @@ def elite_score_signal(d, support_modules=None):
         score -= 10
     elif d.get("oi_weak"):
         score -= 5
+
+    # V11 Delta / Taker Flow destegi: alici baskini varsa odul, satici baskini varsa ceza.
+    if d.get("strong_buyer_dominant"):
+        score += 12
+    elif d.get("buyer_dominant"):
+        score += 7
+    elif d.get("strong_seller_dominant"):
+        score -= 18
+    elif d.get("seller_dominant"):
+        score -= 10
+
+    # V12 Fast Money Bonus: ani para + hacim + market etki birlikteyse ekstra kalite puani.
+    if d.get("fast_money_bonus"):
+        score += 3
 
     # Market etkisi: yüzdelik değer doğrudan puanlanır.
     if market_impact_pct >= 10:
@@ -2248,6 +2456,18 @@ def is_elite_al_candidate(best, support_modules=None):
         if not strong_exception:
             return False, "OI_SHORT_KAPAMA_RISKI"
 
+    # V11 Delta kontrolu: alici/satici akisi net saticiysa sadece cok guclu istisnalar gecsin.
+    if best.get("strong_seller_dominant") or (best.get("seller_dominant") and best.get("net_delta_15m", 0) < 0):
+        delta_exception = (
+            module == "DIP"
+            or module == "SWEEP"
+            or best.get("money_impact", 0) >= 8
+            or best.get("volume_power", 0) >= 50
+            or best.get("market_impact_pct", 0) >= 10
+        )
+        if not delta_exception:
+            return False, "SATICI_DELTA_BASKIN"
+
     # Binance karar botu: en az guclu bir ana radar veya 2 destek ister.
     if module == "SAFE" and combo_score >= 3:
         return True, "SAFE_ONAY"
@@ -2305,11 +2525,57 @@ def is_elite_al_candidate(best, support_modules=None):
 
 
 
-def is_elite_gold_signal(d, elite_score=0, support_modules=None):
+def gold_trend_guard(symbol, d):
     """
-    V9 ELITE GOLD etiketi:
-    Yeni kanal acmadan, Elite mesajinin icinde en guclu adaylari isaretler.
-    Amaç 150 Elite icinden SPX/HIGH/BIO/MAGMA tipi 10-20 sinyali ayirmak.
+    V10 GOLD DUSUS KORUMASI:
+    TRUST tipi tepe sonrasi satis baslamis coinler Gold olmasin.
+    Elite normal kalabilir; sadece Gold etiketi iptal edilir.
+    """
+    if not symbol or not d:
+        return True
+
+    try:
+        df15 = fetch_df(symbol, "15m", 80)
+        if df15 is None or len(df15) < 5:
+            return True
+
+        last = df15.iloc[-1]
+        prev = df15.iloc[-2]
+
+        price = float(d.get("price", last.close) or last.close)
+        ema9 = float(last.ema9)
+        macd_hist = float(last.macd - last.macd_signal)
+        macd_hist_prev = float(prev.macd - prev.macd_signal)
+        rsi_now = float(last.rsi)
+        rsi_prev = float(prev.rsi)
+        obv_now = float(last.obv)
+        obv_prev = float(prev.obv)
+
+        macd_turn_down = macd_hist < macd_hist_prev
+        rsi_drop_fast = (rsi_prev - rsi_now) >= 4.0
+        obv_down = obv_now < obv_prev
+
+        # GOLD icin anlik yon hala yukari olmali.
+        if price < ema9:
+            return False
+        if macd_turn_down:
+            return False
+        if rsi_now < rsi_prev or rsi_drop_fast:
+            return False
+        if obv_down:
+            return False
+
+        return True
+    except Exception as e:
+        print("GOLD trend guard hata:", symbol, e, flush=True)
+        return True
+
+
+def is_elite_gold_signal(d, elite_score=0, support_modules=None, symbol=None):
+    """
+    V10 ELITE GOLD etiketi:
+    V9 Gold filtresine ek olarak anlik dusus/geri cekilme korumasi eklendi.
+    TRUST tipi tepe sonrasi satis yiyen coinler Gold olmaz.
     """
     support_modules = support_modules or []
     combo_score, radar_count = radar_combo_score(d, support_modules)
@@ -2327,8 +2593,10 @@ def is_elite_gold_signal(d, elite_score=0, support_modules=None):
     oi_long = bool(d.get("oi_long_supported") or d.get("oi_strong_long_supported"))
     oi_strong = bool(d.get("oi_strong_long_supported"))
     oi_bad = bool(d.get("oi_short_cover") or d.get("oi_weak"))
+    delta_good = bool(d.get("buyer_dominant") or d.get("strong_buyer_dominant"))
+    delta_bad = bool(d.get("seller_dominant") or d.get("strong_seller_dominant"))
 
-    if is_fomo_block(d) or oi_bad or not (42 <= rsi_value <= 70):
+    if is_fomo_block(d) or oi_bad or delta_bad or not (42 <= rsi_value <= 70):
         return False
 
     # 1) Birikimli GOLD: VELVET/HIGH/MAGMA tarzı radar+para hafızası.
@@ -2338,6 +2606,7 @@ def is_elite_gold_signal(d, elite_score=0, support_modules=None):
         and waves >= 3
         and market_score >= 10
         and (oi_long or oi_strong)
+        and (delta_good or d.get("net_delta_15m", 0) >= 0)
         and radar_count >= 2
         and elite_score >= 92
     )
@@ -2351,11 +2620,17 @@ def is_elite_gold_signal(d, elite_score=0, support_modules=None):
             or market_pct >= 3.0
         )
         and (oi_long or oi_strong or volume_power >= 50.0)
+        and (delta_good or volume_power >= 50.0)
         and radar_count >= 2
         and module in ("SAFE", "MONEY_ACCEL", "HISTORY_BUILDUP", "TREND_BUILDUP")
     )
 
-    return bool(buildup_gold or attack_gold)
+    elite_gold = bool(buildup_gold or attack_gold)
+
+    if elite_gold and not gold_trend_guard(symbol, d):
+        return False
+
+    return elite_gold
 
 def format_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
@@ -2363,7 +2638,7 @@ def format_elite_signal(symbol, d, elite_score, support_modules=None):
     support_text = ", ".join(support_modules) if support_modules else "YOK"
     combo_score, radar_count = radar_combo_score(d, support_modules)
     levels = build_entry_levels(d)
-    elite_gold = is_elite_gold_signal(d, elite_score, support_modules)
+    elite_gold = is_elite_gold_signal(d, elite_score, support_modules, symbol)
     title = "🔥 BINANCE ELITE GOLD AL ONAY" if elite_gold else "BINANCE ELITE AL ONAY"
     gold_note = "🔥 ELITE GOLD: VAR" if elite_gold else "ELITE GOLD: YOK"
 
@@ -2409,6 +2684,7 @@ Para Hafiza 30dk: {int(d.get('money_mem_30m', 0))} USDT
 Para Hafiza 15dk: {int(d.get('money_mem_15m', 0))} USDT
 Para Dalga Sayisi: {d.get('money_wave_count', 0)}
 Toplam Market Etki 60dk: %{d.get('money_market_60m', 0):.3f}
+Fast Money Hafiza: {"VAR" if d.get("fast_money_bonus") else "YOK"}
 """
 
     return f"""
@@ -2448,6 +2724,13 @@ FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
 OI 15m: %{d.get('oi_15m_pct', 0):.2f}
 OI 1h: %{d.get('oi_1h_pct', 0):.2f}
 OI Yorum: {d.get('oi_status', 'OI VERI YOK')}
+
+Long Akisi 15m: {int(d.get('long_flow_15m', 0))} USDT
+Short Akisi 15m: {int(d.get('short_flow_15m', 0))} USDT
+Net Delta 15m: {int(d.get('net_delta_15m', 0))} USDT
+Delta Orani 15m: %{d.get('delta_ratio_15m', 0):.2f}
+Delta Yorum: {d.get('delta_status', 'DELTA VERI YOK')}
+Fast Money Bonus: {"VAR" if d.get("fast_money_bonus") else "YOK"}
 
 Ek Gecen Radarlar:
 {support_text}
@@ -2504,7 +2787,7 @@ def send_elite_signal(symbol, best, support):
     if not can_send(sent_elite, key, ELITE_COOLDOWN):
         return False
 
-    elite_gold = is_elite_gold_signal(best, elite_score, support)
+    elite_gold = is_elite_gold_signal(best, elite_score, support, symbol)
     send_telegram(format_elite_signal(symbol, best, elite_score, support), ELITE_CHAT_ID)
     mark_elite_sent_today(symbol)
     print("ELITE GOLD SEND:" if elite_gold else "ELITE AL SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
@@ -2619,8 +2902,10 @@ def analyze(item, btc_ok, btc_status):
         if oi_ref:
             oi_price_gain = oi_ref.get("price_gain_from_first", oi_ref.get("price_gain_15m", 0.0))
         oi_context = get_oi_context(symbol, oi_price_gain)
+        taker_context = get_taker_flow_context(symbol)
         for _sig in [early_data, money_data, momentum_data, safe_data, dip_data, sweep_data, trend_data, history_data]:
             attach_oi_context(_sig, oi_context)
+            attach_taker_flow_context(_sig, taker_context)
 
         if early_ok:
             signals.append(early_data)
