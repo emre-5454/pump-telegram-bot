@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V26"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V27"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -104,6 +104,14 @@ MEXC_ELITE_MIN_GOLD_MARKET_IMPACT = 1.00
 MEXC_ELITE_STRONG_MEMORY_MARKET_60M = 20.0
 MEXC_ELITE_STRONG_ABS_USDT = 250_000
 MEXC_ELITE_DIP_MIN_MARKET_IMPACT = 0.05
+
+# V27 BSB FIX: aşağı likidasyon alıp hızlı toparlanan coinler
+# V_DIP_RECOVERY tarafından görülüyordu ama Elite kapısında zayıf kalıyordu.
+FAST_LIQ_SWEEP_MIN_RECOVERY = 0.60
+FAST_LIQ_SWEEP_MIN_WICK = 0.30
+FAST_LIQ_SWEEP_MIN_VOL_RATIO = 1.15
+FAST_LIQ_SWEEP_MAX_DIST = 12.0
+FAST_LIQ_SWEEP_MAX_RSI = 64
 
 sent_early = {}
 early_daily_counter = {}
@@ -458,12 +466,29 @@ def v_dip_recovery_signal(symbol, rs):
     touched_bb = any(c.low <= c.bb_lower * 1.012 for c in candles)
     deep_sweep = any(c.low < c.bb_lower and c.close > c.bb_lower for c in candles)
     close_back_inside = any(c.close > c.bb_lower for c in candles)
+
+    # V27 FAST LIQUIDITY SWEEP:
+    # BSB tipi hareket: aşağı likidasyonu alır, mumun büyük kısmını geri toplar,
+    # hacim kıpırdar ve coin Elite olmadan önce çok hızlı kalkabilir.
+    fast_liquidity_sweep = (
+        lower_wick >= FAST_LIQ_SWEEP_MIN_WICK
+        and recovery_ratio >= FAST_LIQ_SWEEP_MIN_RECOVERY
+        and recovery_from_low <= FAST_LIQ_SWEEP_MAX_DIST
+        and m15.rsi <= FAST_LIQ_SWEEP_MAX_RSI
+        and (touched_bb or deep_sweep or close_back_inside)
+    )
+
     reclaim_ema9 = m15.close > m15.ema9 or p1.close > p1.ema9
     reclaim_mid = m15.close > m15.bb_middle or p1.close > p1.bb_middle
 
     last3_vol = df15["volume"].tail(3).mean()
     prev20_vol = df15["volume"].iloc[-24:-4].mean()
     vol_ratio = last3_vol / prev20_vol if prev20_vol > 0 else 0
+    if fast_liquidity_sweep and vol_ratio >= FAST_LIQ_SWEEP_MIN_VOL_RATIO:
+        fast_liquidity_sweep = True
+    else:
+        fast_liquidity_sweep = False
+
     usdt_vol = df15["volume"].tail(3).sum() * price
     avg_usdt_vol = df15["vol_avg"].tail(3).sum() * price if df15["vol_avg"].tail(3).sum() > 0 else 0
     money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
@@ -477,7 +502,7 @@ def v_dip_recovery_signal(symbol, rs):
     # Bu radar tam panik-dip toparlanmasi icin. Ufak yatay tepkiyi alma.
     if drop_from_high < 10:
         return False, None
-    if recovery_from_low < 6:
+    if recovery_from_low < 6 and lower_wick < FAST_LIQ_SWEEP_MIN_WICK:
         return False, None
     if recovery_from_low > 55:
         return False, None
@@ -510,6 +535,8 @@ def v_dip_recovery_signal(symbol, rs):
         score += 4; reasons.append("Bollinger disi supurme")
     if close_back_inside:
         score += 2; reasons.append("Bant icine geri donus")
+    if fast_liquidity_sweep:
+        score += 8; reasons.append("FAST LIQUIDITY SWEEP")
     if reclaim_ema9:
         score += 2; reasons.append("EMA9 geri alma")
     if reclaim_mid:
@@ -537,7 +564,7 @@ def v_dip_recovery_signal(symbol, rs):
     if rs >= 45:
         score += 1; reasons.append("RS yeterli")
 
-    valid = (
+    normal_v_dip_valid = (
         score >= 20
         and drop_from_high >= 12
         and 6 <= recovery_from_low <= 45
@@ -549,6 +576,18 @@ def v_dip_recovery_signal(symbol, rs):
         and (lower_wick >= 0.35 or touched_bb or deep_sweep)
         and (rsi_turn or macd_turn or obv_recover or reclaim_ema9)
     )
+
+    fast_sweep_valid = (
+        fast_liquidity_sweep
+        and score >= 18
+        and vol_ratio >= FAST_LIQ_SWEEP_MIN_VOL_RATIO
+        and money_impact >= 1.05
+        and volume_power >= 1.20
+        and m15.rsi <= FAST_LIQ_SWEEP_MAX_RSI
+        and (rsi_turn or macd_turn or obv_recover or green_reaction or reclaim_ema9)
+    )
+
+    valid = normal_v_dip_valid or fast_sweep_valid
 
     return valid, {
         "module": "V_DIP_RECOVERY",
@@ -570,6 +609,7 @@ def v_dip_recovery_signal(symbol, rs):
         "touched_bb": touched_bb,
         "deep_sweep": deep_sweep,
         "close_back_inside": close_back_inside,
+        "fast_liquidity_sweep": fast_liquidity_sweep,
         "reclaim_ema9": reclaim_ema9,
         "reclaim_mid": reclaim_mid,
         "rsi_turn": rsi_turn,
@@ -3839,6 +3879,12 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
             score += 6
         if d.get("market_impact_pct", 0) >= 0.10 or d.get("usdt_vol", 0) >= 100000:
             score += 8
+        if d.get("fast_liquidity_sweep"):
+            score += 16
+        if d.get("recovery_ratio", 0) >= 0.80:
+            score += 6
+        if d.get("vol_ratio", 0) >= 1.50:
+            score += 5
 
     if module == "HISTORY_BUILDUP":
         hp = d.get("history_points", 0)
@@ -4057,7 +4103,17 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         return squeeze_explosion_elite_exception(best)
 
     if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
-        return (
+        fast_sweep_gate = (
+            module == "V_DIP_RECOVERY"
+            and best.get("fast_liquidity_sweep")
+            and dist <= 12
+            and money >= 1.05
+            and power >= 1.20
+            and (market_impact_pct >= 0.03 or usdt_vol >= 25000)
+            and rsi_value <= 64
+            and (best.get("obv_up") or best.get("macd_turn") or best.get("green_reaction") or best.get("reclaim_ema9"))
+        )
+        normal_dip_gate = (
             dist <= 7
             and money >= 1.25
             and power >= 2.0
@@ -4065,6 +4121,7 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and rsi_value <= 62
             and (best.get("obv_up") or best.get("macd_turn") or best.get("green_reaction"))
         )
+        return normal_dip_gate or fast_sweep_gate
 
     return False
 
