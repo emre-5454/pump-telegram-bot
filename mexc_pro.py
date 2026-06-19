@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V25"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V26"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -3059,7 +3059,7 @@ def mexc_elite_score_signal(d, support_modules=None, btc_status=""):
 
 def attach_live_momentum_guard(symbol, d):
     """
-    V24 CANLI MOMENTUM KORUMASI:
+    V26 CANLI MOMENTUM KORUMASI + RED FLAG:
     MEXC'te Binance gibi Long/Short Delta yok. Bu yüzden Elite/Gold kapısından hemen önce
     EMA9, MACD histogram, RSI ve OBV ile alıcı gücü devam ediyor mu kontrol edilir.
     Amaç: ALLO tipi para var ama momentum sönen sinyalleri azaltmak.
@@ -3110,6 +3110,21 @@ def attach_live_momentum_guard(symbol, d):
         red_flags += 1 if obv_down else 0
         red_flags += 1 if rejection_candle else 0
 
+        # V26: Canli momentum cezasi. Hafiza guclu olsa bile anlik guc sonuyorsa Elite puani dusmeli.
+        live_penalty = 0
+        if price_below_ema9:
+            live_penalty += 15
+        if macd_hist_down:
+            live_penalty += 15
+        if rsi_drop_fast:
+            live_penalty += 10
+        elif rsi_down:
+            live_penalty += 5
+        if obv_down:
+            live_penalty += 10
+        if rejection_candle:
+            live_penalty += 10
+
         # Dip/V toparlanma sinyallerinde EMA altı bazen normaldir; onlar için daha esnek davran.
         module = d.get("module", "UNKNOWN")
         dip_like = module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY")
@@ -3129,9 +3144,12 @@ def attach_live_momentum_guard(symbol, d):
         elif rejection_candle and macd_hist_down and obv_down:
             block = True
             reason = "Red mum/ust fitil + MACD/OBV zayif"
-        elif red_flags >= 4:
+        elif not dip_like and red_flags >= 2:
             block = True
-            reason = "Canli momentum kirmizi bayrak >= 4"
+            reason = "V26 red flag: canli momentum zayif >= 2"
+        elif dip_like and red_flags >= 3:
+            block = True
+            reason = "V26 dip red flag: canli tepki zayif >= 3"
 
         d.update({
             "live_guard_ok": not block,
@@ -3152,6 +3170,7 @@ def attach_live_momentum_guard(symbol, d):
             "live_price_below_ema21": price_below_ema21,
             "live_rejection_candle": rejection_candle,
             "live_red_flags": red_flags,
+            "live_penalty": live_penalty,
         })
         return d
     except Exception as e:
@@ -3185,6 +3204,12 @@ def mexc_elite_gold_signal(d, support_modules=None):
     rsi_value = d.get("rsi", d.get("rsi15", 100))
 
     current_market_impact = d.get("market_impact_pct", 0)
+    current_usdt_vol = d.get("usdt_vol", d.get("signal_usdt_vol", 0))
+
+    # V26: Canli hacim cok dusukse GOLD olmasin. PRL gibi kucuk para etkileyebilir;
+    # bu yüzden Elite'i degil sadece Gold etiketini kapatir.
+    if current_usdt_vol < 25_000 and current_market_impact < 2.0:
+        return False
 
     # V24 GOLD dusus korumasi: Gold etiketi, canli momentum sönüyorsa kapansin.
     if d.get("live_guard_ok") is False:
@@ -3389,6 +3414,8 @@ EMA9 Alti: {'VAR' if d.get('live_price_below_ema9') else 'YOK'}
 MACD Hist Dusus: {'VAR' if d.get('live_macd_hist_down') else 'YOK'}
 RSI Dusus: {'VAR' if d.get('live_rsi_down') else 'YOK'}
 OBV Dusus: {'VAR' if d.get('live_obv_down') else 'YOK'}
+Canli Red Flag: {d.get('live_red_flags', 0)}
+Canli Ceza: {d.get('live_penalty', 0)}
 
 Ek Gecen Radarlar:
 {support_text}
@@ -3423,7 +3450,7 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
     if not MEXC_ELITE_CHAT_ID:
         return False
 
-    # V24: Elite kapısından hemen önce canlı momentum kontrolü.
+    # V26: Elite kapısından hemen önce canlı momentum/red flag kontrolü.
     # MEXC'te Delta yok; bu kontrol ALLO tipi sönen hareketleri azaltmak için kullanılır.
     attach_live_momentum_guard(symbol, best)
 
@@ -3851,6 +3878,9 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
             score -= 15
         if not history_buildup_quality_ok(d):
             score -= 25
+
+    # V26: Canli momentum cezasi. Hafiza puani, son mumdaki zayifligi ezmesin.
+    score -= int(d.get("live_penalty", 0) or 0)
 
     return max(0, min(100, int(score)))
 
