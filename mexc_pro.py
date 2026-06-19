@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V27"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V28"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -112,6 +112,11 @@ FAST_LIQ_SWEEP_MIN_WICK = 0.30
 FAST_LIQ_SWEEP_MIN_VOL_RATIO = 1.15
 FAST_LIQ_SWEEP_MAX_DIST = 12.0
 FAST_LIQ_SWEEP_MAX_RSI = 64
+
+# V28 ZORA FIX: düsük canlı para + zayif market etki Elite olmasin.
+# PRL gibi market etkisi >= %1 olan küçük coinler istisna kalir.
+MEXC_MIN_LIVE_USDT_FOR_ELITE = 5_000
+MEXC_MIN_LOW_USDT_MARKET_IMPACT = 1.00
 
 sent_early = {}
 early_daily_counter = {}
@@ -2870,24 +2875,27 @@ def radar_strength_points(module, support_modules=None):
     - MOMENTUM tek basina puan tasimaz
     """
     support_modules = support_modules or []
+    # V28 radar agirliklari: her radar ayni kalite degil.
+    # Dip/V-dip ve erken donus en degerli; HISTORY ve EARLY tek basina fazla sisirmesin.
     weights = {
-        "DIP_SWEEP": 2,
-        "DIP_REACTION": 2,
-        "REVERSAL": 2,
-        "SQUEEZE": 2,
-        "SAFE": 2,
-        "ELITE_WHALE": 2,
-        "DIP": 2,
-        "EARLY_CONFIRM": 2,
-        "TREND_BUILDUP": 2,
-        "V_DIP_RECOVERY": 2,
-        "HISTORY_BUILDUP": 3,
-        "SQUEEZE_EXPLOSION": 3,
-        "ROCKET": 3,
-        "WAKEUP": 0,
-        "EARLY": 1,
-        "MONEY": 1,
+        "V_DIP_RECOVERY": 8,
+        "DIP_SWEEP": 8,
+        "DIP_REACTION": 7,
+        "ELITE_WHALE": 7,
+        "DIP": 6,
+        "EARLY_REVERSAL": 6,
+        "ROCKET": 6,
+        "SQUEEZE_EXPLOSION": 4,
+        "SQUEEZE": 3,
+        "SAFE": 4,
+        "EARLY_CONFIRM": 4,
+        "TREND_BUILDUP": 3,
+        "REVERSAL": 3,
+        "HISTORY_BUILDUP": 2,
+        "MONEY": 2,
         "WATCH": 1,
+        "EARLY": 1,
+        "WAKEUP": 0,
         "MOMENTUM": 0,
     }
     mods = [module] + list(support_modules)
@@ -3533,51 +3541,72 @@ def radar_support_score(module, support_modules):
     score = 0
 
     # Erken yakalayan radarlar en degerli.
-    if module == "EARLY_CONFIRM":
-        score += 30
+    # V28: modül baz puani. Geçmiş hafiza değil, erken ve canlı tepki daha değerli.
+    if module in ("V_DIP_RECOVERY", "DIP_SWEEP"):
+        score += 40
+    elif module in ("DIP_REACTION", "ELITE_WHALE"):
+        score += 36
+    elif module == "EARLY_REVERSAL":
+        score += 34
+    elif module == "ROCKET":
+        score += 34
+    elif module == "SQUEEZE_EXPLOSION":
+        score += 26
+    elif module == "EARLY_CONFIRM":
+        score += 24
     elif module == "SAFE":
         score += 24
     elif module == "MONEY":
-        score += 24
-    elif module == "WATCH":
         score += 20
-    elif module == "EARLY":
+    elif module == "TREND_BUILDUP":
         score += 18
-    elif module == "SQUEEZE_EXPLOSION":
-        score += 28
     elif module == "SQUEEZE":
         score += 16
-    elif module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
+    elif module == "DIP":
         score += 16
+    elif module == "WATCH":
+        score += 12
+    elif module == "EARLY":
+        score += 10
     elif module == "HISTORY_BUILDUP":
-        score += 34
+        score += 8
     elif module == "WAKEUP":
         score += 2
     elif module == "REVERSAL":
         score += 12
     elif module == "MOMENTUM":
         # Momentum tek basina gec sinyal olabilir; dusuk agirlik.
-        score += 4
+        score += 2
 
     # Bir coinde birden fazla radar ayni anda yaniyorsa kalite artar.
-    if "EARLY" in s:
-        score += 12
-    if "MONEY" in s:
-        score += 16
-    if "SAFE" in s:
+    if "V_DIP_RECOVERY" in s or "DIP_SWEEP" in s:
+        score += 22
+    if "DIP_REACTION" in s or "DIP" in s or "ELITE_WHALE" in s:
         score += 18
+    if "EARLY_REVERSAL" in s:
+        score += 18
+    if "ROCKET" in s:
+        score += 18
+    if "SQUEEZE_EXPLOSION" in s:
+        score += 12
     if "SQUEEZE" in s:
-        score += 10
-    if "DIP" in s or "DIP_REACTION" in s or "DIP_SWEEP" in s or "V_DIP_RECOVERY" in s:
-        score += 10
+        score += 8
+    if "TREND_BUILDUP" in s:
+        score += 9
+    if "MONEY" in s:
+        score += 6
+    if "SAFE" in s:
+        score += 8
+    if "EARLY_CONFIRM" in s:
+        score += 8
+    if "EARLY" in s:
+        score += 4
     if "REVERSAL" in s:
         score += 6
-    if "TREND_BUILDUP" in s:
-        score += 14
     if "HISTORY_BUILDUP" in s:
-        score += 18
+        score += 4
     if "MOMENTUM" in s:
-        score += 3
+        score += 0
 
     # Radar sayisi da onemli ama asil deger erken radarlarin birlikte yanmasi.
     score += min(len(support_modules), 4) * 5
@@ -3762,6 +3791,13 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         score += 4
     elif market_impact_score <= 15 and usdt_vol < 50000:
         score -= 4
+
+    # V28 ZORA FIX: Çok düşük canlı USDT + düşük market etki Elite puanını şişirmesin.
+    # PRL gibi küçük para ama %1+ market etki yapan coinler bu cezayı yemez.
+    if usdt_vol < MEXC_MIN_LIVE_USDT_FOR_ELITE and market_impact_pct < MEXC_MIN_LOW_USDT_MARKET_IMPACT:
+        score -= 20
+        if module in ("SQUEEZE_EXPLOSION", "SQUEEZE", "HISTORY_BUILDUP"):
+            score -= 10
 
     # V21: Coin hacmine gore etki zayifsa puan sisirmesin.
     # Bu, hacmi cok buyuk coinlerde kucuk para akisinin 100/100 yapmasini azaltir.
@@ -3953,6 +3989,19 @@ def entry_decision_allowed(best, support=None, btc_status=""):
     fomo_exempt = module == "V_DIP_RECOVERY" or best.get("fomo_exempt", False)
 
     if rsi_value >= 82:
+        return False
+
+    # V28 ZORA FIX: Canli para cok dusuk ve market etki %1 altindaysa Elite'e gönderme.
+    # Dip/V-dip/fast liquidity sweep istisna; PRL tipi %1+ market etki yapan kucuk coinler gecmeye devam eder.
+    low_live_money = (
+        usdt_vol < MEXC_MIN_LIVE_USDT_FOR_ELITE
+        and market_impact_pct < MEXC_MIN_LOW_USDT_MARKET_IMPACT
+    )
+    low_money_exempt = (
+        module in ("V_DIP_RECOVERY", "DIP_SWEEP", "DIP_REACTION", "DIP", "ELITE_WHALE")
+        or best.get("fast_liquidity_sweep")
+    )
+    if low_live_money and not low_money_exempt:
         return False
 
     # FOMO filtresi: normal pump gec kaldiyse AL mesaji yok.
