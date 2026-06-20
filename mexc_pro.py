@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V31"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V32"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -149,6 +149,15 @@ SECOND_WAVE_BONUS = 14
 WEAK_MONEY_ELITE_PENALTY = 15
 WEAK_MONEY_MIN_MONEY = 1.80
 WEAK_MONEY_MIN_POWER = 2.00
+
+# V32 MEXC SENTETIK DELTA / ALICI BASKISI PUANI:
+# MEXC tarafinda Binance gibi taker buy/sell delta yok.
+# Bu yuzden Para Etkisi + Hacim Gucu + OBV + MACD + canlı EMA yapisindan
+# hacmin gerçekten alici yonlu olup olmadigini yaklasik puanliyoruz.
+FLOW_SCORE_MIN_FOR_GOLD = 3
+FLOW_SCORE_STRONG = 4
+FLOW_WEAK_ELITE_PENALTY = 12
+FLOW_STRONG_ELITE_BONUS = 8
 
 sent_early = {}
 early_daily_counter = {}
@@ -3415,8 +3424,28 @@ def attach_live_momentum_guard(symbol, d):
         if rejection_candle:
             live_penalty += 10
 
-        # Dip/V toparlanma sinyallerinde EMA altı bazen normaldir; onlar için daha esnek davran.
+        # V32 SENTETIK DELTA / ALICI BASKISI PUANI:
+        # OI/para/hacim tek basina yon soylemez. MEXC'te gercek delta olmadigi icin
+        # OBV + MACD + EMA + para/hacim gucunu birlestiriyoruz.
         module = d.get("module", "UNKNOWN")
+        flow_score = 0
+        flow_reasons = []
+
+        if float(d.get("money_impact", 0) or 0) >= 2.0:
+            flow_score += 1; flow_reasons.append("Para 2x+")
+        if float(d.get("volume_power", 0) or 0) >= 5.0:
+            flow_score += 1; flow_reasons.append("Hacim gucu 5+")
+        if bool(d.get("obv_up")) or obv_now > obv_prev3:
+            flow_score += 1; flow_reasons.append("OBV alici")
+        if bool(d.get("macd_turn")) or macd_hist_now >= macd_hist_prev:
+            flow_score += 1; flow_reasons.append("MACD toparlanma")
+        if price >= ema9 and not price_below_ema21:
+            flow_score += 1; flow_reasons.append("EMA ustu")
+
+        buyer_pressure_ok = flow_score >= 3
+        buyer_pressure_strong = flow_score >= FLOW_SCORE_STRONG
+
+        # Dip/V toparlanma sinyallerinde EMA altı bazen normaldir; onlar için daha esnek davran.
         dip_like = module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY")
 
         block = False
@@ -3461,6 +3490,10 @@ def attach_live_momentum_guard(symbol, d):
             "live_rejection_candle": rejection_candle,
             "live_red_flags": red_flags,
             "live_penalty": live_penalty,
+            "flow_score": flow_score,
+            "flow_reasons": ", ".join(flow_reasons) if flow_reasons else "YOK",
+            "buyer_pressure_ok": buyer_pressure_ok,
+            "buyer_pressure_strong": buyer_pressure_strong,
         })
         return d
     except Exception as e:
@@ -3503,6 +3536,10 @@ def mexc_elite_gold_signal(d, support_modules=None):
 
     # V24 GOLD dusus korumasi: Gold etiketi, canli momentum sönüyorsa kapansin.
     if d.get("live_guard_ok") is False:
+        return False
+
+    # V32: GOLD icin alici baskisi sart. Para var ama yon yoksa Gold olmasin.
+    if int(d.get("flow_score", 0) or 0) < FLOW_SCORE_MIN_FOR_GOLD:
         return False
 
     gold_red_flags = 0
@@ -3816,6 +3853,9 @@ RSI Dusus: {'VAR' if d.get('live_rsi_down') else 'YOK'}
 OBV Dusus: {'VAR' if d.get('live_obv_down') else 'YOK'}
 Canli Red Flag: {d.get('live_red_flags', 0)}
 Canli Ceza: {d.get('live_penalty', 0)}
+Alici Baski Puani: {d.get('flow_score', 0)}/5
+Alici Baski: {'GUCLU' if d.get('buyer_pressure_strong') else ('VAR' if d.get('buyer_pressure_ok') else 'ZAYIF/NOTR')}
+Alici Baski Sebep: {d.get('flow_reasons', 'YOK')}
 
 Ek Gecen Radarlar:
 {support_text}
@@ -4241,6 +4281,14 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         score += 8
     if d.get("close_back_inside"):
         score += 5
+
+    # V32: Sentetik delta / alici baskisi.
+    # Para ve hacim yuksek ama OBV/MACD/EMA tarafinda alici baskisi yoksa Elite puani dusur.
+    flow_score = int(d.get("flow_score", 0) or 0)
+    if flow_score >= FLOW_SCORE_STRONG:
+        score += FLOW_STRONG_ELITE_BONUS
+    elif money >= 2.0 and power >= 5.0 and flow_score < 3:
+        score -= FLOW_WEAK_ELITE_PENALTY
 
     if module == "TREND_BUILDUP":
         pc6 = d.get("price_change_6h", 0)
