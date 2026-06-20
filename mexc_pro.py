@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V28"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V31"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -118,6 +118,38 @@ FAST_LIQ_SWEEP_MAX_RSI = 64
 MEXC_MIN_LIVE_USDT_FOR_ELITE = 5_000
 MEXC_MIN_LOW_USDT_MARKET_IMPACT = 1.00
 
+# V30 LUMIA / BTW FIX:
+# Ana kanal ayni coini tekrar tekrar goruyorsa bu artik "tek radar" degil,
+# israrli buildup demektir. Bu hafiza Elite puanina donusur.
+MAIN_SIGNAL_MEMORY_EXPIRE_SECONDS = 2 * 60 * 60
+MAIN_SIGNAL_DEDUP_SECONDS = 10 * 60
+MAIN_SIGNAL_BONUS_60M_3 = 8
+MAIN_SIGNAL_BONUS_120M_5 = 12
+MAIN_SIGNAL_BONUS_120M_8 = 18
+
+# V31 MEMORY RE-ENTRY / SECOND WAVE FIX:
+# BLESS / LUMIA / BTW tipi: coin once ana kanalda gorunur, hafizada para birikir,
+# sonra ikinci para dalgasiyla ucar. Elite kapisi bu ikinci firsati yeniden degerlendirir.
+MEMORY_REENTRY_MIN_HISTORY_POINTS = 35
+MEMORY_REENTRY_MIN_MONEY = 1.80
+MEMORY_REENTRY_MIN_VOL_RATIO = 1.60
+MEMORY_REENTRY_MIN_POWER = 2.20
+MEMORY_REENTRY_MIN_MARKET = 0.40
+MEMORY_REENTRY_MAX_RSI = 76
+MEMORY_REENTRY_MAX_FOMO = 18
+MEMORY_REENTRY_BONUS = 18
+
+SECOND_WAVE_MIN_WAVES = 3
+SECOND_WAVE_MIN_30M_USDT = 45_000
+SECOND_WAVE_MIN_15M_USDT = 15_000
+SECOND_WAVE_MIN_MARKET_60M = 0.60
+SECOND_WAVE_MAX_GAIN = 14.0
+SECOND_WAVE_BONUS = 14
+
+WEAK_MONEY_ELITE_PENALTY = 15
+WEAK_MONEY_MIN_MONEY = 1.80
+WEAK_MONEY_MIN_POWER = 2.00
+
 sent_early = {}
 early_daily_counter = {}
 sent_safe = {}
@@ -142,6 +174,7 @@ money_state = {}
 radar_history = {}
 money_memory = {}
 sent_mexc_elite = {}
+main_signal_memory = {}
 
 exchange = ccxt.mexc({
     "enableRateLimit": True,
@@ -2519,6 +2552,68 @@ def money_memory_buildup_ok(mem):
     )
 
 
+def second_wave_bonus_ok(d):
+    """V31: Tek mum degil, ikinci/ucuncu para dalgasi geliyor mu?"""
+    if not d:
+        return False
+
+    waves = int(d.get("money_memory_waves_60m", 0) or 0)
+    total30 = float(d.get("money_memory_total_30m", 0) or 0)
+    total15 = float(d.get("money_memory_total_15m", 0) or 0)
+    market60 = float(d.get("money_memory_market_60m", 0) or 0)
+    gain = float(d.get("money_memory_gain", 999) or 999)
+    rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+
+    return (
+        waves >= SECOND_WAVE_MIN_WAVES
+        and (
+            total30 >= SECOND_WAVE_MIN_30M_USDT
+            or total15 >= SECOND_WAVE_MIN_15M_USDT
+            or market60 >= SECOND_WAVE_MIN_MARKET_60M
+        )
+        and gain <= SECOND_WAVE_MAX_GAIN
+        and rsi_value <= MEMORY_REENTRY_MAX_RSI
+    )
+
+
+def memory_reentry_bonus_ok(d):
+    """V31: Hafizada uzun suredir izlenen coine yeniden para/hacim gelirse Elite kapisini ac."""
+    if not d:
+        return False
+
+    history_points = int(d.get("history_points", 0) or 0)
+    main_count_60 = int(d.get("main_signal_count_60m", 0) or 0)
+    main_count_120 = int(d.get("main_signal_count_120m", 0) or 0)
+    money = float(d.get("money_impact", 0) or 0)
+    vol_ratio = float(d.get("vol_ratio", 0) or 0)
+    power = float(d.get("volume_power", 0) or 0)
+    market = float(d.get("market_impact_pct", 0) or 0)
+    rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+    fomo = fomo_gain_pct(d)
+
+    has_memory = (
+        history_points >= MEMORY_REENTRY_MIN_HISTORY_POINTS
+        or main_count_60 >= 3
+        or main_count_120 >= 5
+        or d.get("money_memory_bonus")
+        or second_wave_bonus_ok(d)
+    )
+
+    live_money_ok = (
+        money >= MEMORY_REENTRY_MIN_MONEY
+        or power >= MEMORY_REENTRY_MIN_POWER
+        or market >= MEMORY_REENTRY_MIN_MARKET
+    )
+
+    return (
+        has_memory
+        and live_money_ok
+        and vol_ratio >= MEMORY_REENTRY_MIN_VOL_RATIO
+        and rsi_value <= MEMORY_REENTRY_MAX_RSI
+        and fomo <= MEMORY_REENTRY_MAX_FOMO
+    )
+
+
 RADAR_HISTORY_EXPIRE_SECONDS = 4 * 60 * 60
 RADAR_HISTORY_DEDUP_SECONDS = 25 * 60
 
@@ -2543,6 +2638,135 @@ RADAR_HISTORY_WEIGHTS = {
     "DIP": 2,
 }
 
+
+
+
+def cleanup_main_signal_memory():
+    """V30: Ana kanal tekrar hafizasini temizler."""
+    now = time.time()
+    for symbol in list(main_signal_memory.keys()):
+        main_signal_memory[symbol] = [
+            e for e in main_signal_memory[symbol]
+            if now - e.get("time", 0) <= MAIN_SIGNAL_MEMORY_EXPIRE_SECONDS
+        ]
+        if not main_signal_memory[symbol]:
+            main_signal_memory.pop(symbol, None)
+
+
+def record_main_signal_memory(symbol, signals):
+    """
+    V30 ANA KANAL TEKRAR HAFIZASI:
+    Lumia / BTW gibi coinlerde bot ana kanala defalarca radar atiyor ama
+    Elite kapisi bunlari ayrica puanlamiyordu. Bu fonksiyon tekrar eden radar
+    akisini sayar ve HISTORY_BUILDUP / Elite puanina bonus verir.
+    """
+    if not signals:
+        return
+    now = time.time()
+    events = main_signal_memory.setdefault(symbol, [])
+
+    for d in signals:
+        if not d:
+            continue
+        module = d.get("module", "UNKNOWN")
+        if module == "UNKNOWN":
+            continue
+
+        # Ayni modul 10 dk icinde her taramada sayilmasin.
+        duplicate = False
+        for e in events:
+            if e.get("module") == module and now - e.get("time", 0) < MAIN_SIGNAL_DEDUP_SECONDS:
+                e.update({
+                    "time": now,
+                    "price": d.get("price", e.get("price", 0)),
+                    "score": max(e.get("score", 0), d.get("score", 0)),
+                    "money_impact": max(e.get("money_impact", 0), d.get("money_impact", 0)),
+                    "volume_power": max(e.get("volume_power", 0), d.get("volume_power", 0)),
+                    "market_impact_pct": max(e.get("market_impact_pct", 0), d.get("market_impact_pct", 0)),
+                    "rsi": d.get("rsi", e.get("rsi", 0)),
+                })
+                duplicate = True
+                break
+        if duplicate:
+            continue
+
+        events.append({
+            "time": now,
+            "module": module,
+            "price": d.get("price", 0),
+            "score": d.get("score", 0),
+            "money_impact": d.get("money_impact", 0),
+            "volume_power": d.get("volume_power", 0),
+            "market_impact_pct": d.get("market_impact_pct", 0),
+            "rsi": d.get("rsi", d.get("rsi15", 0)),
+        })
+
+    cleanup_main_signal_memory()
+
+
+def main_signal_summary(symbol):
+    cleanup_main_signal_memory()
+    events = main_signal_memory.get(symbol, [])
+    if not events:
+        return {
+            "main_signal_count_60m": 0,
+            "main_signal_count_120m": 0,
+            "main_signal_unique_count": 0,
+            "main_signal_modules": [],
+            "main_signal_text": "YOK",
+            "main_signal_bonus": 0,
+            "main_signal_first_price": 0,
+            "main_signal_price_gain": 0,
+            "main_signal_money_max": 0,
+            "main_signal_power_max": 0,
+            "main_signal_market_max": 0,
+        }
+
+    now = time.time()
+    events = sorted(events, key=lambda x: x.get("time", 0))
+    events_60 = [e for e in events if now - e.get("time", 0) <= 60 * 60]
+    events_120 = [e for e in events if now - e.get("time", 0) <= 120 * 60]
+
+    modules = []
+    for e in events_120:
+        m = e.get("module", "UNKNOWN")
+        if m not in modules:
+            modules.append(m)
+
+    count_60 = len(events_60)
+    count_120 = len(events_120)
+    bonus = 0
+    if count_60 >= 3:
+        bonus += MAIN_SIGNAL_BONUS_60M_3
+    if count_120 >= 5:
+        bonus += MAIN_SIGNAL_BONUS_120M_5
+    if count_120 >= 8:
+        bonus += MAIN_SIGNAL_BONUS_120M_8
+
+    first_price = next((e.get("price", 0) for e in events_120 if e.get("price", 0) > 0), 0)
+    last_price = next((e.get("price", 0) for e in reversed(events_120) if e.get("price", 0) > 0), 0)
+    price_gain = ((last_price - first_price) / first_price * 100) if first_price and last_price else 0
+
+    return {
+        "main_signal_count_60m": count_60,
+        "main_signal_count_120m": count_120,
+        "main_signal_unique_count": len(modules),
+        "main_signal_modules": modules,
+        "main_signal_text": ", ".join(modules) if modules else "YOK",
+        "main_signal_bonus": int(bonus),
+        "main_signal_first_price": first_price,
+        "main_signal_price_gain": price_gain,
+        "main_signal_money_max": max([e.get("money_impact", 0) for e in events_120] or [0]),
+        "main_signal_power_max": max([e.get("volume_power", 0) for e in events_120] or [0]),
+        "main_signal_market_max": max([e.get("market_impact_pct", 0) for e in events_120] or [0]),
+    }
+
+
+def attach_main_signal_summary(symbol, d):
+    if not d:
+        return d
+    d.update(main_signal_summary(symbol))
+    return d
 
 def cleanup_radar_history():
     now = time.time()
@@ -2795,21 +3019,27 @@ def build_history_signal(symbol, current_best):
         return None
     hist = radar_history_summary(symbol)
     mem = money_memory_summary(symbol)
+    main_mem = main_signal_summary(symbol)
     hp = hist.get("history_points", 0)
     modules = set(hist.get("history_modules", []))
     rsi_value = current_best.get("rsi", current_best.get("rsi15", 0))
+    main_repeat_ok = (
+        main_mem.get("main_signal_count_60m", 0) >= 3
+        or main_mem.get("main_signal_count_120m", 0) >= 5
+    )
 
     # HISTORY_BUILDUP artik cok kolay Elite olmamali.
-    # Once temel hafiza yas/gain/rsi/radar sayisi filtresi uygulanir.
-    if hp < HISTORY_BUILDUP_MIN_POINTS:
+    # V30: Ancak ana kanal ayni coini israrla goruyorsa tek modul tekrarlarini da buildup say.
+    if hp < HISTORY_BUILDUP_MIN_POINTS and not main_repeat_ok:
         return None
-    if hist.get("history_age_min", 0) < HISTORY_BUILDUP_MIN_AGE_MIN:
+    if hist.get("history_age_min", 0) < HISTORY_BUILDUP_MIN_AGE_MIN and not main_repeat_ok:
         return None
-    if hist.get("history_price_gain", 0) > HISTORY_BUILDUP_MAX_GAIN:
+    if hist.get("history_price_gain", 0) > HISTORY_BUILDUP_MAX_GAIN and not main_repeat_ok:
         return None
-    if rsi_value > HISTORY_BUILDUP_MAX_RSI:
+    # Tekrar bonusunda RSI biraz esnek; ama 82+ hala tepe/fomo riski.
+    if rsi_value > (78 if main_repeat_ok else HISTORY_BUILDUP_MAX_RSI):
         return None
-    if len(modules) < HISTORY_BUILDUP_MIN_UNIQUE_RADARS:
+    if len(modules) < HISTORY_BUILDUP_MIN_UNIQUE_RADARS and not main_repeat_ok:
         return None
 
     # Uyanis icin en az para/sikisma/trend/donus kanitlarindan biri olmali.
@@ -2829,10 +3059,13 @@ def build_history_signal(symbol, current_best):
     tmp = dict(current_best)
     tmp.update(hist)
     tmp.update(mem)
+    tmp.update(main_mem)
     long_memory_ok = history_long_memory_bonus_ok(tmp)
     money_memory_ok = money_memory_buildup_ok(mem)
+    second_wave_ok = second_wave_bonus_ok(tmp)
+    memory_reentry_ok = memory_reentry_bonus_ok(tmp)
 
-    if not long_memory_ok and not money_memory_ok:
+    if not long_memory_ok and not money_memory_ok and not second_wave_ok and not memory_reentry_ok:
         if not (market_quality >= HISTORY_BUILDUP_MIN_MARKET_IMPACT or power_quality >= HISTORY_BUILDUP_MIN_VOLUME_POWER):
             return None
         if market_quality < HISTORY_BUILDUP_WEAK_MARKET_IMPACT and power_quality < HISTORY_BUILDUP_WEAK_VOLUME_POWER:
@@ -2854,11 +3087,20 @@ def build_history_signal(symbol, current_best):
     out["history_power_max"] = hist.get("history_power_max", 0)
     out["history_market_max"] = hist.get("history_market_max", 0)
     out.update(mem)
+    out.update(main_mem)
     out["history_quality_market"] = max(out.get("market_impact_pct", 0), out.get("history_market_max", 0), out.get("money_memory_market_60m", 0))
     out["history_quality_power"] = max(out.get("volume_power", 0), out.get("history_power_max", 0), out.get("money_memory_power_max", 0))
     out["history_long_memory_bonus"] = bool(long_memory_ok)
     out["money_memory_bonus"] = bool(money_memory_ok)
-    if long_memory_ok:
+    out["second_wave_bonus"] = bool(second_wave_ok)
+    out["memory_reentry_bonus"] = bool(memory_reentry_ok)
+    if memory_reentry_ok:
+        out["reasons"] = ["Memory Re-Entry aktif", "Hafizada coin + yeniden para/hacim geldi", f"60dk para dalgasi {out.get('money_memory_waves_60m', 0)}", hist.get("history_text", "")]
+    elif second_wave_ok:
+        out["reasons"] = ["Second Wave aktif", "Ikinci para dalgasi geliyor", f"30dk para {int(out.get('money_memory_total_30m', 0))} USDT", hist.get("history_text", "")]
+    elif main_repeat_ok:
+        out["reasons"] = ["Ana kanal tekrar hafizasi guclu", f"60dk {main_mem.get('main_signal_count_60m', 0)} / 120dk {main_mem.get('main_signal_count_120m', 0)} sinyal", "Elite Buildup bonus aktif", main_mem.get("main_signal_text", "")]
+    elif long_memory_ok:
         out["reasons"] = ["Radar hafizasi gucleniyor", "Uzun sureli sessiz birikim", "Long Memory bonus aktif", hist.get("history_text", "")]
     elif money_memory_ok:
         out["reasons"] = ["Radar hafizasi gucleniyor", "Son 60 dk para birikimi var", "Money Memory bonus aktif", hist.get("history_text", "")]
@@ -3308,6 +3550,103 @@ def mexc_elite_gold_signal(d, support_modules=None):
 
     return bool(memory_gold or strong_money_gold or history_gold or squeeze_gold)
 
+
+
+def elite_extend_tp_levels(entry, tp3, d, module, support_modules):
+    """
+    V29 ELITE EXTEND TP:
+    BLESS tipi erken Elite sinyalinde hedefler cok kisa kalmasin diye
+    ilk mesajda devam potansiyeli ve uzak TP4/TP5/TP6 verir.
+    Bu AL kapisini gevsetmez; sadece hedef bilgisini zenginlestirir.
+    """
+    support_modules = support_modules or []
+    if entry <= 0:
+        return {
+            "extend_ok": False,
+            "tp4": 0,
+            "tp5": 0,
+            "tp6": 0,
+            "reason": "YOK",
+        }
+
+    history_age = float(d.get("history_age_min", 0) or 0)
+    history_points = float(d.get("history_points", 0) or 0)
+    history_money_max = float(d.get("history_money_max", 0) or 0)
+    history_power_max = float(d.get("history_power_max", 0) or 0)
+    money_bonus = bool(d.get("money_memory_bonus"))
+    waves = int(d.get("money_memory_waves_60m", 0) or 0)
+    mem60 = float(d.get("money_memory_total_60m", 0) or 0)
+    market60 = float(d.get("money_memory_market_60m", 0) or 0)
+    rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+    live_flags = int(d.get("live_red_flags", 0) or 0)
+    current_market = float(d.get("market_impact_pct", 0) or 0)
+    current_power = float(d.get("volume_power", 0) or 0)
+    current_money = float(d.get("money_impact", 0) or 0)
+    radar_count = 1 + len(support_modules)
+
+    modules = set(support_modules)
+    modules.add(module)
+
+    memory_continue = (
+        money_bonus
+        and history_age >= 60
+        and waves >= 4
+        and history_points >= 18
+        and mem60 >= 60_000
+        and rsi_value <= 72
+        and live_flags <= 1
+    )
+
+    rocket_continue = (
+        ("ROCKET" in modules or current_money >= 3.0)
+        and current_power >= 6.0
+        and current_market >= 0.75
+        and rsi_value <= 76
+        and live_flags <= 1
+    )
+
+    squeeze_continue = (
+        ("SQUEEZE_EXPLOSION" in modules or module == "SQUEEZE_EXPLOSION")
+        and radar_count >= 2
+        and current_power >= 4.0
+        and current_market >= 0.50
+        and rsi_value <= 74
+        and live_flags <= 1
+    )
+
+    trend_continue = (
+        module in ("HISTORY_BUILDUP", "TREND_BUILDUP")
+        and money_bonus
+        and waves >= 4
+        and (history_money_max >= 2.0 or history_power_max >= 8.0 or market60 >= 2.0)
+        and rsi_value <= 72
+        and live_flags <= 1
+    )
+
+    extend_ok = bool(memory_continue or rocket_continue or squeeze_continue or trend_continue)
+    if not extend_ok:
+        return {"extend_ok": False, "tp4": 0, "tp5": 0, "tp6": 0, "reason": "YOK"}
+
+    base_move = max((tp3 - entry) / entry if tp3 > entry else 0.035, 0.035)
+
+    if rocket_continue:
+        mult4, mult5, mult6 = 1.35, 1.75, 2.25
+        reason = "ROCKET/para patlamasi devam potansiyeli"
+    elif memory_continue or trend_continue:
+        mult4, mult5, mult6 = 1.25, 1.65, 2.10
+        reason = "Hafiza + para birikimi devam potansiyeli"
+    else:
+        mult4, mult5, mult6 = 1.20, 1.50, 1.90
+        reason = "Squeeze sonrasi devam potansiyeli"
+
+    return {
+        "extend_ok": True,
+        "tp4": entry * (1 + base_move * mult4),
+        "tp5": entry * (1 + base_move * mult5),
+        "tp6": entry * (1 + base_move * mult6),
+        "reason": reason,
+    }
+
 def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
@@ -3337,6 +3676,19 @@ def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
         tp1 = entry * (1 + risk_pct * 1.2 / 100)
         tp2 = entry * (1 + risk_pct * 1.8 / 100)
         tp3 = entry * (1 + risk_pct * 2.6 / 100)
+
+    extend_tp = elite_extend_tp_levels(entry, tp3, d, module, support_modules)
+    if extend_tp.get("extend_ok"):
+        extend_text = f"""
+
+Devam Potansiyeli: VAR
+Devam Sebep: {extend_tp.get('reason','YOK')}
+TP4: {extend_tp.get('tp4',0):.8f}
+TP5: {extend_tp.get('tp5',0):.8f}
+TP6: {extend_tp.get('tp6',0):.8f}
+"""
+    else:
+        extend_text = ""
 
     extra = ""
     if module in ("MONEY", "MOMENTUM", "EARLY_CONFIRM"):
@@ -3442,7 +3794,7 @@ Stop: {stop:.8f}
 TP1: {tp1:.8f}
 TP2: {tp2:.8f}
 TP3: {tp3:.8f}
-Risk: %{risk_pct:.2f}
+Risk: %{risk_pct:.2f}{extend_text}
 
 Fiyat: {price:.8f}
 RS Skoru: {d.get('rs', 0):.1f}/100
@@ -3473,6 +3825,12 @@ Radar Kombinasyon Puani: {radar_points}
 Elite Gold: {'VAR' if elite_gold else 'YOK'}
 
 {extra}
+Ana Kanal Tekrar 60dk: {d.get('main_signal_count_60m', 0)}
+Ana Kanal Tekrar 120dk: {d.get('main_signal_count_120m', 0)}
+Ana Kanal Tekrar Bonusu: {d.get('main_signal_bonus', 0)}
+Ana Kanal Modulleri: {d.get('main_signal_text', 'YOK')}
+Memory Re-Entry: {'VAR' if d.get('memory_reentry_bonus') or memory_reentry_bonus_ok(d) else 'YOK'}
+Second Wave: {'VAR' if d.get('second_wave_bonus') or second_wave_bonus_ok(d) else 'YOK'}
 
 Not:
 Bu mesaj sadece AL kapisindan gecen sinyal icin atilir.
@@ -3961,6 +4319,32 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         if not history_buildup_quality_ok(d):
             score -= 25
 
+    # V30: Ana kanal tekrar hafizasi. 3-5 kez israrli radar gelen coin Elite'e yaklasir.
+    main_bonus = int(d.get("main_signal_bonus", 0) or 0)
+    if main_bonus:
+        score += min(25, main_bonus)
+        if module == "HISTORY_BUILDUP":
+            score += 6
+
+    # V31: Hafizada coin + yeni para/hacim = ikinci firsat.
+    if second_wave_bonus_ok(d):
+        score += SECOND_WAVE_BONUS
+    if memory_reentry_bonus_ok(d):
+        score += MEMORY_REENTRY_BONUS
+        if module == "HISTORY_BUILDUP":
+            score += 6
+
+    # V31: Zayif para etkili Elite'leri temizle. Guclu hafiza/second wave varsa ceza yemez.
+    strong_memory_context = (
+        memory_reentry_bonus_ok(d)
+        or second_wave_bonus_ok(d)
+        or d.get("money_memory_bonus")
+        or d.get("history_long_memory_bonus")
+        or int(d.get("main_signal_count_120m", 0) or 0) >= 5
+    )
+    if not strong_memory_context and money < WEAK_MONEY_MIN_MONEY and power < WEAK_MONEY_MIN_POWER:
+        score -= WEAK_MONEY_ELITE_PENALTY
+
     # V26: Canli momentum cezasi. Hafiza puani, son mumdaki zayifligi ezmesin.
     score -= int(d.get("live_penalty", 0) or 0)
 
@@ -4119,9 +4503,15 @@ def entry_decision_allowed(best, support=None, btc_status=""):
         )
 
     if module == "HISTORY_BUILDUP":
-        market_quality = max(market_impact_pct, best.get("history_market_max", 0), best.get("money_memory_market_60m", 0))
-        power_quality = max(power, best.get("history_power_max", 0), best.get("money_memory_power_max", 0))
+        market_quality = max(market_impact_pct, best.get("history_market_max", 0), best.get("money_memory_market_60m", 0), best.get("main_signal_market_max", 0))
+        power_quality = max(power, best.get("history_power_max", 0), best.get("money_memory_power_max", 0), best.get("main_signal_power_max", 0))
         mem_ok = money_memory_buildup_ok(best)
+        second_wave_ok = second_wave_bonus_ok(best)
+        memory_reentry_ok = memory_reentry_bonus_ok(best)
+        main_repeat_ok = (
+            best.get("main_signal_count_60m", 0) >= 3
+            or best.get("main_signal_count_120m", 0) >= 5
+        )
         normal_history_ok = (
             history_buildup_quality_ok(best)
             and (money >= 1.25 or best.get("history_money_max", 0) >= 1.8)
@@ -4129,10 +4519,23 @@ def entry_decision_allowed(best, support=None, btc_status=""):
             and (market_quality >= HISTORY_BUILDUP_MIN_MARKET_IMPACT or power_quality >= HISTORY_BUILDUP_MIN_VOLUME_POWER)
             and rsi_value <= HISTORY_BUILDUP_MAX_RSI
         )
+        # V30: Ana kanal 3-5 kez ayni coini israrla yakaliyorsa HISTORY_BUILDUP kapisi daha esnek.
+        # Yine de aşırı RSI/FOMO tepesinde AL basmaz.
+        main_repeat_history_ok = (
+            main_repeat_ok
+            and rsi_value <= 78
+            and fomo <= 18
+            and (
+                power_quality >= 3.0
+                or market_quality >= 0.50
+                or best.get("main_signal_count_120m", 0) >= 8
+            )
+            and (best.get("obv_up") or best.get("macd_turn") or best.get("bb_expanding") or best.get("main_signal_unique_count", 0) >= 2)
+        )
         long_memory_ok = history_long_memory_bonus_ok(best)
         return (
-            (normal_history_ok or long_memory_ok or mem_ok)
-            and (best.get("obv_up") or best.get("macd_turn") or best.get("bb_expanding") or "SQUEEZE" in support_set or "TREND_BUILDUP" in support_set or "SQUEEZE_EXPLOSION" in support_set or "MONEY" in support_set or long_memory_ok)
+            (normal_history_ok or long_memory_ok or mem_ok or main_repeat_history_ok or second_wave_ok or memory_reentry_ok)
+            and (best.get("obv_up") or best.get("macd_turn") or best.get("bb_expanding") or "SQUEEZE" in support_set or "TREND_BUILDUP" in support_set or "SQUEEZE_EXPLOSION" in support_set or "MONEY" in support_set or long_memory_ok or main_repeat_history_ok or second_wave_ok or memory_reentry_ok)
         )
 
     if module == "SQUEEZE":
@@ -4304,12 +4707,23 @@ def analyze(item, btc_ok, btc_status):
         if wakeup_ok and wakeup_data:
             history_seed.append(wakeup_data)
 
+        if signals:
+            # V30: Ana kanala gidebilecek tekrar eden radarlar Elite puanina donusebilsin.
+            record_main_signal_memory(symbol, signals)
+            for _sig in signals:
+                attach_main_signal_summary(symbol, _sig)
+        else:
+            cleanup_main_signal_memory()
+
         if history_seed:
             record_radar_history(symbol, history_seed)
             current_best_for_history = select_best_signal(signals) if signals else wakeup_data
+            if current_best_for_history:
+                attach_main_signal_summary(symbol, current_best_for_history)
             history_data = build_history_signal(symbol, current_best_for_history)
             if history_data and signals:
                 enrich_market_impact(history_data, daily_qv)
+                attach_main_signal_summary(symbol, history_data)
                 signals.append(history_data)
         else:
             cleanup_radar_history()
@@ -4338,8 +4752,9 @@ def run_bot():
             cleanup_money_state()
             cleanup_radar_history()
             cleanup_money_memory()
+            cleanup_main_signal_memory()
             universe = build_universe()
-            print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), flush=True)
+            print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), "MainSignalMemory:", len(main_signal_memory), flush=True)
             for item in universe:
                 analyze(item, btc_ok, btc_status)
                 time.sleep(0.35)
@@ -4353,7 +4768,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V16 Bot Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V30 Bot Aktif", 200
 
 
 if __name__ == "__main__":
