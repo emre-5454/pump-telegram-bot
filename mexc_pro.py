@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V32"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V33"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -158,6 +158,19 @@ FLOW_SCORE_MIN_FOR_GOLD = 3
 FLOW_SCORE_STRONG = 4
 FLOW_WEAK_ELITE_PENALTY = 12
 FLOW_STRONG_ELITE_BONUS = 8
+
+# V33 STO / BEL / LUMIA FIX:
+# Ana kanal tam yerinde SQUEEZE_EXPLOSION veriyor ama Elite kapisi tek radar + dusuk canli USDT
+# yuzunden kesiyordu. Bu blok, gercek yatay kirilim + OBV/MACD + hacim gucu varsa
+# "PRE-ROCKET ELITE" olarak terfi ettirir.
+SQUEEZE_FAST_ELITE_MIN_MONEY = 2.20
+SQUEEZE_FAST_ELITE_MIN_POWER = 6.00
+SQUEEZE_FAST_ELITE_MIN_VOL_RATIO = 2.50
+SQUEEZE_FAST_ELITE_MIN_MARKET = 0.02
+SQUEEZE_FAST_ELITE_MAX_RSI = 78.50
+SQUEEZE_FAST_ELITE_MAX_GAIN_15M = 8.00
+SQUEEZE_FAST_ELITE_MAX_GAIN_30M = 14.00
+SQUEEZE_FAST_ELITE_BONUS = 72
 
 sent_early = {}
 early_daily_counter = {}
@@ -3154,6 +3167,47 @@ def radar_strength_points(module, support_modules=None):
 
 
 
+def squeeze_fast_pre_elite_ok(best):
+    """
+    V33 PRE-ROCKET SQUEEZE ELITE:
+    STO/BEL/LUMIA tipi coinlerde ana kanal SQUEEZE_EXPLOSION'u tam dipte verir;
+    fakat USDT hacim kucuk ve radar sayisi 1 oldugu icin Elite kaciyordu.
+    Bu fonksiyon gec pump degil, yatay kutudan ilk cikis + alici baskisi varsa Elite'e izin verir.
+    """
+    if not best or best.get("module") != "SQUEEZE_EXPLOSION":
+        return False
+
+    money = float(best.get("money_impact", 0) or 0)
+    power = float(best.get("volume_power", 0) or 0)
+    vol_ratio = float(best.get("vol_ratio", 0) or 0)
+    market = float(best.get("market_impact_pct", 0) or 0)
+    rsi_value = float(best.get("rsi", best.get("rsi15", 0)) or 0)
+    gain15 = float(best.get("price_gain_15m", 0) or 0)
+    gain30 = float(best.get("price_gain_30m", 0) or 0)
+    bb_width = float(best.get("bb_width", 0) or 0)
+
+    has_break = bool(best.get("range_break") or best.get("upper_break"))
+    flow_ok = bool(best.get("obv_up") or best.get("macd_turn") or int(best.get("flow_score", 0) or 0) >= 3)
+    early_zone = (
+        gain15 <= SQUEEZE_FAST_ELITE_MAX_GAIN_15M
+        and gain30 <= SQUEEZE_FAST_ELITE_MAX_GAIN_30M
+        and float(best.get("dist_from_low", 0) or 0) <= 12
+    )
+
+    return (
+        has_break
+        and bool(best.get("bb_expanding", False))
+        and flow_ok
+        and money >= SQUEEZE_FAST_ELITE_MIN_MONEY
+        and power >= SQUEEZE_FAST_ELITE_MIN_POWER
+        and vol_ratio >= SQUEEZE_FAST_ELITE_MIN_VOL_RATIO
+        and market >= SQUEEZE_FAST_ELITE_MIN_MARKET
+        and bb_width <= 0.075
+        and 45 <= rsi_value <= SQUEEZE_FAST_ELITE_MAX_RSI
+        and early_zone
+    )
+
+
 def squeeze_explosion_elite_exception(best):
     """
     V20 BSB / SILVER FIX:
@@ -3163,6 +3217,9 @@ def squeeze_explosion_elite_exception(best):
     """
     if not best or best.get("module") != "SQUEEZE_EXPLOSION":
         return False
+
+    if squeeze_fast_pre_elite_ok(best):
+        return True
 
     money = best.get("money_impact", 0)
     power = best.get("volume_power", 0)
@@ -3751,6 +3808,7 @@ Eski Tepeye Uzaklik: %{d.get('still_below_high', 0):.2f}
 BB Width: {d.get('bb_width', 0):.4f}
 Yatay Kirilim: {'VAR' if d.get('range_break') else 'YOK'}
 Ust Bant Kirilim: {'VAR' if d.get('upper_break') else 'YOK'}
+Pre-Rocket Elite: {'VAR' if d.get('squeeze_fast_pre_elite') or squeeze_fast_pre_elite_ok(d) else 'YOK'}
 """
     elif module == "ROCKET":
         extra = f"""
@@ -4192,7 +4250,7 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
 
     # V28 ZORA FIX: Çok düşük canlı USDT + düşük market etki Elite puanını şişirmesin.
     # PRL gibi küçük para ama %1+ market etki yapan coinler bu cezayı yemez.
-    if usdt_vol < MEXC_MIN_LIVE_USDT_FOR_ELITE and market_impact_pct < MEXC_MIN_LOW_USDT_MARKET_IMPACT:
+    if usdt_vol < MEXC_MIN_LIVE_USDT_FOR_ELITE and market_impact_pct < MEXC_MIN_LOW_USDT_MARKET_IMPACT and not squeeze_fast_pre_elite_ok(d):
         score -= 20
         if module in ("SQUEEZE_EXPLOSION", "SQUEEZE", "HISTORY_BUILDUP"):
             score -= 10
@@ -4206,7 +4264,7 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         score += 5
     elif market_quality_for_score >= 1:
         score += 2
-    elif market_impact_pct < 0.20 and usdt_vol < MEXC_ELITE_STRONG_ABS_USDT:
+    elif market_impact_pct < 0.20 and usdt_vol < MEXC_ELITE_STRONG_ABS_USDT and not squeeze_fast_pre_elite_ok(d):
         score -= 12
 
     # Para Kalitesi Terfisi: H gibi tek radar ama cok guclu para girisi olanlari odullendir.
@@ -4215,7 +4273,10 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
 
     # V20 BSB/SILVER FIX: kaliteli SQUEEZE_EXPLOSION odullensin, zayif ust fitilli squeeze cezalandirilsin.
     if module == "SQUEEZE_EXPLOSION":
-        if squeeze_explosion_elite_exception(d):
+        if squeeze_fast_pre_elite_ok(d):
+            score += SQUEEZE_FAST_ELITE_BONUS
+            d["squeeze_fast_pre_elite"] = True
+        elif squeeze_explosion_elite_exception(d):
             score += 18
         else:
             score -= 18
@@ -4432,6 +4493,7 @@ def entry_decision_allowed(best, support=None, btc_status=""):
     low_money_exempt = (
         module in ("V_DIP_RECOVERY", "DIP_SWEEP", "DIP_REACTION", "DIP", "ELITE_WHALE")
         or best.get("fast_liquidity_sweep")
+        or squeeze_fast_pre_elite_ok(best)
     )
     if low_live_money and not low_money_exempt:
         return False
