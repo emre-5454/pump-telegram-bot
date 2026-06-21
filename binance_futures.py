@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V16"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V17"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -88,6 +88,22 @@ PRE_ROCKET_MAX_RSI = 78
 PRE_ROCKET_MAX_15M_GAIN = 7.0
 PRE_ROCKET_MAX_30M_GAIN = 13.0
 PRE_ROCKET_ELITE_BONUS = 18
+
+# V17 UB / SKYAI FIX:
+# Ana kanalda guclenmeye devam eden coinler Elite'e terfi edebilsin.
+# Ozellikle MOMENTUM CONTINUE ve HISTORY_BUILDUP icin canli para 0 gorunse bile
+# hafiza para/momentum gucu dikkate alinir.
+RELOAD_MIN_MONEY = 3.0
+RELOAD_MIN_POWER = 12.0
+RELOAD_MIN_MARKET = 1.0
+REPEAT_FORCE_MIN_120M = 5
+REPEAT_FORCE_MIN_WAVES = 3
+REPEAT_FORCE_MIN_60M_USDT = 1_000_000
+REPEAT_FORCE_MIN_MARKET_60M = 1.0
+HISTORY_FORCE_MIN_POINTS = 16
+HISTORY_FORCE_MIN_WAVES = 3
+HISTORY_FORCE_MIN_60M_USDT = 750_000
+V17_RELOAD_ELITE_BONUS = 20
 
 MIN_EARLY_RS = 74
 MIN_SAFE_CONFIDENCE = 72
@@ -981,28 +997,63 @@ def apply_reentry_second_wave_flags(d):
         return d
     history_points = d.get("history_points", 0)
     main_count_120 = d.get("main_signal_count_120m", 0)
-    money_impact = d.get("money_impact", 0)
-    volume_power = d.get("volume_power", 0)
-    market_impact_pct = d.get("market_impact_pct", 0)
-    money_mem_15m = d.get("money_mem_15m", 0)
-    money_mem_30m = d.get("money_mem_30m", 0)
-    money_waves = d.get("money_wave_count", 0)
+
+    # V17: HISTORY_BUILDUP mesajinda canli para 0 gorunebilir. Bu durumda
+    # hafizadaki max para / max hacim / toplam market etki esas alinmali.
+    money_impact = max(float(d.get("money_impact", 0) or 0), float(d.get("history_money_max", 0) or 0))
+    volume_power = max(float(d.get("volume_power", 0) or 0), float(d.get("history_power_max", 0) or 0))
+    market_impact_pct = max(
+        float(d.get("market_impact_pct", 0) or 0),
+        float(d.get("history_market_max", 0) or 0),
+        float(d.get("money_market_60m", 0) or 0),
+    )
+    money_mem_15m = float(d.get("money_mem_15m", 0) or 0)
+    money_mem_30m = float(d.get("money_mem_30m", 0) or 0)
+    money_mem_60m = float(d.get("money_mem_60m", 0) or 0)
+    money_waves = int(d.get("money_wave_count", 0) or 0)
+    money_gain = float(d.get("money_gain_from_first", 0) or 0)
+
+    repeat_force = (
+        main_count_120 >= REPEAT_FORCE_MIN_120M
+        and money_waves >= REPEAT_FORCE_MIN_WAVES
+        and (money_mem_60m >= REPEAT_FORCE_MIN_60M_USDT or market_impact_pct >= REPEAT_FORCE_MIN_MARKET_60M)
+        and money_gain <= 12
+    )
+
+    history_force = (
+        history_points >= HISTORY_FORCE_MIN_POINTS
+        and money_waves >= HISTORY_FORCE_MIN_WAVES
+        and money_mem_60m >= HISTORY_FORCE_MIN_60M_USDT
+        and money_gain <= 12
+    )
 
     memory_reentry = (
-        (history_points >= MEMORY_REENTRY_MIN_HISTORY or main_count_120 >= 3 or d.get("money_memory_bonus"))
-        and money_impact >= MEMORY_REENTRY_MIN_MONEY
-        and volume_power >= MEMORY_REENTRY_MIN_POWER
-        and market_impact_pct >= 0.02
+        (history_points >= MEMORY_REENTRY_MIN_HISTORY or main_count_120 >= 3 or d.get("money_memory_bonus") or repeat_force or history_force)
+        and (
+            (money_impact >= MEMORY_REENTRY_MIN_MONEY and volume_power >= MEMORY_REENTRY_MIN_POWER and market_impact_pct >= 0.02)
+            or repeat_force
+            or history_force
+        )
     )
+
     second_wave = (
-        money_waves >= 2
+        money_waves >= 3
         and money_mem_15m >= SECOND_WAVE_MIN_15M_USDT
         and money_mem_30m >= SECOND_WAVE_MIN_30M_USDT
-        and money_mem_30m >= max(money_mem_15m * 1.25, SECOND_WAVE_MIN_30M_USDT)
-        and d.get("money_gain_from_first", 0) <= 9
+        and (
+            money_mem_30m >= money_mem_15m * 1.05
+            or money_mem_60m >= REPEAT_FORCE_MIN_60M_USDT
+            or market_impact_pct >= REPEAT_FORCE_MIN_MARKET_60M
+        )
+        and money_gain <= 12
     )
-    main_repeat_buildup = main_count_120 >= 5 and d.get("main_signal_bonus", 0) > 0
+    main_repeat_buildup = (main_count_120 >= 5 and d.get("main_signal_bonus", 0) > 0) or repeat_force
 
+    d["effective_money_impact"] = money_impact
+    d["effective_volume_power"] = volume_power
+    d["effective_market_impact_pct"] = market_impact_pct
+    d["repeat_force"] = bool(repeat_force)
+    d["history_force"] = bool(history_force)
     d["memory_reentry"] = bool(memory_reentry)
     d["second_wave_bonus"] = bool(second_wave)
     d["main_repeat_buildup"] = bool(main_repeat_buildup)
@@ -2644,14 +2695,14 @@ def elite_score_signal(d, support_modules=None):
 
     score = 0
     rs = d.get("rs", 0)
-    money_impact = d.get("money_impact", 0)
-    volume_power = d.get("volume_power", 0)
+    money_impact = max(d.get("money_impact", 0), d.get("effective_money_impact", 0))
+    volume_power = max(d.get("volume_power", 0), d.get("effective_volume_power", 0))
     price_gain = d.get("price_gain_from_first", 0)
     money_growth = d.get("money_growth", 1)
     power_growth = d.get("power_growth", 1)
     rsi_value = d.get("rsi", d.get("rsi15", 0))
     combo_score, radar_count = radar_combo_score(d, support_modules)
-    market_impact_pct = d.get("market_impact_pct", 0)
+    market_impact_pct = max(d.get("market_impact_pct", 0), d.get("effective_market_impact_pct", 0))
 
     # OI destegi: para/hacim long tarafindan mi geliyor ayirmaya calisir.
     if d.get("oi_strong_long_supported"):
@@ -2842,6 +2893,8 @@ def elite_score_signal(d, support_modules=None):
         score += 12
     if d.get("main_repeat_buildup"):
         score += 8
+    if d.get("repeat_force") or d.get("history_force"):
+        score += V17_RELOAD_ELITE_BONUS
 
     # V15: Zayif para etkili Elite'ler sismasin. Hafiza varsa ceza daha yumusak kalir.
     if money_impact < 1.8 and volume_power < 3.0 and market_impact_pct < 0.10:
@@ -2901,23 +2954,43 @@ def is_elite_al_candidate(best, support_modules=None):
     module = best.get("module", "UNKNOWN")
     combo_score, radar_count = radar_combo_score(best, support_modules)
 
-    if is_fomo_block(best):
-        return False, "FOMO_BLOCK"
-
-    if module == "MOMENTUM":
-        return False, "MOMENTUM_AL_DEGIL"
-
     money_memory_ok = bool(best.get("money_memory_bonus"))
     history_ok = best.get("history_points", 0) >= 16
     memory_reentry_ok = bool(best.get("memory_reentry"))
     second_wave_ok = bool(best.get("second_wave_bonus"))
     main_repeat_ok = bool(best.get("main_repeat_buildup"))
-    if best.get("money_impact", 0) < 1.45 or best.get("volume_power", 0) < 2.8:
-        if not (money_memory_ok or history_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or module == "TREND_BUILDUP"):
+    repeat_force_ok = bool(best.get("repeat_force"))
+    history_force_ok = bool(best.get("history_force"))
+    effective_money = max(best.get("money_impact", 0), best.get("effective_money_impact", 0))
+    effective_power = max(best.get("volume_power", 0), best.get("effective_volume_power", 0))
+    effective_market = max(best.get("market_impact_pct", 0), best.get("effective_market_impact_pct", 0))
+
+    fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok) and best.get("money_gain_from_first", 0) <= 12
+    if is_fomo_block(best) and not fomo_exception:
+        return False, "FOMO_BLOCK"
+
+    # V17: MOMENTUM tek basina AL degildi; fakat UB gibi para/hacim buyumesi asiri guclu ise
+    # Reload/Second Wave olarak Elite kapisina girebilir.
+    if module == "MOMENTUM":
+        momentum_reload = (
+            (effective_money >= RELOAD_MIN_MONEY and effective_power >= RELOAD_MIN_POWER and effective_market >= RELOAD_MIN_MARKET)
+            or memory_reentry_ok
+            or second_wave_ok
+            or repeat_force_ok
+        )
+        if not momentum_reload:
+            return False, "MOMENTUM_AL_DEGIL"
+
+    if effective_money < 1.45 or effective_power < 2.8:
+        if not (money_memory_ok or history_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or repeat_force_ok or history_force_ok or module == "TREND_BUILDUP"):
             return False, "PARA_ZAYIF"
 
     if not market_impact_ok(best):
-        return False, "MARKET_ETKI_ZAYIF"
+        market_memory_exception = (
+            money_memory_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or repeat_force_ok or history_force_ok
+        ) and (best.get("money_market_60m", 0) >= 0.25 or effective_market >= 0.25 or best.get("money_mem_60m", 0) >= 250_000)
+        if not market_memory_exception:
+            return False, "MARKET_ETKI_ZAYIF"
 
     rsi_value = best.get("rsi", best.get("rsi15", 0))
     if rsi_value > 72 and not (module == "PRE_ROCKET_SQUEEZE" and rsi_value <= PRE_ROCKET_MAX_RSI):
@@ -2964,24 +3037,24 @@ def is_elite_al_candidate(best, support_modules=None):
     # LUMIA gibi sadece buyume orani yuksek ama mutlak para zayif olanlari elesin.
     if module == "MONEY_ACCEL" and combo_score >= 3:
         monster_money = (
-            best.get("money_impact", 0) >= 8.0
-            or best.get("volume_power", 0) >= 50.0
-            or best.get("market_impact_pct", 0) >= 10.0
+            effective_money >= 8.0
+            or effective_power >= 50.0
+            or effective_market >= 10.0
         )
         normal_money_quality = (
-            best.get("money_impact", 0) >= 2.5
-            or best.get("volume_power", 0) >= 5.0
+            effective_money >= 2.5
+            or effective_power >= 5.0
             or (
-                best.get("market_impact_pct", 0) >= 1.0
-                and best.get("money_impact", 0) >= 1.8
-                and best.get("volume_power", 0) >= 3.5
+                effective_market >= 1.0
+                and effective_money >= 1.8
+                and effective_power >= 3.5
             )
         )
         supported_money_quality = (
-            (radar_count >= 2 or money_memory_ok or history_ok)
-            and best.get("money_impact", 0) >= 1.8
-            and best.get("volume_power", 0) >= 3.5
-            and best.get("market_impact_pct", 0) >= 0.7
+            (radar_count >= 2 or money_memory_ok or history_ok or repeat_force_ok)
+            and effective_money >= 1.8
+            and effective_power >= 3.5
+            and effective_market >= 0.7
         )
         if monster_money or normal_money_quality or supported_money_quality:
             return True, "MONEY_ACCEL_ONAY"
@@ -3015,8 +3088,8 @@ def is_elite_al_candidate(best, support_modules=None):
     if module == "HISTORY_BUILDUP" and (
         history_ok
         and best.get("history_age_min", 0) >= 25
-        and best.get("history_price_gain", 0) <= 8
-        and (radar_count >= 2 or money_memory_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok)
+        and best.get("history_price_gain", 0) <= 10
+        and (radar_count >= 2 or money_memory_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or repeat_force_ok or history_force_ok)
     ):
         return True, "HISTORY_BUILDUP_ONAY"
 
@@ -3026,8 +3099,19 @@ def is_elite_al_candidate(best, support_modules=None):
     if second_wave_ok and (best.get("money_impact", 0) >= 1.6 or best.get("volume_power", 0) >= 3.0):
         return True, "SECOND_WAVE_ONAY"
 
-    if main_repeat_ok and (best.get("money_impact", 0) >= 1.7 or best.get("market_impact_pct", 0) >= 0.10):
+    if main_repeat_ok and (effective_money >= 1.7 or effective_market >= 0.10 or best.get("money_mem_60m", 0) >= 500_000):
         return True, "ANA_KANAL_TEKRAR_ONAY"
+
+    if module == "MOMENTUM" and (
+        effective_money >= RELOAD_MIN_MONEY
+        and effective_power >= RELOAD_MIN_POWER
+        and effective_market >= RELOAD_MIN_MARKET
+        and (best.get("money_growth", 1) >= 3 or best.get("power_growth", 1) >= 8 or best.get("money_mem_60m", 0) >= 750_000)
+    ):
+        return True, "MOMENTUM_RELOAD_ONAY"
+
+    if (repeat_force_ok or history_force_ok) and (money_memory_ok or best.get("money_mem_60m", 0) >= 750_000):
+        return True, "REPEAT_MONEY_FORCE_ONAY"
 
     return False, "RADAR_KOMBINASYON_YETERSIZ"
 
