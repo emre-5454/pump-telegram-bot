@@ -15,7 +15,7 @@ CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V33"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V34"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -48,6 +48,8 @@ COOLDOWN_RADAR_HISTORY = 180 * 60
 COOLDOWN_SQUEEZE_EXPLOSION = 120 * 60
 COOLDOWN_ROCKET_RADAR = 90 * 60
 COOLDOWN_EARLY_REVERSAL = 90 * 60
+COOLDOWN_ELITE_HAZIRLIK = 45 * 60
+COOLDOWN_PRE_ROCKET_WATCH = 45 * 60
 
 WATCH_EXPIRE_SECONDS = 45 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
@@ -172,6 +174,21 @@ SQUEEZE_FAST_ELITE_MAX_GAIN_15M = 8.00
 SQUEEZE_FAST_ELITE_MAX_GAIN_30M = 14.00
 SQUEEZE_FAST_ELITE_BONUS = 72
 
+# V34 ERKEN ADAY KATMANI:
+# V33 ve oncesinde problem: coin ana kanala hic dusmeden tek mumda kaciyor
+# veya ana kanalda izleme kaliyor. V34, Elite'i bozmaz; AL degildir.
+# Patlama oncesi adaylari erken ayri modulle ana kanala tasir.
+ELITE_PREP_MIN_SCORE = 10
+ELITE_PREP_MAX_RSI = 76
+ELITE_PREP_MAX_GAIN_15M = 6.5
+ELITE_PREP_MAX_GAIN_30M = 12.0
+PRE_ROCKET_WATCH_MIN_SCORE = 15
+PRE_ROCKET_WATCH_MIN_MONEY = 1.65
+PRE_ROCKET_WATCH_MIN_POWER = 3.0
+PRE_ROCKET_WATCH_MAX_RSI = 82
+PRE_ROCKET_WATCH_MAX_GAIN_15M = 9.0
+PRE_ROCKET_WATCH_MAX_GAIN_30M = 16.0
+
 sent_early = {}
 early_daily_counter = {}
 sent_safe = {}
@@ -191,6 +208,8 @@ sent_radar_history = {}
 sent_squeeze_explosion = {}
 sent_rocket_radar = {}
 sent_early_reversal = {}
+sent_elite_hazirlik = {}
+sent_pre_rocket_watch = {}
 watchlist = {}
 money_state = {}
 radar_history = {}
@@ -1279,6 +1298,176 @@ def squeeze_explosion_signal(symbol, rs):
         "reasons": reasons,
     }
 
+def elite_hazirlik_signal(symbol, rs):
+    """
+    V34 ELITE HAZIRLIK:
+    AL degildir. Amac; NAORIS/STO/BEL gibi patlamadan once
+    para/OBV/MACD/EMA ilk izini ana kanala dusurmek.
+    Elite kapisini gevsetmez; erken takip listesi uretir.
+    """
+    df15 = fetch_df(symbol, "15m", 120)
+    df1h = fetch_df(symbol, "1h", 80)
+    if df15 is None or df1h is None or len(df15) < 45:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    p1 = df15.iloc[-2]
+    h1 = df1h.iloc[-1]
+    price = float(m15.close)
+
+    last4_vol = df15["volume"].tail(4).mean()
+    prev20_vol = df15["volume"].iloc[-24:-4].mean()
+    vol_ratio = last4_vol / prev20_vol if prev20_vol > 0 else 0
+    usdt_vol = df15["volume"].tail(4).sum() * price
+    avg_usdt_vol = df15["vol_avg"].tail(4).sum() * price if df15["vol_avg"].tail(4).sum() > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    gains = recent_price_gains(df15, price)
+    price_gain_15m = gains["price_gain_15m"]
+    price_gain_30m = gains["price_gain_30m"]
+    low_24h = df15["low"].tail(96).min()
+    dist_from_low = ((price - low_24h) / low_24h) * 100 if low_24h > 0 else 999
+
+    obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-10]
+    macd_turn = m15.macd > df15["macd"].iloc[-4]
+    ema_reclaim = price > m15.ema21 or (price > m15.ema9 and m15.ema9 >= m15.ema21 * 0.995)
+    bb_squeeze = m15.bb_width <= 0.085
+    bb_expanding = m15.bb_width > df15["bb_width"].iloc[-4]
+    range_tight = ((df15["high"].tail(24).max() - df15["low"].tail(24).min()) / price * 100) <= 9 if price > 0 else False
+
+    score = 0
+    reasons = []
+    if rs >= 70:
+        score += 3; reasons.append("RS guclu/aday")
+    elif rs >= 55:
+        score += 2; reasons.append("RS kabul edilebilir")
+    if vol_ratio >= 1.20:
+        score += 2; reasons.append("Hacim uyanmaya basladi")
+    if money_impact >= 1.20:
+        score += 2; reasons.append("Para etkisi basliyor")
+    if volume_power >= 1.80:
+        score += 2; reasons.append("Hacim gucu erken")
+    if obv_up:
+        score += 3; reasons.append("OBV birikim")
+    if macd_turn:
+        score += 2; reasons.append("MACD toparlanma")
+    if ema_reclaim:
+        score += 2; reasons.append("EMA geri alma")
+    if bb_squeeze or range_tight:
+        score += 2; reasons.append("Sikisma/yatay aday")
+    if bb_expanding:
+        score += 1; reasons.append("Bollinger acilmaya basliyor")
+
+    valid = (
+        score >= ELITE_PREP_MIN_SCORE
+        and 38 <= m15.rsi <= ELITE_PREP_MAX_RSI
+        and price_gain_15m <= ELITE_PREP_MAX_GAIN_15M
+        and price_gain_30m <= ELITE_PREP_MAX_GAIN_30M
+        and dist_from_low <= 30
+        and (money_impact >= 1.10 or vol_ratio >= 1.15)
+        and volume_power >= 1.20
+        and (obv_up or macd_turn or ema_reclaim or bb_squeeze or range_tight)
+    )
+
+    return valid, {
+        "module": "ELITE_HAZIRLIK", "score": score, "priority": 7, "price": price, "rs": rs,
+        "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "money_impact": money_impact, "volume_power": volume_power,
+        "rsi": m15.rsi, "dist_from_low": dist_from_low, "bb_width": m15.bb_width,
+        "bb_expanding": bb_expanding, "bb_squeeze": bb_squeeze, "range_break": False, "upper_break": False,
+        "obv_up": obv_up, "macd_turn": macd_turn, "ema_reclaim": ema_reclaim,
+        "price_gain_15m": price_gain_15m, "price_gain_30m": price_gain_30m,
+        "fomo_exempt": False, "reasons": reasons + ["AL DEGIL - erken takip adayi"],
+    }
+
+
+def pre_rocket_watch_signal(symbol, rs):
+    """
+    V34 PRE_ROCKET_WATCH:
+    ROCKET olmadan onceki canli hizlanma. AL degildir.
+    Sinyal yok diye kaciran coinleri en azindan izleme kanalina alir.
+    """
+    df15 = fetch_df(symbol, "15m", 120)
+    df1h = fetch_df(symbol, "1h", 80)
+    if df15 is None or df1h is None or len(df15) < 45:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+    price = float(m15.close)
+
+    last2_vol = df15["volume"].tail(2).mean()
+    prev20_vol = df15["volume"].iloc[-24:-4].mean()
+    vol_ratio = last2_vol / prev20_vol if prev20_vol > 0 else 0
+    usdt_vol = df15["volume"].tail(2).sum() * price
+    avg_usdt_vol = df15["vol_avg"].tail(2).sum() * price if df15["vol_avg"].tail(2).sum() > 0 else 0
+    money_impact = usdt_vol / avg_usdt_vol if avg_usdt_vol > 0 else 0
+    volume_power = money_impact * vol_ratio
+
+    gains = recent_price_gains(df15, price)
+    price_gain_15m = gains["price_gain_15m"]
+    price_gain_30m = gains["price_gain_30m"]
+    low_24h = df15["low"].tail(96).min()
+    dist_from_low = ((price - low_24h) / low_24h) * 100 if low_24h > 0 else 999
+
+    obv_up = df15["obv"].iloc[-1] > df15["obv"].iloc[-8]
+    macd_turn = m15.macd > df15["macd"].iloc[-4] or h1.macd > h1_prev.macd
+    ema_reclaim = price > m15.ema9 and price > m15.ema21
+    bb_expanding = m15.bb_width > df15["bb_width"].iloc[-4]
+    range_high = df15["high"].iloc[-26:-2].max()
+    range_break = price > range_high * 1.002 if range_high > 0 else False
+
+    score = 0
+    reasons = []
+    if money_impact >= 2.2:
+        score += 5; reasons.append("Para etkisi hizlaniyor")
+    elif money_impact >= PRE_ROCKET_WATCH_MIN_MONEY:
+        score += 3; reasons.append("Para etkisi aday")
+    if vol_ratio >= 2.2:
+        score += 4; reasons.append("Hacim hizlaniyor")
+    elif vol_ratio >= 1.6:
+        score += 2; reasons.append("Hacim artiyor")
+    if volume_power >= 6.0:
+        score += 4; reasons.append("Hacim gucu yuksek")
+    elif volume_power >= PRE_ROCKET_WATCH_MIN_POWER:
+        score += 2; reasons.append("Hacim gucu aday")
+    if usdt_vol >= 10_000:
+        score += 2; reasons.append("USDT hacim var")
+    if obv_up:
+        score += 3; reasons.append("OBV alici")
+    if macd_turn:
+        score += 2; reasons.append("MACD donuyor")
+    if ema_reclaim:
+        score += 2; reasons.append("EMA ustu")
+    if bb_expanding or range_break:
+        score += 2; reasons.append("Sikisma/kirilim basliyor")
+    if rs >= 55:
+        score += 1; reasons.append("RS yeterli")
+
+    valid = (
+        score >= PRE_ROCKET_WATCH_MIN_SCORE
+        and money_impact >= PRE_ROCKET_WATCH_MIN_MONEY
+        and volume_power >= PRE_ROCKET_WATCH_MIN_POWER
+        and 42 <= m15.rsi <= PRE_ROCKET_WATCH_MAX_RSI
+        and price_gain_15m <= PRE_ROCKET_WATCH_MAX_GAIN_15M
+        and price_gain_30m <= PRE_ROCKET_WATCH_MAX_GAIN_30M
+        and dist_from_low <= 35
+        and (obv_up or macd_turn)
+        and (ema_reclaim or bb_expanding or range_break)
+    )
+
+    return valid, {
+        "module": "PRE_ROCKET_WATCH", "score": score, "priority": 44, "price": price, "rs": rs,
+        "vol_ratio": vol_ratio, "usdt_vol": usdt_vol, "money_impact": money_impact, "volume_power": volume_power,
+        "rsi": m15.rsi, "dist_from_low": dist_from_low, "bb_width": m15.bb_width,
+        "bb_expanding": bb_expanding, "range_break": range_break, "upper_break": False,
+        "obv_up": obv_up, "macd_turn": macd_turn, "ema_reclaim": ema_reclaim,
+        "price_gain_15m": price_gain_15m, "price_gain_30m": price_gain_30m,
+        "fomo_exempt": False, "reasons": reasons + ["AL DEGIL - patlama oncesi izleme"],
+    }
+
+
 def early_radar(symbol, rs):
     df1h = fetch_df(symbol, "1h", 120)
     df15 = fetch_df(symbol, "15m", 120)
@@ -2206,7 +2395,7 @@ def watch_confirm(symbol, d):
 def format_signal(symbol, d, funding, btc_status, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
-    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "DIP_SWEEP":"DIP SWEEP", "ELITE_WHALE":"ELITE BALINA IGNESI", "STRONG_WICK":"DIP SWEEP", "REVERSAL":"REVERSAL WATCH", "SQUEEZE":"SQUEEZE BREAKOUT", "EARLY":"EARLY RADAR", "EARLY_CONFIRM":"ERKEN AL ONAY", "TREND_BUILDUP":"SESSIZ TREND BUILDUP", "ROCKET":"ROCKET RADAR"}
+    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "DIP_SWEEP":"DIP SWEEP", "ELITE_WHALE":"ELITE BALINA IGNESI", "STRONG_WICK":"DIP SWEEP", "REVERSAL":"REVERSAL WATCH", "SQUEEZE":"SQUEEZE BREAKOUT", "EARLY":"EARLY RADAR", "EARLY_CONFIRM":"ERKEN AL ONAY", "TREND_BUILDUP":"SESSIZ TREND BUILDUP", "ROCKET":"ROCKET RADAR", "ELITE_HAZIRLIK":"ELITE HAZIRLIK", "PRE_ROCKET_WATCH":"PRE ROCKET WATCH"}
     title = title_map.get(module, module)
     reasons = d.get("reasons") or d.get("continue_reasons") or d.get("momentum_reasons") or d.get("confirm_reasons") or d.get("watch_reasons") or []
     support_text = ", ".join(support_modules) if support_modules else "YOK"
@@ -2341,6 +2530,19 @@ Higher High: {d.get('higher_high_count',0)}
 EMA21 Ustu Mum: {d.get('close_above_ema21_count',0)}/12
 OBV Birikim: {'VAR' if d.get('obv_up') else 'YOK'}
 MACD Toparlanma: {'VAR' if d.get('macd_turn') else 'YOK'}
+"""
+    elif module in ("ELITE_HAZIRLIK", "PRE_ROCKET_WATCH"):
+        extra = f"""
+15m Degisim: %{d.get('price_gain_15m',0):.2f}
+30m Degisim: %{d.get('price_gain_30m',0):.2f}
+24s Dip Mesafesi: %{d.get('dist_from_low',0):.2f}
+BB Width: {d.get('bb_width',0):.4f}
+OBV Giris: {'VAR' if d.get('obv_up') else 'YOK'}
+MACD Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
+EMA Geri Alma: {'VAR' if d.get('ema_reclaim') else 'YOK'}
+Yatay/Kirilim: {'VAR' if d.get('range_break') or d.get('bb_squeeze') else 'YOK'}
+
+Uyari: Bu AL degildir. Elite Hazirlik / Pre-Rocket takip mesajidir.
 """
     else:
         extra = f"""
@@ -2642,6 +2844,8 @@ RADAR_HISTORY_DEDUP_SECONDS = 25 * 60
 RADAR_HISTORY_WEIGHTS = {
     "WAKEUP": 1,
     "SQUEEZE_EXPLOSION": 5,
+    "ELITE_HAZIRLIK": 2,
+    "PRE_ROCKET_WATCH": 4,
     "ROCKET": 6,
     "EARLY_REVERSAL": 4,
     "EARLY": 2,
@@ -3271,6 +3475,8 @@ def elite_combo_allowed(best, support=None):
     """
     support = support or []
     module = best.get("module", "UNKNOWN")
+    if module in ("ELITE_HAZIRLIK", "PRE_ROCKET_WATCH"):
+        return False
     support_set = set(support)
     total_radars = 1 + len(support)
     points = radar_strength_points(module, support)
@@ -4705,7 +4911,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         return False
     best = select_best_signal(signals)
     support = [s["module"] for s in signals if s["module"] != best["module"]]
-    cooldown_map = {"EARLY_CONFIRM":(sent_early_confirm, COOLDOWN_EARLY_CONFIRM), "TREND_BUILDUP":(sent_trend_buildup, COOLDOWN_TREND_BUILDUP), "V_DIP_RECOVERY":(sent_v_dip_recovery, COOLDOWN_V_DIP_RECOVERY), "HISTORY_BUILDUP":(sent_radar_history, COOLDOWN_RADAR_HISTORY), "SQUEEZE_EXPLOSION":(sent_squeeze_explosion, COOLDOWN_SQUEEZE_EXPLOSION), "ROCKET":(sent_rocket_radar, COOLDOWN_ROCKET_RADAR), "SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "DIP_SWEEP":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "ELITE_WHALE":(sent_elite_whale, MEXC_ELITE_COOLDOWN), "STRONG_WICK":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "REVERSAL":(sent_reversal_watch, COOLDOWN_REVERSAL_WATCH), "SQUEEZE":(sent_squeeze_breakout, COOLDOWN_SQUEEZE_BREAKOUT), "EARLY":(sent_early, COOLDOWN_EARLY)}
+    cooldown_map = {"ELITE_HAZIRLIK":(sent_elite_hazirlik, COOLDOWN_ELITE_HAZIRLIK), "PRE_ROCKET_WATCH":(sent_pre_rocket_watch, COOLDOWN_PRE_ROCKET_WATCH), "EARLY_CONFIRM":(sent_early_confirm, COOLDOWN_EARLY_CONFIRM), "TREND_BUILDUP":(sent_trend_buildup, COOLDOWN_TREND_BUILDUP), "V_DIP_RECOVERY":(sent_v_dip_recovery, COOLDOWN_V_DIP_RECOVERY), "HISTORY_BUILDUP":(sent_radar_history, COOLDOWN_RADAR_HISTORY), "SQUEEZE_EXPLOSION":(sent_squeeze_explosion, COOLDOWN_SQUEEZE_EXPLOSION), "ROCKET":(sent_rocket_radar, COOLDOWN_ROCKET_RADAR), "SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "DIP_SWEEP":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "ELITE_WHALE":(sent_elite_whale, MEXC_ELITE_COOLDOWN), "STRONG_WICK":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "REVERSAL":(sent_reversal_watch, COOLDOWN_REVERSAL_WATCH), "SQUEEZE":(sent_squeeze_breakout, COOLDOWN_SQUEEZE_BREAKOUT), "EARLY":(sent_early, COOLDOWN_EARLY)}
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
     if best["module"] == "EARLY" and not can_send_early_today(symbol):
         print("EARLY DAILY LIMIT:", symbol, "Limit:", EARLY_MAX_PER_SYMBOL_PER_DAY, flush=True)
@@ -4743,6 +4949,8 @@ def analyze(item, btc_ok, btc_status):
     try:
         signals = []
         wakeup_ok, wakeup_data = soft_wakeup_signal(symbol, rs)
+        elite_prep_ok, elite_prep_data = elite_hazirlik_signal(symbol, rs)
+        pre_rocket_watch_ok, pre_rocket_watch_data = pre_rocket_watch_signal(symbol, rs)
         early_ok, early_data = early_radar(symbol, rs)
         early_confirm_ok, early_confirm_data = early_entry_confirm_signal(symbol, early_data)
         money_ok, money_data = money_continue_signal(symbol, early_data)
@@ -4761,7 +4969,7 @@ def analyze(item, btc_ok, btc_status):
         trend_ok, trend_data = trend_buildup_signal(symbol, rs)
         vdip_ok, vdip_data = v_dip_recovery_signal(symbol, rs)
         # Coinin kendi 24s hacmine gore para etkisini tum radar verilerine ekle.
-        for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, squeeze_explosion_data, early_reversal_data, rocket_data, trend_data, vdip_data, wakeup_data]:
+        for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, squeeze_explosion_data, early_reversal_data, rocket_data, trend_data, vdip_data, wakeup_data, elite_prep_data, pre_rocket_watch_data]:
             enrich_market_impact(_d, daily_qv)
 
         # ROCKET icin coin hacmine gore etki zorunlu. Hacim patlasa bile coin hacmine gore zayifsa alma.
@@ -4772,6 +4980,8 @@ def analyze(item, btc_ok, btc_status):
         money_seed = []
         for ok_flag, data_item in [
             (wakeup_ok, wakeup_data),
+            (elite_prep_ok, elite_prep_data),
+            (pre_rocket_watch_ok, pre_rocket_watch_data),
             (early_ok, early_data),
             (early_confirm_ok, early_confirm_data),
             (money_ok, money_data),
@@ -4794,6 +5004,8 @@ def analyze(item, btc_ok, btc_status):
         else:
             cleanup_money_memory()
 
+        if elite_prep_ok: signals.append(elite_prep_data)
+        if pre_rocket_watch_ok: signals.append(pre_rocket_watch_data)
         if early_ok: signals.append(early_data)
         if early_confirm_ok: signals.append(early_confirm_data)
         if money_ok: signals.append(money_data)
@@ -4845,7 +5057,7 @@ def analyze(item, btc_ok, btc_status):
         if signals:
             send_selected_signal(symbol, signals, funding, btc_status)
         else:
-            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "EarlyConfirm:", early_confirm_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "DipSweep:", strong_wick_ok, "EliteWhale:", elite_whale_ok, "Reversal:", reversal_ok, "Squeeze:", squeeze_ok, "SqueezeExplosion:", squeeze_explosion_ok, "EarlyReversal:", early_reversal_ok, "Rocket:", rocket_ok, "TrendBuild:", trend_ok, "VDip:", vdip_ok, "Wakeup:", wakeup_ok, "IC FILTRE", flush=True)
+            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "EarlyConfirm:", early_confirm_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "DipSweep:", strong_wick_ok, "EliteWhale:", elite_whale_ok, "Reversal:", reversal_ok, "Squeeze:", squeeze_ok, "SqueezeExplosion:", squeeze_explosion_ok, "EarlyReversal:", early_reversal_ok, "Rocket:", rocket_ok, "TrendBuild:", trend_ok, "VDip:", vdip_ok, "Wakeup:", wakeup_ok, "ElitePrep:", elite_prep_ok, "PreRocketWatch:", pre_rocket_watch_ok, "IC FILTRE", flush=True)
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
@@ -4878,7 +5090,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V30 Bot Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V34 Bot Aktif", 200
 
 
 if __name__ == "__main__":
