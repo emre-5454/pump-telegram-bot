@@ -16,7 +16,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V35"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V36"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -184,6 +184,10 @@ ELITE_PREP_MAX_RSI = 76
 ELITE_PREP_MAX_GAIN_15M = 6.5
 ELITE_PREP_MAX_GAIN_30M = 12.0
 PRE_ROCKET_WATCH_MIN_SCORE = 15
+# V36 HAZIRLIK HACIM FILTRESI:
+# TURBO tipi 3 USDT hacimli sahte hazirliklari elemek icin mutlak USDT tabani.
+ELITE_PREP_MIN_USDT = 15_000
+PRE_ROCKET_WATCH_MIN_USDT = 20_000
 PRE_ROCKET_WATCH_MIN_MONEY = 1.65
 PRE_ROCKET_WATCH_MIN_POWER = 3.0
 PRE_ROCKET_WATCH_MAX_RSI = 82
@@ -1362,6 +1366,7 @@ def elite_hazirlik_signal(symbol, rs):
 
     valid = (
         score >= ELITE_PREP_MIN_SCORE
+        and usdt_vol >= ELITE_PREP_MIN_USDT
         and 38 <= m15.rsi <= ELITE_PREP_MAX_RSI
         and price_gain_15m <= ELITE_PREP_MAX_GAIN_15M
         and price_gain_30m <= ELITE_PREP_MAX_GAIN_30M
@@ -1448,6 +1453,7 @@ def pre_rocket_watch_signal(symbol, rs):
 
     valid = (
         score >= PRE_ROCKET_WATCH_MIN_SCORE
+        and usdt_vol >= PRE_ROCKET_WATCH_MIN_USDT
         and money_impact >= PRE_ROCKET_WATCH_MIN_MONEY
         and volume_power >= PRE_ROCKET_WATCH_MIN_POWER
         and 42 <= m15.rsi <= PRE_ROCKET_WATCH_MAX_RSI
