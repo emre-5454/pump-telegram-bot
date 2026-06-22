@@ -14,8 +14,9 @@ TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
+MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V34"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V35"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -4918,6 +4919,13 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         return False
 
     if can_send(cache, symbol + "_" + best["module"], cooldown):
+        # V35: Elite Hazirlik / Pre-Rocket takip mesajlari ayri kanala gider.
+        # Bunlar AL degildir; Elite Gold kanalina zorlanmaz ve ana kanali doldurmaz.
+        if best["module"] in ("ELITE_HAZIRLIK", "PRE_ROCKET_WATCH"):
+            send_telegram(format_signal(symbol, best, funding, btc_status, support), MEXC_ELITE_PREP_CHAT_ID)
+            print("SEND PREP:", symbol, best["module"], "Score:", best.get("score"), "Support:", support, flush=True)
+            return True
+
         # Once Elite kapisini kontrol et.
         # Elite'e giderse ana kanala kopyalama yapma.
         if send_mexc_elite_signal(symbol, best, support, btc_status):
@@ -5063,7 +5071,7 @@ def analyze(item, btc_ok, btc_status):
 
 
 def run_bot():
-    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif.")
+    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif. Elite Hazirlik kanali aktif: {MEXC_ELITE_PREP_CHAT_ID}")
     print(BOT_NAME, "BASLADI", flush=True)
     while True:
         try:
