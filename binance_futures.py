@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V17"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V18"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -95,7 +95,7 @@ PRE_ROCKET_ELITE_BONUS = 18
 # hafiza para/momentum gucu dikkate alinir.
 RELOAD_MIN_MONEY = 3.0
 RELOAD_MIN_POWER = 12.0
-RELOAD_MIN_MARKET = 1.0
+RELOAD_MIN_MARKET = 0.70
 REPEAT_FORCE_MIN_120M = 5
 REPEAT_FORCE_MIN_WAVES = 3
 REPEAT_FORCE_MIN_60M_USDT = 1_000_000
@@ -104,6 +104,13 @@ HISTORY_FORCE_MIN_POINTS = 16
 HISTORY_FORCE_MIN_WAVES = 3
 HISTORY_FORCE_MIN_60M_USDT = 750_000
 V17_RELOAD_ELITE_BONUS = 20
+
+# V18 BLESS / COHR FIX:
+# Binance radarlari coinleri yakaliyor ama Elite terfi kapisi fazla sert kaliyordu.
+# Momentum + MoneyAccel reload ve History/Memory/Second Wave yapilari Elite puanina daha guclu yansitilir.
+V18_HISTORY_MEMORY_BONUS = 18
+V18_MOMENTUM_RELOAD_BONUS = 28
+V18_MAIN_REPEAT_BONUS = 10
 
 MIN_EARLY_RS = 74
 MIN_SAFE_CONFIDENCE = 72
@@ -2659,7 +2666,7 @@ def select_best_signal(signals):
 
 sent_elite = {}
 
-ELITE_MIN_SCORE = 92
+ELITE_MIN_SCORE = 88
 ELITE_COOLDOWN = 6 * 60 * 60
 ELITE_DAILY_LIMIT = 25
 elite_daily_counter = {}
@@ -2703,6 +2710,22 @@ def elite_score_signal(d, support_modules=None):
     rsi_value = d.get("rsi", d.get("rsi15", 0))
     combo_score, radar_count = radar_combo_score(d, support_modules)
     market_impact_pct = max(d.get("market_impact_pct", 0), d.get("effective_market_impact_pct", 0))
+
+    memory_reentry_ok = bool(d.get("memory_reentry"))
+    second_wave_ok = bool(d.get("second_wave_bonus"))
+    repeat_force_ok = bool(d.get("repeat_force"))
+    history_force_ok = bool(d.get("history_force"))
+    main_repeat_ok = bool(d.get("main_repeat_buildup"))
+    money_memory_ok = bool(d.get("money_memory_bonus"))
+    fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok or main_repeat_ok or money_memory_ok) and d.get("money_gain_from_first", 0) <= 12
+    momentum_reload_ok = (
+        module == "MOMENTUM"
+        and ("MONEY_ACCEL" in support_modules or "MONEY" in support_modules or second_wave_ok or memory_reentry_ok or repeat_force_ok)
+        and money_impact >= RELOAD_MIN_MONEY
+        and volume_power >= RELOAD_MIN_POWER
+        and market_impact_pct >= RELOAD_MIN_MARKET
+        and rsi_value <= 72
+    )
 
     # OI destegi: para/hacim long tarafindan mi geliyor ayirmaya calisir.
     if d.get("oi_strong_long_supported"):
@@ -2805,7 +2828,8 @@ def elite_score_signal(d, support_modules=None):
     elif module == "PRE_ROCKET_SQUEEZE":
         score += 22
     elif module == "MOMENTUM":
-        score -= 12
+        # V18: BLESS tipi Momentum + MoneyAccel reload yapisi artik cezalandirilmaz.
+        score += 8 if momentum_reload_ok else -12
     elif module == "EARLY":
         score += 4
 
@@ -2896,6 +2920,14 @@ def elite_score_signal(d, support_modules=None):
     if d.get("repeat_force") or d.get("history_force"):
         score += V17_RELOAD_ELITE_BONUS
 
+    # V18: BLESS / COHR terfi katmani.
+    if momentum_reload_ok:
+        score += V18_MOMENTUM_RELOAD_BONUS
+    if module == "HISTORY_BUILDUP" and (money_memory_ok or memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok):
+        score += V18_HISTORY_MEMORY_BONUS
+    if main_repeat_ok or d.get("main_signal_count_120m", 0) >= 5:
+        score += V18_MAIN_REPEAT_BONUS
+
     # V15: Zayif para etkili Elite'ler sismasin. Hafiza varsa ceza daha yumusak kalir.
     if money_impact < 1.8 and volume_power < 3.0 and market_impact_pct < 0.10:
         score -= 14 if not (d.get("money_memory_bonus") or d.get("memory_reentry")) else 6
@@ -2924,13 +2956,14 @@ def elite_score_signal(d, support_modules=None):
     # V9: HISTORY_BUILDUP tek dalga para ile 100/100 olmasın.
     # MAGMA gibi gidenler Elite kalabilir; fakat GOLD/100 kalitesi için para dalgası ve hafıza şartı aranır.
     if module == "HISTORY_BUILDUP":
-        if not d.get("money_memory_bonus"):
+        strong_history_memory = money_memory_ok or memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok
+        if not d.get("money_memory_bonus") and not strong_history_memory:
             score -= 10
-        if d.get("money_wave_count", 0) < 3:
+        if d.get("money_wave_count", 0) < 3 and not strong_history_memory:
             score -= 10
-        if d.get("money_wave_count", 0) <= 1 and not d.get("money_memory_bonus"):
+        if d.get("money_wave_count", 0) <= 1 and not strong_history_memory:
             score -= 8
-        if d.get("history_points", 0) < 20 and not d.get("money_memory_bonus"):
+        if d.get("history_points", 0) < 20 and not strong_history_memory:
             score -= 6
 
     # V9: OI karar ağırlığı artırıldı.
@@ -2943,7 +2976,7 @@ def elite_score_signal(d, support_modules=None):
     elif d.get("oi_weak"):
         score -= 3
 
-    if is_fomo_block(d):
+    if is_fomo_block(d) and not fomo_exception:
         score -= 30
 
     return max(0, min(100, int(round(score))))
