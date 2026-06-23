@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V20"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V21"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -126,6 +126,16 @@ SR_SUPPORT_OK_MAX_PCT = 5.00
 SR_STRONG_EXCEPTION_MARKET = 3.00
 SR_STRONG_EXCEPTION_POWER = 20.00
 SR_STRONG_EXCEPTION_MONEY = 5.00
+
+# V21 GEC YUKSELIS / TEPE SONRASI ELITE KORUMASI:
+# SYN tipi: coin son 6 saatte zaten %15-20 gitmis, dipten %20+ uzaklasmis
+# ve tepeden geri donerken TREND_BUILDUP tek radar olarak Elite AL vermesin.
+LATE_RISE_MAX_6H_FOR_SINGLE_RADAR = 15.0
+LATE_RISE_MAX_DIST_FROM_LOW = 22.0
+LATE_RISE_PULLBACK_FROM_HIGH_BLOCK = 8.0
+LATE_RISE_HARD_6H = 18.0
+LATE_RISE_HARD_DIST = 25.0
+LATE_RISE_SCORE_PENALTY = 35
 
 MIN_EARLY_RS = 74
 MIN_SAFE_CONFIDENCE = 72
@@ -2868,6 +2878,69 @@ def radar_combo_score(best, support_modules=None):
     return sum(weights.get(m, 0) for m in modules), len(set(modules))
 
 
+def late_rise_pullback_risk(d, support_modules=None):
+    """
+    V21 GEC YUKSELIS KORUMASI:
+    SYN tipi sinyallerde bot trendi dogru gorur ama AL sinyali tepeden geri cekilme
+    baslarken gelebilir. Bu fonksiyon, yukselis coktan olmus + tek radar + zayif
+    anlik para durumunda Elite AL kapisini kapatir.
+    """
+    support_modules = support_modules or []
+    if not d:
+        return False, "OK"
+
+    module = d.get("module", "UNKNOWN")
+    if module not in ("TREND_BUILDUP", "MOMENTUM", "HISTORY_BUILDUP", "MONEY_ACCEL"):
+        return False, "OK"
+
+    combo_score, radar_count = radar_combo_score(d, support_modules)
+    rise_6h = float(d.get("price_change_6h", 0) or 0)
+    rise_12h = float(d.get("price_change_12h", 0) or 0)
+    dist_from_low = float(d.get("dist_from_low", 0) or 0)
+    pullback_from_high = float(d.get("pullback_from_high", 0) or 0)
+
+    effective_money = max(float(d.get("money_impact", 0) or 0), float(d.get("effective_money_impact", 0) or 0))
+    effective_power = max(float(d.get("volume_power", 0) or 0), float(d.get("effective_volume_power", 0) or 0))
+    effective_market = max(float(d.get("market_impact_pct", 0) or 0), float(d.get("effective_market_impact_pct", 0) or 0))
+
+    strong_exception = (
+        radar_count >= 2
+        and (
+            bool(d.get("memory_reentry"))
+            or bool(d.get("money_memory_bonus"))
+            or bool(d.get("main_repeat_buildup"))
+            or bool(d.get("repeat_force"))
+            or bool(d.get("history_force"))
+        )
+        and (effective_money >= 2.4 or effective_power >= 6.0 or effective_market >= 3.0)
+    )
+
+    if strong_exception:
+        return False, "OK_STRONG_MEMORY"
+
+    # Sert blok: hem 6s yukselis hem dip mesafesi asiri ise, coin artik erken AL degildir.
+    if rise_6h >= LATE_RISE_HARD_6H and dist_from_low >= LATE_RISE_HARD_DIST:
+        return True, "GEC_YUKSELIS_HARD_BLOCK"
+
+    # Tek radar TREND/MOMENTUM, son 6 saatte fazla gitmisse Elite yerine izleme kalsin.
+    if radar_count <= 1 and rise_6h >= LATE_RISE_MAX_6H_FOR_SINGLE_RADAR:
+        return True, "GEC_YUKSELIS_TEK_RADAR"
+
+    # Dipten cok uzak + radar destegi az ise yeni AL icin gec kalmis olabilir.
+    if radar_count <= 1 and dist_from_low >= LATE_RISE_MAX_DIST_FROM_LOW:
+        return True, "DIPTEN_COK_UZAK_TEK_RADAR"
+
+    # Tepe sonrasi geri cekilme baslamis, ama sistem hala trend devam saniyorsa blokla.
+    if pullback_from_high >= LATE_RISE_PULLBACK_FROM_HIGH_BLOCK and rise_6h >= 10 and radar_count <= 1:
+        return True, "TEPEDEN_GERI_CEKILME"
+
+    # 12s yukselis de cok yuksekse ve para kalitesi orta ise Elite yerine Gold/Hazirlik kalsin.
+    if rise_12h >= 18 and effective_money < 2.2 and effective_power < 5.0 and radar_count <= 1:
+        return True, "12S_GEC_TREND"
+
+    return False, "OK"
+
+
 def elite_score_signal(d, support_modules=None):
     """
     V8 Elite puanlama + OI destegi:
@@ -3158,6 +3231,11 @@ def elite_score_signal(d, support_modules=None):
     score += int(d.get("sr_bonus", 0) or 0)
     score += int(d.get("sr_penalty", 0) or 0)
 
+    late_risk, late_reason = late_rise_pullback_risk(d, support_modules)
+    if late_risk:
+        score -= LATE_RISE_SCORE_PENALTY
+        d["late_rise_block_reason"] = late_reason
+
     if is_fomo_block(d) and not fomo_exception:
         score -= 30
 
@@ -3183,6 +3261,11 @@ def is_elite_al_candidate(best, support_modules=None):
     fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok) and best.get("money_gain_from_first", 0) <= 12
     if is_fomo_block(best) and not fomo_exception:
         return False, "FOMO_BLOCK"
+
+    # V21: SYN tipi gec trend / tepeden geri cekilme korumasi.
+    late_risk, late_reason = late_rise_pullback_risk(best, support_modules)
+    if late_risk:
+        return False, late_reason
 
     # V19 Destek/Direnc kapisi:
     # Fiyat dirence cok yakin ve henuz kirmamissa Elite AL yerine izleme kalsin.
@@ -3559,6 +3642,7 @@ Market Etki Skoru: {d.get('market_impact_score', 0)}/20
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
 FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
+Gec Yukselis Kontrol: {d.get('late_rise_block_reason', 'OK')}
 
 Destek: {d.get('support_level', 0):.8f}
 Direnc: {d.get('resistance_level', 0):.8f}
