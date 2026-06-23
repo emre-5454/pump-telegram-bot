@@ -16,7 +16,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V37"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V38"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -2705,6 +2705,12 @@ MACD Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
 EMA Geri Alma: {'VAR' if d.get('ema_reclaim') else 'YOK'}
 Yatay/Kirilim: {'VAR' if d.get('range_break') or d.get('bb_squeeze') else 'YOK'}
 
+Destek: {d.get('sr_support', 0):.8f}
+Direnc: {d.get('sr_resistance', 0):.8f}
+Destek Mesafesi: %{d.get('sr_support_distance_pct', 0):.2f}
+Direnc Mesafesi: %{d.get('sr_resistance_distance_pct', 0):.2f}
+Direnc Durumu: {d.get('sr_status', 'YOK')}
+
 Uyari: Bu AL degildir. Elite Hazirlik / Pre-Rocket takip mesajidir.
 """
     else:
@@ -4015,6 +4021,90 @@ def mexc_elite_gold_signal(d, support_modules=None):
 
 
 
+
+def sr_based_tp_levels(entry, stop, default_tp1, default_tp2, default_tp3, d):
+    """
+    V38 DESTEK/DIRENC BAZLI TP:
+    TP seviyelerini sadece sabit risk katsayisina gore degil, en yakin anlamli dirence gore ayarlar.
+    Direnc varsa TP1 direncin hemen altina alinir; TP2/TP3 direnc kirilimi sonrasi uzatilmis hedef olur.
+    SR verisi yoksa eski risk bazli TP'ler aynen kullanilir.
+    """
+    try:
+        entry = float(entry or 0)
+        stop = float(stop or 0)
+        if entry <= 0:
+            return {
+                "tp1": default_tp1,
+                "tp2": default_tp2,
+                "tp3": default_tp3,
+                "tp_mode": "RISK_BAZLI",
+                "tp_reference": "SR VERI YOK",
+            }
+
+        risk = max(entry - stop, entry * 0.005)
+        resistance = float(d.get("sr_resistance", 0) or 0)
+        support = float(d.get("sr_support", 0) or 0)
+        sr_ok = bool(d.get("sr_ok"))
+        breakout = bool(d.get("sr_breakout"))
+
+        if not sr_ok or resistance <= 0:
+            return {
+                "tp1": default_tp1,
+                "tp2": default_tp2,
+                "tp3": default_tp3,
+                "tp_mode": "RISK_BAZLI",
+                "tp_reference": "SR VERI YOK",
+            }
+
+        # Direnc kirilmissa eski direnc artik referans destek/ara hedef olur.
+        if breakout:
+            tp1 = max(default_tp1, entry + risk * 1.20)
+            tp2 = max(default_tp2, entry + risk * 2.00)
+            tp3 = max(default_tp3, entry + risk * 3.00)
+            return {
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3,
+                "tp_mode": "SR_BREAKOUT",
+                "tp_reference": f"Direnc kirildi / destek referansi: {resistance:.8f}",
+            }
+
+        # Fiyat direncin altindaysa TP1'i direncin hemen altina koy.
+        if resistance > entry:
+            sr_tp1 = resistance * 0.998
+            min_acceptable_tp1 = entry + risk * 0.80
+
+            # Direnc cok yakin kalirsa SR kapisi zaten genelde AL'i keser; yine de TP'yi cok kisaltmayalim.
+            if sr_tp1 >= min_acceptable_tp1:
+                tp1 = sr_tp1
+                tp2 = max(default_tp2, resistance + risk * 0.80)
+                tp3 = max(default_tp3, resistance + risk * 1.60)
+                return {
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "tp_mode": "DIRENC_BAZLI",
+                    "tp_reference": f"TP1 direnc alti / Direnc: {resistance:.8f}",
+                }
+
+        # Direnc fiyat altinda kaldiysa ya kirilim olmustur ya da hesap farki vardir; risk bazli devam.
+        return {
+            "tp1": default_tp1,
+            "tp2": default_tp2,
+            "tp3": default_tp3,
+            "tp_mode": "RISK_BAZLI",
+            "tp_reference": f"Destek: {support:.8f} / Direnc: {resistance:.8f}",
+        }
+    except Exception as e:
+        print("SR TP hesap hata:", e, flush=True)
+        return {
+            "tp1": default_tp1,
+            "tp2": default_tp2,
+            "tp3": default_tp3,
+            "tp_mode": "RISK_BAZLI",
+            "tp_reference": "SR TP HATA",
+        }
+
 def elite_extend_tp_levels(entry, tp3, d, module, support_modules):
     """
     V29 ELITE EXTEND TP:
@@ -4140,6 +4230,14 @@ def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
         tp2 = entry * (1 + risk_pct * 1.8 / 100)
         tp3 = entry * (1 + risk_pct * 2.6 / 100)
 
+    # V38: Destek/direnc bazli TP hazirlama.
+    sr_tp = sr_based_tp_levels(entry, stop, tp1, tp2, tp3, d)
+    tp1 = sr_tp.get("tp1", tp1)
+    tp2 = sr_tp.get("tp2", tp2)
+    tp3 = sr_tp.get("tp3", tp3)
+    d["tp_mode"] = sr_tp.get("tp_mode", "RISK_BAZLI")
+    d["tp_reference"] = sr_tp.get("tp_reference", "YOK")
+
     extend_tp = elite_extend_tp_levels(entry, tp3, d, module, support_modules)
     if extend_tp.get("extend_ok"):
         extend_text = f"""
@@ -4258,7 +4356,9 @@ Stop: {stop:.8f}
 TP1: {tp1:.8f}
 TP2: {tp2:.8f}
 TP3: {tp3:.8f}
-Risk: %{risk_pct:.2f}{extend_text}
+Risk: %{risk_pct:.2f}
+TP Sistemi: {d.get('tp_mode', 'RISK_BAZLI')}
+TP Referans: {d.get('tp_reference', 'YOK')}{extend_text}
 
 Fiyat: {price:.8f}
 RS Skoru: {d.get('rs', 0):.1f}/100
@@ -5109,6 +5209,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         # V35: Elite Hazirlik / Pre-Rocket takip mesajlari ayri kanala gider.
         # Bunlar AL degildir; Elite Gold kanalina zorlanmaz ve ana kanali doldurmaz.
         if best["module"] in ("ELITE_HAZIRLIK", "PRE_ROCKET_WATCH"):
+            attach_support_resistance_context(symbol, best)
             send_telegram(format_signal(symbol, best, funding, btc_status, support), MEXC_ELITE_PREP_CHAT_ID)
             print("SEND PREP:", symbol, best["module"], "Score:", best.get("score"), "Support:", support, flush=True)
             return True
