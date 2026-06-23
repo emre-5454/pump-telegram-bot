@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V18"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V19"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -111,6 +111,21 @@ V17_RELOAD_ELITE_BONUS = 20
 V18_HISTORY_MEMORY_BONUS = 18
 V18_MOMENTUM_RELOAD_BONUS = 28
 V18_MAIN_REPEAT_BONUS = 10
+
+# V19 DESTEK / DIRENC FILTRESI:
+# Para + hacim guclu olsa bile fiyat direkt dirence carparken Elite AL vermesin.
+# Direnc kirildiysa veya destek ustunde saglikliysa Elite puanina bonus verir.
+SR_LOOKBACK_15M = 64
+SR_LOOKBACK_1H = 48
+SR_TOO_CLOSE_BLOCK_PCT = 0.80
+SR_CLOSE_PENALTY_PCT = 1.50
+SR_NEAR_PENALTY_PCT = 2.50
+SR_BREAKOUT_BUFFER_PCT = 0.25
+SR_SUPPORT_NEAR_BONUS_PCT = 2.50
+SR_SUPPORT_OK_MAX_PCT = 5.00
+SR_STRONG_EXCEPTION_MARKET = 3.00
+SR_STRONG_EXCEPTION_POWER = 20.00
+SR_STRONG_EXCEPTION_MONEY = 5.00
 
 MIN_EARLY_RS = 74
 MIN_SAFE_CONFIDENCE = 72
@@ -617,6 +632,113 @@ def is_fomo_block(d):
     if rsi_value >= 78:
         return True
     return False
+
+
+def support_resistance_context(symbol, price=None):
+    """
+    V19 Destek/Direnc okuma:
+    15m ve 1H son swing high/low seviyelerini alir.
+    Amaç: dirence cok yakin AL sinyalini azaltmak, destek ustu/kirilim sinyalini odullendirmek.
+    """
+    out = {
+        "sr_ok": False,
+        "support_level": 0.0,
+        "resistance_level": 0.0,
+        "support_distance_pct": 0.0,
+        "resistance_distance_pct": 999.0,
+        "resistance_broken": False,
+        "support_near": False,
+        "sr_status": "SR VERI YOK",
+        "sr_penalty": 0,
+        "sr_bonus": 0,
+    }
+
+    try:
+        df15 = fetch_df(symbol, "15m", max(120, SR_LOOKBACK_15M + 20))
+        df1h = fetch_df(symbol, "1h", max(80, SR_LOOKBACK_1H + 10))
+
+        if df15 is None or len(df15) < 30:
+            return out
+
+        last_price = float(price if price is not None else df15["close"].iloc[-1])
+        if last_price <= 0:
+            return out
+
+        # Son mumun fitilini direnc sayip yanlis bloklamamak icin son mumu disarida birakir.
+        highs = []
+        lows = []
+
+        h15 = df15["high"].iloc[-SR_LOOKBACK_15M-1:-1]
+        l15 = df15["low"].iloc[-SR_LOOKBACK_15M-1:-1]
+        if len(h15) > 0:
+            highs.append(float(h15.max()))
+            lows.append(float(l15.min()))
+
+        if df1h is not None and len(df1h) >= 20:
+            h1 = df1h["high"].iloc[-SR_LOOKBACK_1H-1:-1]
+            l1 = df1h["low"].iloc[-SR_LOOKBACK_1H-1:-1]
+            if len(h1) > 0:
+                highs.append(float(h1.max()))
+                lows.append(float(l1.min()))
+
+        resistance = max(highs) if highs else 0.0
+        support = max([x for x in lows if x < last_price], default=(min(lows) if lows else 0.0))
+
+        resistance_distance = ((resistance - last_price) / last_price * 100) if resistance > 0 else 999.0
+        support_distance = ((last_price - support) / support * 100) if support > 0 else 999.0
+
+        resistance_broken = resistance > 0 and last_price > resistance * (1 + SR_BREAKOUT_BUFFER_PCT / 100)
+        support_near = support > 0 and 0 <= support_distance <= SR_SUPPORT_NEAR_BONUS_PCT
+
+        penalty = 0
+        bonus = 0
+        if resistance_broken:
+            status = "DIRENC KIRILDI"
+            bonus += 12
+        elif 0 <= resistance_distance <= SR_TOO_CLOSE_BLOCK_PCT:
+            status = "DIRENC COK YAKIN"
+            penalty -= 25
+        elif 0 <= resistance_distance <= SR_CLOSE_PENALTY_PCT:
+            status = "DIRENC YAKIN"
+            penalty -= 15
+        elif 0 <= resistance_distance <= SR_NEAR_PENALTY_PCT:
+            status = "DIRENC BOLGESI"
+            penalty -= 8
+        else:
+            status = "DIRENC UZAK/RAHAT"
+
+        if support_near:
+            bonus += 8
+            status += " + DESTEK USTU"
+        elif 0 <= support_distance <= SR_SUPPORT_OK_MAX_PCT:
+            bonus += 4
+            status += " + DESTEK YAKIN"
+
+        out.update({
+            "sr_ok": True,
+            "support_level": support,
+            "resistance_level": resistance,
+            "support_distance_pct": support_distance if support_distance < 900 else 0.0,
+            "resistance_distance_pct": resistance_distance,
+            "resistance_broken": bool(resistance_broken),
+            "support_near": bool(support_near),
+            "sr_status": status,
+            "sr_penalty": penalty,
+            "sr_bonus": bonus,
+        })
+        return out
+    except Exception as e:
+        print("SR context hata:", symbol, e, flush=True)
+        return out
+
+
+def attach_support_resistance_context(symbol, d):
+    if not d:
+        return d
+    price = float(d.get("entry", d.get("price", 0)) or 0)
+    sr = support_resistance_context(symbol, price)
+    d.update(sr)
+    return d
 
 
 def build_entry_levels(d):
@@ -2976,6 +3098,11 @@ def elite_score_signal(d, support_modules=None):
     elif d.get("oi_weak"):
         score -= 3
 
+    # V19 Destek/Direnc puani:
+    # Dirence cok yakin sinyal 100/100'e sismesin; kirilim veya destek ustu ise odullendir.
+    score += int(d.get("sr_bonus", 0) or 0)
+    score += int(d.get("sr_penalty", 0) or 0)
+
     if is_fomo_block(d) and not fomo_exception:
         score -= 30
 
@@ -3001,6 +3128,23 @@ def is_elite_al_candidate(best, support_modules=None):
     fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok) and best.get("money_gain_from_first", 0) <= 12
     if is_fomo_block(best) and not fomo_exception:
         return False, "FOMO_BLOCK"
+
+    # V19 Destek/Direnc kapisi:
+    # Fiyat dirence cok yakin ve henuz kirmamissa Elite AL yerine izleme kalsin.
+    # Cok guclu para/market etkisi varsa tamamen bloklama, skor cezasina birak.
+    sr_close = (
+        best.get("sr_ok")
+        and not best.get("resistance_broken")
+        and 0 <= best.get("resistance_distance_pct", 999) <= SR_TOO_CLOSE_BLOCK_PCT
+    )
+    sr_strong_exception = (
+        effective_market >= SR_STRONG_EXCEPTION_MARKET
+        or effective_power >= SR_STRONG_EXCEPTION_POWER
+        or effective_money >= SR_STRONG_EXCEPTION_MONEY
+        or best.get("support_near")
+    )
+    if sr_close and not sr_strong_exception and module not in ("DIP", "SWEEP", "FAST_LIQUIDITY_SWEEP"):
+        return False, "DIRENC_COK_YAKIN"
 
     # V17: MOMENTUM tek basina AL degildi; fakat UB gibi para/hacim buyumesi asiri guclu ise
     # Reload/Second Wave olarak Elite kapisina girebilir.
@@ -3359,6 +3503,13 @@ RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
 FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
 
+Destek: {d.get('support_level', 0):.8f}
+Direnc: {d.get('resistance_level', 0):.8f}
+Destek Mesafesi: %{d.get('support_distance_pct', 0):.2f}
+Direnc Mesafesi: %{d.get('resistance_distance_pct', 0):.2f}
+Direnc Durumu: {d.get('sr_status', 'SR VERI YOK')}
+SR Puan Etkisi: {int(d.get('sr_bonus', 0) or 0) + int(d.get('sr_penalty', 0) or 0)}
+
 OI 15m: %{d.get('oi_15m_pct', 0):.2f}
 OI 1h: %{d.get('oi_1h_pct', 0):.2f}
 OI Yorum: {d.get('oi_status', 'OI VERI YOK')}
@@ -3409,6 +3560,9 @@ def mark_elite_sent_today(symbol):
 def send_elite_signal(symbol, best, support):
     if not ELITE_CHAT_ID:
         return False
+
+    # V19: Elite karari verilmeden once destek/direnc baglamini ekle.
+    best = attach_support_resistance_context(symbol, best)
 
     ok, reason = is_elite_al_candidate(best, support)
     if not ok:
