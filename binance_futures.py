@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V19"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V20"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -742,26 +742,81 @@ def attach_support_resistance_context(symbol, d):
 
 
 def build_entry_levels(d):
-    """SAFE/MONEY/SWEEP fark etmeden Elite AL mesajina giris-stop-TP uretir."""
-    price = d.get("entry", d.get("price", 0))
+    """
+    V20 SR TP SISTEMI:
+    Elite AL icin giris/stop ayni kalir; TP'ler varsa destek/direnc yapisina gore hazirlanir.
+    Direnc fiyat ustundeyse TP1 dirence yakin, TP2/TP3 direnc kirilimi sonrasi hedefler olur.
+    Direnc yoksa/kirilmis ise eski risk-katlari sistemi yedek olarak calisir.
+    """
+    price = float(d.get("entry", d.get("price", 0)) or 0)
     if price <= 0:
-        return {"entry": 0, "stop": 0, "tp1": 0, "tp2": 0, "tp3": 0, "risk_pct": 0}
+        return {
+            "entry": 0, "stop": 0, "tp1": 0, "tp2": 0, "tp3": 0, "risk_pct": 0,
+            "tp_system": "YOK", "tp_reference": "YOK"
+        }
 
     if d.get("stop", 0) > 0:
-        stop = d["stop"]
+        stop = float(d["stop"])
     else:
         # Binance karar botunda risk sabit ve net olsun.
-        risk_pct = 0.032 if d.get("module") in ("DIP", "SWEEP") else 0.028
+        risk_pct = 0.032 if d.get("module") in ("DIP", "SWEEP", "FAST_LIQUIDITY_SWEEP") else 0.028
         stop = price * (1 - risk_pct)
 
     risk = max(price - stop, price * 0.01)
+
+    resistance = float(d.get("resistance_level", 0) or 0)
+    support = float(d.get("support_level", 0) or 0)
+    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+    resistance_broken = bool(d.get("resistance_broken"))
+
+    # Varsayilan klasik TP sistemi.
+    tp1 = price + risk * 1.5
+    tp2 = price + risk * 2.5
+    tp3 = price + risk * 4.0
+    tp_system = "RISK_KATLI"
+    tp_reference = "Stop mesafesi"
+
+    # Direnc fiyat ustundeyse TP'leri piyasa yapisina bagla.
+    if resistance > price and resistance_distance < 25:
+        # TP1: direncin hemen onu; ilk kar alma.
+        tp1 = max(price + risk * 0.80, resistance * 0.995)
+        # TP2/TP3: direnc kirilimi sonrasi genisleme hedefleri.
+        tp2 = max(tp1 * 1.002, resistance * 1.020)
+        tp3 = max(tp2 * 1.002, resistance * 1.050)
+        tp_system = "DESTEK_DIRENC"
+        tp_reference = f"Direnc {resistance:.8f}"
+
+        # Direnc cok yakin ise TP1'i asiri uzaklastirma; risk/odul bozulmasin.
+        if resistance_distance <= 1.5:
+            tp1 = resistance * 0.997
+            tp2 = resistance * 1.012
+            tp3 = resistance * 1.030
+            tp_reference = f"Yakin direnc {resistance:.8f}"
+
+    elif resistance_broken and resistance > 0:
+        # Direnc zaten kirilmissa eski direnc yeni destek gibi kabul edilir.
+        tp1 = max(price + risk * 1.2, price * 1.012)
+        tp2 = max(tp1 * 1.002, price * 1.024)
+        tp3 = max(tp2 * 1.002, price * 1.040)
+        tp_system = "KIRILIM_DEVAM"
+        tp_reference = f"Kirilmis direnc {resistance:.8f}"
+
+    # TP'ler fiyat ustunde ve sirali kalsin.
+    tp1 = max(tp1, price * 1.003)
+    tp2 = max(tp2, tp1 * 1.002)
+    tp3 = max(tp3, tp2 * 1.002)
+
     return {
         "entry": price,
         "stop": stop,
-        "tp1": price + risk * 1.5,
-        "tp2": price + risk * 2.5,
-        "tp3": price + risk * 4.0,
-        "risk_pct": (risk / price) * 100
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "risk_pct": (risk / price) * 100,
+        "tp_system": tp_system,
+        "tp_reference": tp_reference,
+        "tp_support_reference": support,
+        "tp_resistance_reference": resistance,
     }
 
 
@@ -3484,6 +3539,8 @@ TP1: {levels['tp1']:.8f}
 TP2: {levels['tp2']:.8f}
 TP3: {levels['tp3']:.8f}
 Risk: %{levels['risk_pct']:.2f}
+TP Sistemi: {levels.get('tp_system', 'RISK_KATLI')}
+TP Referans: {levels.get('tp_reference', 'Stop mesafesi')}
 
 Fiyat: {d.get('price', 0):.8f}
 RS Skoru: {d.get('rs', 0):.1f}/100
