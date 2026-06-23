@@ -16,7 +16,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V36"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V37"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -193,6 +193,19 @@ PRE_ROCKET_WATCH_MIN_POWER = 3.0
 PRE_ROCKET_WATCH_MAX_RSI = 82
 PRE_ROCKET_WATCH_MAX_GAIN_15M = 9.0
 PRE_ROCKET_WATCH_MAX_GAIN_30M = 16.0
+
+# V37 DESTEK / DIRENC FILTRESI:
+# Para ve momentum guclu olsa bile, fiyat hemen direncin altindaysa Elite AL yerine izleme kalsin.
+SR_RESISTANCE_NEAR_PCT = 1.20
+SR_RESISTANCE_VERY_NEAR_PCT = 0.75
+SR_RESISTANCE_WARN_PCT = 2.50
+SR_SUPPORT_CLOSE_PCT = 3.00
+SR_SUPPORT_FAR_PCT = 10.00
+SR_NEAR_RESISTANCE_PENALTY = 22
+SR_WARN_RESISTANCE_PENALTY = 12
+SR_BREAKOUT_BONUS = 12
+SR_SUPPORT_BONUS = 8
+SR_FLOATING_PENALTY = 6
 
 sent_early = {}
 early_daily_counter = {}
@@ -512,6 +525,149 @@ def money_quality_upgrade(d):
     return early_enough and (strong_absolute_money or strong_relative_money)
 
 
+def calculate_support_resistance(symbol, price=None):
+    """
+    V37 DESTEK / DIRENC KATMANI:
+    15m ve 1h son swing high/low seviyelerini kullanarak Elite AL icin
+    fiyat direncin hemen altinda mi, destek ustunde mi, yoksa direnci kirdi mi olcer.
+    Bu fonksiyon AL uretmez; sadece Elite skoruna ve kapisina kalite filtresi verir.
+    """
+    out = {
+        "sr_ok": False,
+        "sr_resistance": 0.0,
+        "sr_support": 0.0,
+        "sr_resistance_distance_pct": 999.0,
+        "sr_support_distance_pct": 999.0,
+        "sr_breakout": False,
+        "sr_near_resistance": False,
+        "sr_very_near_resistance": False,
+        "sr_support_close": False,
+        "sr_status": "VERI YOK",
+        "sr_penalty": 0,
+        "sr_bonus": 0,
+    }
+    try:
+        df15 = fetch_df(symbol, "15m", 160)
+        df1h = fetch_df(symbol, "1h", 120)
+        if df15 is None or df1h is None or len(df15) < 60 or len(df1h) < 30:
+            return out
+
+        live_price = float(price or df15["close"].iloc[-1])
+        if live_price <= 0:
+            return out
+
+        # Mevcut mumun iÄŸnesini direnÃ§ kabul edip kendimizi kandirmamak icin son mumu disarida birakiyoruz.
+        h15 = df15["high"].iloc[-49:-1]
+        l15 = df15["low"].iloc[-49:-1]
+        h1 = df1h["high"].iloc[-25:-1]
+        l1 = df1h["low"].iloc[-25:-1]
+
+        resistance = float(max(h15.max(), h1.max()))
+        support = float(max(l15.min(), l1.min()))
+
+        # Fiyatin altindaki en yakin anlamli destek icin son 48 adet 15m low icinden fiyat altindaki en yuksek low'u da dikkate al.
+        lows_below = l15[l15 < live_price]
+        if len(lows_below) > 0:
+            support = float(max(support, lows_below.max()))
+
+        resistance_distance = ((resistance - live_price) / live_price * 100) if resistance > 0 else 999.0
+        support_distance = ((live_price - support) / support * 100) if support > 0 else 999.0
+
+        breakout = live_price > resistance * 1.002 if resistance > 0 else False
+        very_near = (0 <= resistance_distance <= SR_RESISTANCE_VERY_NEAR_PCT)
+        near = (0 <= resistance_distance <= SR_RESISTANCE_NEAR_PCT)
+        warn = (0 <= resistance_distance <= SR_RESISTANCE_WARN_PCT)
+        support_close = (0 <= support_distance <= SR_SUPPORT_CLOSE_PCT)
+
+        penalty = 0
+        bonus = 0
+        if breakout:
+            status = "DIRENC KIRILDI"
+            bonus += SR_BREAKOUT_BONUS
+        elif very_near:
+            status = "DIRENC COK YAKIN"
+            penalty += SR_NEAR_RESISTANCE_PENALTY
+        elif near:
+            status = "DIRENC YAKIN"
+            penalty += int(SR_NEAR_RESISTANCE_PENALTY * 0.65)
+        elif warn:
+            status = "DIRENC BOLGESI"
+            penalty += SR_WARN_RESISTANCE_PENALTY
+        else:
+            status = "DIRENC UZAK"
+
+        if support_close:
+            bonus += SR_SUPPORT_BONUS
+        elif support_distance >= SR_SUPPORT_FAR_PCT and not breakout:
+            penalty += SR_FLOATING_PENALTY
+
+        out.update({
+            "sr_ok": True,
+            "sr_resistance": resistance,
+            "sr_support": support,
+            "sr_resistance_distance_pct": resistance_distance,
+            "sr_support_distance_pct": support_distance,
+            "sr_breakout": bool(breakout),
+            "sr_near_resistance": bool(near),
+            "sr_very_near_resistance": bool(very_near),
+            "sr_support_close": bool(support_close),
+            "sr_status": status,
+            "sr_penalty": int(penalty),
+            "sr_bonus": int(bonus),
+        })
+        return out
+    except Exception as e:
+        print("SR hesap hata:", symbol, e, flush=True)
+        return out
+
+
+def attach_support_resistance_context(symbol, d):
+    if not d:
+        return d
+    price = d.get("price", d.get("entry", 0))
+    sr = calculate_support_resistance(symbol, price)
+    d.update(sr)
+    return d
+
+
+def sr_elite_gate_ok(d):
+    """
+    Direncin hemen altinda AL verme korumasi.
+    Guclu squeeze/para olsa bile direnÃ§ kirilmadiysa ve mesafe cok darsa Elite kapisi kapanir.
+    """
+    if not d or not d.get("sr_ok"):
+        return True
+
+    module = d.get("module", "UNKNOWN")
+    resistance_distance = float(d.get("sr_resistance_distance_pct", 999) or 999)
+    support_distance = float(d.get("sr_support_distance_pct", 999) or 999)
+    breakout = bool(d.get("sr_breakout"))
+
+    # Dip/V toparlanma sinyallerinde ana fikir destek/dipten tepki oldugu icin direnÃ§ filtresi daha esnek.
+    dip_like = module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY")
+    strong_context = (
+        bool(d.get("memory_reentry_bonus"))
+        or bool(d.get("second_wave_bonus"))
+        or bool(d.get("money_memory_bonus"))
+        or bool(d.get("squeeze_fast_pre_elite"))
+        or float(d.get("market_impact_pct", 0) or 0) >= 2.0
+    )
+
+    if breakout:
+        return True
+
+    if dip_like:
+        return not (0 <= resistance_distance <= 0.50 and support_distance > 5)
+
+    # Tam direncin altinda ise AL yok; Gold/Hazirlik olarak kalsin.
+    if 0 <= resistance_distance <= SR_RESISTANCE_VERY_NEAR_PCT:
+        return False
+
+    # DirenÃ§ yakin + destek uzaksa risk/odul zayif.
+    if 0 <= resistance_distance <= SR_RESISTANCE_NEAR_PCT and support_distance > SR_SUPPORT_CLOSE_PCT and not strong_context:
+        return False
+
+    return True
 
 
 
@@ -4116,6 +4272,13 @@ Market Etki: %{d.get('market_impact_pct', 0):.3f}
 Market Etki Skoru: {d.get('market_impact_score', 0):.0f}/100
 Para Kalitesi Terfisi: {'VAR' if money_quality_upgrade(d) else 'YOK'}
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
+
+Destek: {d.get('sr_support', 0):.8f}
+Direnc: {d.get('sr_resistance', 0):.8f}
+Destek Mesafesi: %{d.get('sr_support_distance_pct', 0):.2f}
+Direnc Mesafesi: %{d.get('sr_resistance_distance_pct', 0):.2f}
+Direnc Durumu: {d.get('sr_status', 'YOK')}
+SR Bonus/Ceza: +{d.get('sr_bonus', 0)} / -{d.get('sr_penalty', 0)}
 Canli Momentum Koruma: {'OK' if d.get('live_guard_ok', True) else 'RED'}
 Canli Koruma Sebep: {d.get('live_guard_reason', 'YOK')}
 EMA9 Alti: {'VAR' if d.get('live_price_below_ema9') else 'YOK'}
@@ -4170,6 +4333,9 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
     # V26: Elite kapısından hemen önce canlı momentum/red flag kontrolü.
     # MEXC'te Delta yok; bu kontrol ALLO tipi sönen hareketleri azaltmak için kullanılır.
     attach_live_momentum_guard(symbol, best)
+
+    # V37: Elite kapısından hemen önce destek/direnç konumunu hesapla.
+    attach_support_resistance_context(symbol, best)
 
     elite_score = mexc_elite_score_signal(best, support, btc_status)
 
@@ -4667,6 +4833,17 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     if not strong_memory_context and money < WEAK_MONEY_MIN_MONEY and power < WEAK_MONEY_MIN_POWER:
         score -= WEAK_MONEY_ELITE_PENALTY
 
+    # V37: Destek / direnÃ§ filtresi. Dirence yapisik AL sinyalini cezalandir,
+    # kirilmis direnÃ§ ve destek ustu girisi odullendir.
+    if d.get("sr_ok"):
+        sr_penalty = int(d.get("sr_penalty", 0) or 0)
+        sr_bonus = int(d.get("sr_bonus", 0) or 0)
+        # Dip/V toparlanma sinyallerinde direnc cezasi yariya iner; ana risk destekten tepkiyi kacirmamaktir.
+        if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
+            sr_penalty = int(sr_penalty * 0.50)
+        score += sr_bonus
+        score -= sr_penalty
+
     # V26: Canli momentum cezasi. Hafiza puani, son mumdaki zayifligi ezmesin.
     score -= int(d.get("live_penalty", 0) or 0)
 
@@ -4724,6 +4901,10 @@ def entry_decision_allowed(best, support=None, btc_status=""):
     # V21 Coin hacmine gore para etkisi kapisi.
     # Mutlak hacim tek basina yeterli degil; sinyal coinin 24s hacmine gore de anlamli olmali.
     if not mexc_relative_market_gate_ok(best, support):
+        return False
+
+    # V37: Destek/direnÃ§ kapisi. Para var diye direncin hemen altinda AL basma.
+    if not sr_elite_gate_ok(best):
         return False
 
     # Elite icin radar kombinasyonu: genel olarak 3 radar veya guclu erken/dip istisnasi gerekir.
