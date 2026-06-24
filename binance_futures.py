@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V22"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V23"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -3545,6 +3545,181 @@ def is_elite_gold_signal(d, elite_score=0, support_modules=None, symbol=None):
 
     return elite_gold
 
+
+
+def walking_score_signal(d, support_modules=None):
+    """
+    V23 YURUME SKORU:
+    Elite skoru filtre kapisidir; yürüme skoru ise gelen Elite sinyalleri arasinda
+    hangisinin daha kaliteli / devam etme ihtimali daha yuksek oldugunu siralar.
+    Para kalitesi + radar kombinasyonu + hafiza + yapi kalitesi birlikte puanlanir.
+    """
+    support_modules = support_modules or []
+    if not d:
+        return {"walking_score": 0, "quality_class": "D", "walking_reasons": "VERI YOK"}
+
+    score = 0
+    reasons = []
+    module = d.get("module", "UNKNOWN")
+
+    money = max(float(d.get("money_impact", 0) or 0), float(d.get("effective_money_impact", 0) or 0), float(d.get("history_money_max", 0) or 0))
+    power = max(float(d.get("volume_power", 0) or 0), float(d.get("effective_volume_power", 0) or 0), float(d.get("history_power_max", 0) or 0))
+    market = max(float(d.get("market_impact_pct", 0) or 0), float(d.get("effective_market_impact_pct", 0) or 0), float(d.get("history_market_max", 0) or 0), float(d.get("money_market_60m", 0) or 0))
+    rs = float(d.get("rs", 0) or 0)
+    rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+
+    combo_score, radar_count = radar_combo_score(d, support_modules)
+    history_points = int(d.get("history_points", 0) or 0)
+    waves = int(d.get("money_wave_count", 0) or 0)
+    money_mem_60m = float(d.get("money_mem_60m", 0) or 0)
+    main_count_120 = int(d.get("main_signal_count_120m", 0) or 0)
+    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+    support_distance = float(d.get("support_distance_pct", 999) or 999)
+    rise_6h = float(d.get("price_change_6h", 0) or 0)
+    dist_from_low = float(d.get("dist_from_low", 0) or 0)
+    price_gain_from_first = float(d.get("price_gain_from_first", 0) or 0)
+
+    # 1) Para kalitesi - agirlik yaklasik %40
+    if money >= 5:
+        score += 18; reasons.append("Para cok guclu")
+    elif money >= 3:
+        score += 15; reasons.append("Para guclu")
+    elif money >= 2:
+        score += 11; reasons.append("Para iyi")
+    elif money >= 1.5:
+        score += 7; reasons.append("Para orta")
+    else:
+        score += 2; reasons.append("Para zayif")
+
+    if power >= 20:
+        score += 14; reasons.append("Hacim gucu cok yuksek")
+    elif power >= 10:
+        score += 11; reasons.append("Hacim gucu yuksek")
+    elif power >= 5:
+        score += 8; reasons.append("Hacim gucu iyi")
+    elif power >= 3:
+        score += 5; reasons.append("Hacim gucu orta")
+
+    if market >= 3:
+        score += 10; reasons.append("Market etki cok guclu")
+    elif market >= 1:
+        score += 8; reasons.append("Market etki guclu")
+    elif market >= 0.35:
+        score += 5; reasons.append("Market etki iyi")
+    elif market >= 0.10:
+        score += 3; reasons.append("Market etki var")
+
+    # 2) Radar kalitesi - agirlik yaklasik %25
+    if radar_count >= 4:
+        score += 16; reasons.append("Radar sayisi cok guclu")
+    elif radar_count >= 3:
+        score += 13; reasons.append("Radar sayisi guclu")
+    elif radar_count >= 2:
+        score += 8; reasons.append("Radar sayisi yeterli")
+    else:
+        score += 2; reasons.append("Tek radar")
+
+    if combo_score >= 8:
+        score += 9; reasons.append("Radar kombinasyonu guclu")
+    elif combo_score >= 5:
+        score += 6; reasons.append("Radar kombinasyonu iyi")
+    elif combo_score >= 3:
+        score += 3; reasons.append("Radar kombinasyonu orta")
+
+    # 3) Hafiza / devam kalitesi - agirlik yaklasik %20
+    if d.get("memory_reentry"):
+        score += 8; reasons.append("Memory Re-Entry")
+    if d.get("second_wave_bonus"):
+        score += 8; reasons.append("Second Wave")
+    if d.get("money_memory_bonus"):
+        score += 7; reasons.append("Money Memory")
+    if waves >= 5:
+        score += 6; reasons.append("Coklu para dalgasi")
+    elif waves >= 3:
+        score += 4; reasons.append("Para dalgasi var")
+    if money_mem_60m >= 1_000_000:
+        score += 5; reasons.append("60dk para hafizasi yuksek")
+    elif money_mem_60m >= 250_000:
+        score += 3; reasons.append("60dk para hafizasi var")
+    if history_points >= 35:
+        score += 5; reasons.append("Radar hafizasi guclu")
+    elif history_points >= 20:
+        score += 3; reasons.append("Radar hafizasi var")
+    if main_count_120 >= 5:
+        score += 4; reasons.append("Ana kanal tekrar guclu")
+    elif main_count_120 >= 3:
+        score += 2; reasons.append("Ana kanal tekrar var")
+
+    # 4) Yapi kalitesi - agirlik yaklasik %15
+    if 0 <= support_distance <= 2.5:
+        score += 5; reasons.append("Destek ustu")
+    elif 0 <= support_distance <= 5:
+        score += 3; reasons.append("Destek yakin")
+    if resistance_distance >= 8 and resistance_distance < 900:
+        score += 6; reasons.append("Direnc rahat")
+    elif resistance_distance >= 4 and resistance_distance < 900:
+        score += 4; reasons.append("Direnc uzak")
+    elif 0 <= resistance_distance <= 1.5:
+        score -= 10; reasons.append("Direnc yakin")
+    if d.get("resistance_broken"):
+        score += 5; reasons.append("Direnc kirilimi")
+    if d.get("buyer_dominant"):
+        score += 4; reasons.append("Delta alici baskin")
+    if d.get("strong_buyer_dominant"):
+        score += 6; reasons.append("Delta guclu alici")
+    if d.get("seller_dominant") or d.get("strong_seller_dominant"):
+        score -= 12; reasons.append("Delta satici baskin")
+    if d.get("oi_strong_long_supported"):
+        score += 5; reasons.append("OI guclu long destekli")
+    elif d.get("oi_long_supported"):
+        score += 3; reasons.append("OI long destekli")
+    elif d.get("oi_weak"):
+        score -= 4; reasons.append("OI zayif")
+
+    # Erkenlik / FOMO cezalari
+    if rise_6h >= 18:
+        score -= 16; reasons.append("6s yukselis fazla")
+    elif rise_6h >= 12:
+        score -= 8; reasons.append("6s yukselis yuksek")
+    if dist_from_low >= 28:
+        score -= 12; reasons.append("Dipten cok uzak")
+    elif dist_from_low >= 20:
+        score -= 6; reasons.append("Dipten uzak")
+    if price_gain_from_first > 6:
+        score -= 10; reasons.append("Ilk sinyalden sonra gec")
+    if rsi_value >= 76:
+        score -= 12; reasons.append("RSI sisik")
+    elif rsi_value >= 72:
+        score -= 6; reasons.append("RSI yuksek")
+    elif 45 <= rsi_value <= 66:
+        score += 3; reasons.append("RSI saglikli")
+    if rs >= 85:
+        score += 4; reasons.append("RS cok guclu")
+    elif rs >= 75:
+        score += 2; reasons.append("RS guclu")
+
+    # Mod bazli ufak ayar
+    if module in ("HISTORY_BUILDUP", "PRE_ROCKET_SQUEEZE", "TREND_BUILDUP"):
+        score += 3
+    if module == "MOMENTUM" and radar_count <= 1:
+        score -= 8; reasons.append("Tek momentum riskli")
+
+    score = max(0, min(100, int(round(score))))
+    if score >= 92:
+        quality = "A+"
+    elif score >= 84:
+        quality = "A"
+    elif score >= 74:
+        quality = "B"
+    elif score >= 62:
+        quality = "C"
+    else:
+        quality = "D"
+
+    # Mesaj cok uzamasin diye ilk 6 sebep.
+    reason_text = ", ".join(reasons[:6]) if reasons else "Nötr"
+    return {"walking_score": score, "quality_class": quality, "walking_reasons": reason_text}
+
 def format_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
@@ -3554,6 +3729,7 @@ def format_elite_signal(symbol, d, elite_score, support_modules=None):
     elite_gold = is_elite_gold_signal(d, elite_score, support_modules, symbol)
     title = "🔥 BINANCE ELITE GOLD AL ONAY" if elite_gold else "BINANCE ELITE AL ONAY"
     gold_note = "🔥 ELITE GOLD: VAR" if elite_gold else "ELITE GOLD: YOK"
+    walk = walking_score_signal(d, support_modules)
 
     extra = ""
     if module in ("MONEY_ACCEL", "MONEY", "MOMENTUM"):
@@ -3637,13 +3813,17 @@ Radar Skoru: {d.get('score', 0)}
 Radar Sayisi: {radar_count}
 Radar Kombinasyon Puani: {combo_score}
 
+Yurume Skoru: {walk.get('walking_score', 0)}/100
+Kalite Sinifi: {walk.get('quality_class', 'D')}
+Yurume Sebep: {walk.get('walking_reasons', 'YOK')}
+
 24s Hacim: {int(d.get('daily_quote_volume', 0))} USDT
-Market Etki: %{d.get('market_impact_pct', 0):.4f}
+Market Etki: %{max(d.get('market_impact_pct', 0), d.get('effective_market_impact_pct', 0), d.get('history_market_max', 0), d.get('money_market_60m', 0)):.4f}
 Market Etki Skoru: {d.get('market_impact_score', 0)}/20
 
-Para Etkisi: {d.get('money_impact', 0):.2f}x
-Hacim Gucu: {d.get('volume_power', 0):.2f}
-Market Etki: %{d.get('market_impact_pct', 0):.4f}
+Para Etkisi: {max(d.get('money_impact', 0), d.get('effective_money_impact', 0), d.get('history_money_max', 0)):.2f}x
+Hacim Gucu: {max(d.get('volume_power', 0), d.get('effective_volume_power', 0), d.get('history_power_max', 0)):.2f}
+Market Etki: %{max(d.get('market_impact_pct', 0), d.get('effective_market_impact_pct', 0), d.get('history_market_max', 0), d.get('money_market_60m', 0)):.4f}
 Market Etki Skoru: {d.get('market_impact_score', 0)}/20
 RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
 FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
