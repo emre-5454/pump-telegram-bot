@@ -19,7 +19,7 @@ CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V23"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V31"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -137,6 +137,97 @@ LATE_RISE_HARD_6H = 18.0
 LATE_RISE_HARD_DIST = 25.0
 LATE_RISE_SCORE_PENALTY = 35
 
+# V24 KAT FIX: Direncin hemen altında, hafıza/re-entry ile geç gelen AL sinyallerini kes.
+# KAT örneği: direnç mesafesi %0.43, ana kanal tekrar 7, ikinci dalga var ama fiyat tepe sonrası düşüyordu.
+SR_HARD_BLOCK_PCT = 0.55
+SR_MEMORY_LATE_BLOCK_PCT = 0.90
+SR_MEMORY_REPEAT_BLOCK_COUNT = 5
+SR_NEAR_RESISTANCE_EXTRA_PENALTY = 18
+
+# V25 CANLI PULLBACK / SATIS BASKISI FILTRESI:
+# SYN / KAT tipi: coin hafizada guclu gorunse bile son mumlarda satis basladiysa
+# Elite AL vermesin veya skoru ciddi dussun.
+PULLBACK_RED_CANDLE_PENALTY = 10
+PULLBACK_TWO_RED_PENALTY = 14
+PULLBACK_MACD_WEAK_PENALTY = 10
+PULLBACK_OBV_FALL_PENALTY = 10
+PULLBACK_RSI_DROP_PENALTY = 8
+PULLBACK_EMA9_LOST_PENALTY = 14
+PULLBACK_FROM_HIGH_WARN = 4.0
+PULLBACK_FROM_HIGH_BLOCK = 6.0
+PULLBACK_TOTAL_BLOCK_SCORE = 32
+
+# V26 GRAFIK / TEKNIK UYUMSUZLUK FILTRESI:
+# Teknik/hafiza/para AL diyor ama grafik son mumlarda dusus veya yorulma gosteriyorsa
+# Elite AL yerine izleme kalsin. KAT/SYN tipi gec AL sinyallerini azaltir.
+ALIGNMENT_WARN_PENALTY = 10
+ALIGNMENT_WEAK_PENALTY = 18
+ALIGNMENT_BLOCK_PENALTY = 32
+ALIGNMENT_BLOCK_SCORE = 45
+
+# V28 ORDER BOOK / EMIR DEFTERI DUVAR SKORU:
+# Binance order book ile alis-satis duvarlarini, yukari likidite boslugunu
+# ve direnc altinda satis duvari riskini olcer.
+ORDERBOOK_CACHE_SECONDS = 20
+ORDERBOOK_LIMIT = 50
+ORDERBOOK_NEAR_PCT = 1.00
+ORDERBOOK_WALL_LOOK_PCT = 2.00
+ORDERBOOK_WALL_MULTIPLIER = 3.00
+ORDERBOOK_MIN_WALL_USDT = 25_000
+ORDERBOOK_STRONG_IMBALANCE = 1.60
+ORDERBOOK_WEAK_IMBALANCE = 0.65
+ORDERBOOK_ASK_WALL_CLOSE_PCT = 0.75
+ORDERBOOK_BID_WALL_CLOSE_PCT = 0.75
+ORDERBOOK_SCORE_BONUS_STRONG = 8
+ORDERBOOK_SCORE_BONUS_OK = 4
+ORDERBOOK_SCORE_PENALTY_WEAK = 10
+ORDERBOOK_ASK_WALL_PENALTY = 14
+
+# V29 ORDER FLOW / LIKIDITE BOSLUGU / LIKIDASYON PROXY:
+# Binance taker flow + OI + order book verisini birlestirip
+# alici gercekten saldiriyor mu ve yukari sikisma ihtimali var mi olcer.
+ORDERFLOW_STRONG_SCORE = 78
+ORDERFLOW_WEAK_SCORE = 38
+ORDERFLOW_BLOCK_SCORE = 28
+ORDERFLOW_BUY_SELL_RATIO_STRONG = 1.80
+ORDERFLOW_BUY_SELL_RATIO_WEAK = 0.70
+ORDERFLOW_DELTA_STRONG = 12.0
+ORDERFLOW_DELTA_WEAK = -10.0
+ORDERFLOW_SCORE_BONUS_STRONG = 10
+ORDERFLOW_SCORE_BONUS_OK = 5
+ORDERFLOW_SCORE_PENALTY_WEAK = 12
+LIQUIDITY_GAP_SCORE_BONUS = 7
+LIQUIDATION_PROXY_BONUS = 6
+
+# V30 SERT KALITE KAPILARI:
+# Liste icinden eksik kalan pratik parcalar: saatlik/4s trend skoru, delta guc kapisi,
+# cok yakin direnc sert blok ve yukselis yorgunlugu filtresi.
+HTF_TREND_MIN_FOR_ELITE = 48
+HTF_TREND_MIN_FOR_GOLD = 65
+HTF_TREND_BONUS_STRONG = 8
+HTF_TREND_PENALTY_WEAK = 14
+DELTA_POWER_MIN_RATIO = 3.0
+DELTA_POWER_MIN_ORDERFLOW = 55
+DELTA_POWER_BLOCK_ORDERFLOW = 45
+HARD_RESISTANCE_BLOCK_PCT = 0.30
+FATIGUE_6H_GAIN_WARN = 12.0
+FATIGUE_6H_GAIN_BLOCK = 15.0
+FATIGUE_PULLBACK_MIN = 1.2
+FATIGUE_PENALTY = 22
+
+# V31 CVD / KUMULATIF DELTA:
+# Binance taker long/short akisini hafizada biriktirir.
+# Tek mumluk delta degil; son 30/60/120 dk alici-satici birikimi ve fiyatla uyumunu olcer.
+CVD_MEMORY_EXPIRE_SECONDS = 2 * 60 * 60
+CVD_EVENT_DEDUP_SECONDS = 90
+CVD_STRONG_SCORE = 78
+CVD_WEAK_SCORE = 38
+CVD_BLOCK_SCORE = 30
+CVD_SCORE_BONUS_STRONG = 10
+CVD_SCORE_BONUS_OK = 5
+CVD_SCORE_PENALTY_WEAK = 12
+CVD_DIVERGENCE_PENALTY = 14
+
 MIN_EARLY_RS = 74
 MIN_SAFE_CONFIDENCE = 72
 MAX_RISK_PCT = 4.5
@@ -167,6 +258,8 @@ oi_cache = {}
 # Binance Futures takerlongshortRatio verisi ile agresif alici-satici baskisini olcer.
 TAKER_FLOW_CACHE_SECONDS = 90
 taker_flow_cache = {}
+orderbook_cache = {}
+cvd_memory = {}
 
 exchange = ccxt.binanceusdm({
     "enableRateLimit": True,
@@ -507,6 +600,472 @@ def get_taker_flow_context(symbol):
 def attach_taker_flow_context(d, taker_context):
     if d and taker_context:
         d.update(taker_context)
+    return d
+
+
+def fetch_orderbook_context(symbol, price=None):
+    """
+    V28 ORDER BOOK KONTROLU:
+    Binance emir defterinden yakindaki alis/satis duvarlarini ve likidite boslugunu olcer.
+    Bu veri karar icindir; mesajda sade sekilde Order Book skoru/status olarak gosterilir.
+    """
+    cache_key = f"{symbol}_ob"
+    now = time.time()
+    cached = orderbook_cache.get(cache_key)
+    if cached and now - cached.get("time", 0) < ORDERBOOK_CACHE_SECONDS:
+        return cached.get("data")
+
+    out = {
+        "orderbook_ok": False,
+        "orderbook_score": 50,
+        "orderbook_status": "ORDERBOOK VERI YOK",
+        "bid_wall_price": 0.0,
+        "bid_wall_usdt": 0.0,
+        "bid_wall_distance_pct": 999.0,
+        "ask_wall_price": 0.0,
+        "ask_wall_usdt": 0.0,
+        "ask_wall_distance_pct": 999.0,
+        "bid_usdt_1pct": 0.0,
+        "ask_usdt_1pct": 0.0,
+        "book_imbalance": 1.0,
+        "liquidity_gap_up": False,
+        "liquidity_gap_down": False,
+        "orderbook_block": False,
+        "orderbook_reason": "VERI YOK",
+    }
+
+    try:
+        ob = exchange.fetch_order_book(symbol, limit=ORDERBOOK_LIMIT)
+        bids = ob.get("bids", []) or []
+        asks = ob.get("asks", []) or []
+        if not bids or not asks:
+            orderbook_cache[cache_key] = {"time": now, "data": out}
+            return out
+
+        live_price = float(price or 0)
+        if live_price <= 0:
+            live_price = float((bids[0][0] + asks[0][0]) / 2)
+        if live_price <= 0:
+            orderbook_cache[cache_key] = {"time": now, "data": out}
+            return out
+
+        def level_usdt(level):
+            return float(level[0]) * float(level[1])
+
+        bids_1 = [b for b in bids if 0 <= (live_price - float(b[0])) / live_price * 100 <= ORDERBOOK_NEAR_PCT]
+        asks_1 = [a for a in asks if 0 <= (float(a[0]) - live_price) / live_price * 100 <= ORDERBOOK_NEAR_PCT]
+        bids_2 = [b for b in bids if 0 <= (live_price - float(b[0])) / live_price * 100 <= ORDERBOOK_WALL_LOOK_PCT]
+        asks_2 = [a for a in asks if 0 <= (float(a[0]) - live_price) / live_price * 100 <= ORDERBOOK_WALL_LOOK_PCT]
+
+        bid_usdt_1 = sum(level_usdt(x) for x in bids_1)
+        ask_usdt_1 = sum(level_usdt(x) for x in asks_1)
+        imbalance = (bid_usdt_1 + 1.0) / (ask_usdt_1 + 1.0)
+
+        avg_bid = (sum(level_usdt(x) for x in bids_2) / len(bids_2)) if bids_2 else 0.0
+        avg_ask = (sum(level_usdt(x) for x in asks_2) / len(asks_2)) if asks_2 else 0.0
+        bid_wall = max(bids_2, key=level_usdt) if bids_2 else None
+        ask_wall = max(asks_2, key=level_usdt) if asks_2 else None
+
+        bid_wall_price = float(bid_wall[0]) if bid_wall else 0.0
+        ask_wall_price = float(ask_wall[0]) if ask_wall else 0.0
+        bid_wall_usdt = level_usdt(bid_wall) if bid_wall else 0.0
+        ask_wall_usdt = level_usdt(ask_wall) if ask_wall else 0.0
+        bid_wall_dist = ((live_price - bid_wall_price) / live_price * 100) if bid_wall_price > 0 else 999.0
+        ask_wall_dist = ((ask_wall_price - live_price) / live_price * 100) if ask_wall_price > 0 else 999.0
+
+        real_bid_wall = bid_wall_usdt >= max(ORDERBOOK_MIN_WALL_USDT, avg_bid * ORDERBOOK_WALL_MULTIPLIER) if avg_bid > 0 else False
+        real_ask_wall = ask_wall_usdt >= max(ORDERBOOK_MIN_WALL_USDT, avg_ask * ORDERBOOK_WALL_MULTIPLIER) if avg_ask > 0 else False
+
+        liquidity_gap_up = bool(ask_usdt_1 > 0 and bid_usdt_1 > ask_usdt_1 * 1.8 and (not real_ask_wall or ask_wall_dist > 1.2))
+        liquidity_gap_down = bool(bid_usdt_1 > 0 and ask_usdt_1 > bid_usdt_1 * 1.8 and (not real_bid_wall or bid_wall_dist > 1.2))
+
+        score = 50
+        reasons = []
+        if imbalance >= ORDERBOOK_STRONG_IMBALANCE:
+            score += 18; reasons.append("alis tarafi guclu")
+        elif imbalance >= 1.15:
+            score += 8; reasons.append("alis tarafi onde")
+        elif imbalance <= ORDERBOOK_WEAK_IMBALANCE:
+            score -= 18; reasons.append("satis tarafi guclu")
+        elif imbalance <= 0.85:
+            score -= 8; reasons.append("satis tarafi onde")
+
+        if real_bid_wall and bid_wall_dist <= ORDERBOOK_BID_WALL_CLOSE_PCT:
+            score += 10; reasons.append("yakinda alis duvari")
+        if real_ask_wall and ask_wall_dist <= ORDERBOOK_ASK_WALL_CLOSE_PCT:
+            score -= 16; reasons.append("yakinda satis duvari")
+        if liquidity_gap_up:
+            score += 10; reasons.append("yukari likidite boslugu")
+        if liquidity_gap_down:
+            score -= 10; reasons.append("asagi likidite boslugu")
+
+        orderbook_block = bool(real_ask_wall and ask_wall_dist <= 0.45 and imbalance <= 1.05 and ask_wall_usdt > bid_wall_usdt * 1.2)
+        if orderbook_block:
+            reasons.append("satis duvari cok yakin")
+
+        score = int(max(0, min(100, round(score))))
+        if orderbook_block:
+            status = "SATICI_DUVARI_BLOCK"
+        elif score >= 72:
+            status = "ALICI USTUN"
+        elif score >= 60:
+            status = "ALICI AVANTAJLI"
+        elif score <= 30:
+            status = "SATICI USTUN"
+        elif score <= 42:
+            status = "SATICI AVANTAJLI"
+        else:
+            status = "DENGELI"
+
+        out.update({
+            "orderbook_ok": True,
+            "orderbook_score": score,
+            "orderbook_status": status,
+            "bid_wall_price": bid_wall_price,
+            "bid_wall_usdt": bid_wall_usdt if real_bid_wall else 0.0,
+            "bid_wall_distance_pct": bid_wall_dist if real_bid_wall else 999.0,
+            "ask_wall_price": ask_wall_price,
+            "ask_wall_usdt": ask_wall_usdt if real_ask_wall else 0.0,
+            "ask_wall_distance_pct": ask_wall_dist if real_ask_wall else 999.0,
+            "bid_usdt_1pct": bid_usdt_1,
+            "ask_usdt_1pct": ask_usdt_1,
+            "book_imbalance": imbalance,
+            "liquidity_gap_up": liquidity_gap_up,
+            "liquidity_gap_down": liquidity_gap_down,
+            "orderbook_block": orderbook_block,
+            "orderbook_reason": ", ".join(reasons[:5]) if reasons else "DENGELI",
+        })
+        orderbook_cache[cache_key] = {"time": now, "data": out}
+        return out
+    except Exception as e:
+        print("Order book context hata:", symbol, e, flush=True)
+        orderbook_cache[cache_key] = {"time": now, "data": out}
+        return out
+
+
+def attach_orderbook_context(symbol, d):
+    if not d:
+        return d
+    price = float(d.get("entry", d.get("price", 0)) or 0)
+    ob = fetch_orderbook_context(symbol, price)
+    d.update(ob)
+    return d
+
+
+def attach_orderflow_context(symbol, d):
+    """
+    V29 ORDER FLOW SKORU:
+    Taker long/short akisi, delta, OI ve order book boslugunu birlestirir.
+    Gercek Coinglass likidasyon haritasi degildir; Binance verisinden squeeze/likidasyon PROXY uretir.
+    """
+    if not d:
+        return d
+
+    long15 = float(d.get("long_flow_15m", 0) or 0)
+    short15 = float(d.get("short_flow_15m", 0) or 0)
+    long1h = float(d.get("long_flow_1h", 0) or 0)
+    short1h = float(d.get("short_flow_1h", 0) or 0)
+    delta15 = float(d.get("delta_ratio_15m", 0) or 0)
+    delta1h = float(d.get("delta_ratio_1h", 0) or 0)
+    oi15 = float(d.get("oi_15m_pct", 0) or 0)
+    oi1h = float(d.get("oi_1h_pct", 0) or 0)
+    ob_score = int(d.get("orderbook_score", 50) or 50)
+
+    total15 = long15 + short15
+    total1h = long1h + short1h
+    buy_sell_ratio_15m = (long15 + 1.0) / (short15 + 1.0)
+    buy_sell_ratio_1h = (long1h + 1.0) / (short1h + 1.0)
+
+    score = 50
+    reasons = []
+
+    if buy_sell_ratio_15m >= ORDERFLOW_BUY_SELL_RATIO_STRONG:
+        score += 18; reasons.append("15m agresif alici")
+    elif buy_sell_ratio_15m >= 1.20:
+        score += 8; reasons.append("15m alici onde")
+    elif buy_sell_ratio_15m <= ORDERFLOW_BUY_SELL_RATIO_WEAK:
+        score -= 18; reasons.append("15m agresif satici")
+    elif buy_sell_ratio_15m <= 0.85:
+        score -= 8; reasons.append("15m satici onde")
+
+    if delta15 >= ORDERFLOW_DELTA_STRONG:
+        score += 14; reasons.append("delta pozitif")
+    elif delta15 >= 6:
+        score += 7; reasons.append("delta alici")
+    elif delta15 <= ORDERFLOW_DELTA_WEAK:
+        score -= 14; reasons.append("delta negatif")
+    elif delta15 <= -5:
+        score -= 7; reasons.append("delta satici")
+
+    if delta1h >= 8:
+        score += 6; reasons.append("1h alici devam")
+    elif delta1h <= -8:
+        score -= 6; reasons.append("1h satici devam")
+
+    if d.get("oi_long_supported") or d.get("oi_strong_long_supported"):
+        score += 6; reasons.append("OI long destekli")
+    elif d.get("oi_weak"):
+        score -= 5; reasons.append("OI zayif")
+
+    if d.get("liquidity_gap_up"):
+        score += 8; reasons.append("yukari likidite boslugu")
+    if d.get("liquidity_gap_down"):
+        score -= 8; reasons.append("asagi likidite boslugu")
+
+    if ob_score >= 70:
+        score += 5; reasons.append("order book alici")
+    elif ob_score <= 35:
+        score -= 8; reasons.append("order book satici")
+
+    # Likidasyon proxy: gercek likidasyon kumeleri degil; OI + alici akis + yukari bosluk kombinasyonu.
+    short_squeeze_proxy = (
+        oi15 >= 1.0
+        and delta15 >= 6
+        and buy_sell_ratio_15m >= 1.15
+        and (d.get("liquidity_gap_up") or ob_score >= 60)
+    )
+    long_squeeze_risk = (
+        oi15 >= 1.0
+        and delta15 <= -6
+        and buy_sell_ratio_15m <= 0.85
+        and (d.get("liquidity_gap_down") or ob_score <= 42)
+    )
+
+    if short_squeeze_proxy:
+        score += 8; reasons.append("short squeeze proxy")
+    if long_squeeze_risk:
+        score -= 12; reasons.append("long squeeze riski")
+
+    orderflow_block = bool(score <= ORDERFLOW_BLOCK_SCORE or (long_squeeze_risk and ob_score <= 42))
+    score = int(max(0, min(100, round(score))))
+
+    if orderflow_block:
+        status = "ORDER_FLOW_BLOCK"
+    elif score >= 82:
+        status = "AGRESIF ALICI"
+    elif score >= 65:
+        status = "ALICI AVANTAJLI"
+    elif score <= 35:
+        status = "AGRESIF SATICI"
+    elif score <= 45:
+        status = "SATICI AVANTAJLI"
+    else:
+        status = "DENGELI"
+
+    # Likidite boslugu skorunu daha okunabilir ayri goster.
+    gap_score = 50
+    if d.get("liquidity_gap_up"):
+        gap_score += 30
+    if d.get("liquidity_gap_down"):
+        gap_score -= 30
+    if d.get("ask_wall_usdt", 0) > 0 and d.get("ask_wall_distance_pct", 999) <= ORDERBOOK_ASK_WALL_CLOSE_PCT:
+        gap_score -= 15
+    if d.get("bid_wall_usdt", 0) > 0 and d.get("bid_wall_distance_pct", 999) <= ORDERBOOK_BID_WALL_CLOSE_PCT:
+        gap_score += 10
+    gap_score = int(max(0, min(100, gap_score)))
+    if gap_score >= 75:
+        gap_status = "YUKARI BOSLUK"
+    elif gap_score <= 35:
+        gap_status = "ASAGI BOSLUK RISKI"
+    else:
+        gap_status = "DENGELI"
+
+    if short_squeeze_proxy:
+        liq_status = "SHORT SIKISMA ADAYI"
+        liq_score = min(100, score + 8)
+    elif long_squeeze_risk:
+        liq_status = "LONG SIKISMA RISKI"
+        liq_score = max(0, 100 - score)
+    else:
+        liq_status = "LIKIDASYON NOTR"
+        liq_score = 50
+
+    d.update({
+        "orderflow_score": score,
+        "orderflow_status": status,
+        "orderflow_reason": ", ".join(reasons[:6]) if reasons else "DENGELI",
+        "buy_sell_ratio_15m": buy_sell_ratio_15m,
+        "buy_sell_ratio_1h": buy_sell_ratio_1h,
+        "orderflow_block": orderflow_block,
+        "liquidity_gap_score": gap_score,
+        "liquidity_gap_status": gap_status,
+        "liquidation_proxy_score": int(liq_score),
+        "liquidation_proxy_status": liq_status,
+        "short_squeeze_proxy": bool(short_squeeze_proxy),
+        "long_squeeze_risk": bool(long_squeeze_risk),
+    })
+    return d
+
+
+def cleanup_cvd_memory():
+    now = time.time()
+    for symbol in list(cvd_memory.keys()):
+        cvd_memory[symbol] = [
+            e for e in cvd_memory[symbol]
+            if now - e.get("time", 0) <= CVD_MEMORY_EXPIRE_SECONDS
+        ]
+        if not cvd_memory[symbol]:
+            cvd_memory.pop(symbol, None)
+
+
+def update_cvd_memory(symbol, d):
+    """
+    V31 CVD HAFIZASI:
+    Net delta verisini zaman icinde biriktirir. Aynı 90 sn icinde ayni sembol tekrar yazilmaz.
+    Bu gercek tick-by-tick footprint degil; Binance taker flow datasindan uretilen pratik CVD katmanidir.
+    """
+    if not d:
+        return
+
+    now = time.time()
+    events = cvd_memory.setdefault(symbol, [])
+    if events and now - events[-1].get("time", 0) < CVD_EVENT_DEDUP_SECONDS:
+        # En yeni bar icin daha guclu delta gelirse son kaydi guncelle.
+        if abs(float(d.get("net_delta_15m", 0) or 0)) > abs(float(events[-1].get("net_delta", 0) or 0)):
+            events[-1].update({
+                "time": now,
+                "price": float(d.get("entry", d.get("price", 0)) or 0),
+                "net_delta": float(d.get("net_delta_15m", 0) or 0),
+                "delta_ratio": float(d.get("delta_ratio_15m", 0) or 0),
+                "long_flow": float(d.get("long_flow_15m", 0) or 0),
+                "short_flow": float(d.get("short_flow_15m", 0) or 0),
+            })
+        cleanup_cvd_memory()
+        return
+
+    events.append({
+        "time": now,
+        "price": float(d.get("entry", d.get("price", 0)) or 0),
+        "net_delta": float(d.get("net_delta_15m", 0) or 0),
+        "delta_ratio": float(d.get("delta_ratio_15m", 0) or 0),
+        "long_flow": float(d.get("long_flow_15m", 0) or 0),
+        "short_flow": float(d.get("short_flow_15m", 0) or 0),
+    })
+    cleanup_cvd_memory()
+
+
+def cvd_context(symbol, current_price=0):
+    cleanup_cvd_memory()
+    events = cvd_memory.get(symbol, [])
+    now = time.time()
+    out = {
+        "cvd_ok": False,
+        "cvd_score": 50,
+        "cvd_status": "CVD VERI YOK",
+        "cvd_trend": "YOK",
+        "cvd_30m": 0.0,
+        "cvd_60m": 0.0,
+        "cvd_120m": 0.0,
+        "cvd_delta_ratio_avg": 0.0,
+        "cvd_price_change_pct": 0.0,
+        "cvd_hidden_accumulation": False,
+        "cvd_fake_pump": False,
+        "cvd_distribution_risk": False,
+        "cvd_block": False,
+        "cvd_reason": "VERI YOK",
+    }
+    if not events:
+        return out
+
+    e30 = [e for e in events if now - e.get("time", 0) <= 30 * 60]
+    e60 = [e for e in events if now - e.get("time", 0) <= 60 * 60]
+    e120 = [e for e in events if now - e.get("time", 0) <= 120 * 60]
+    ref = e60 if e60 else e120
+    if not ref:
+        return out
+
+    cvd30 = sum(e.get("net_delta", 0) for e in e30)
+    cvd60 = sum(e.get("net_delta", 0) for e in e60)
+    cvd120 = sum(e.get("net_delta", 0) for e in e120)
+    long60 = sum(e.get("long_flow", 0) for e in e60)
+    short60 = sum(e.get("short_flow", 0) for e in e60)
+    total60 = long60 + short60
+    avg_delta_ratio = (cvd60 / total60 * 100) if total60 > 0 else 0.0
+
+    first_price = float(ref[0].get("price", 0) or 0)
+    last_price = float(current_price or ref[-1].get("price", first_price) or 0)
+    price_change = ((last_price - first_price) / first_price * 100) if first_price > 0 else 0.0
+
+    score = 50
+    reasons = []
+    if avg_delta_ratio >= 18:
+        score += 24; reasons.append("cvd cok guclu")
+    elif avg_delta_ratio >= 10:
+        score += 16; reasons.append("cvd guclu")
+    elif avg_delta_ratio >= 4:
+        score += 8; reasons.append("cvd pozitif")
+    elif avg_delta_ratio <= -18:
+        score -= 24; reasons.append("cvd cok negatif")
+    elif avg_delta_ratio <= -10:
+        score -= 16; reasons.append("cvd negatif")
+    elif avg_delta_ratio <= -4:
+        score -= 8; reasons.append("cvd zayif")
+
+    # Kisa/orta vade ayni yone akiyorsa guven artar.
+    if cvd30 > 0 and cvd60 > 0:
+        score += 7; reasons.append("30/60dk alici birikimi")
+    elif cvd30 < 0 and cvd60 < 0:
+        score -= 7; reasons.append("30/60dk satici birikimi")
+
+    hidden_accumulation = bool(abs(price_change) <= 1.5 and avg_delta_ratio >= 8 and cvd60 > 0)
+    fake_pump = bool(price_change >= 2.5 and avg_delta_ratio <= -4 and cvd60 < 0)
+    distribution_risk = bool(price_change >= 1.0 and avg_delta_ratio <= -8)
+
+    if hidden_accumulation:
+        score += 10; reasons.append("gizli toplama")
+    if fake_pump:
+        score -= CVD_DIVERGENCE_PENALTY; reasons.append("sahte yukselis riski")
+    if distribution_risk:
+        score -= 10; reasons.append("dagitim riski")
+
+    score = int(max(0, min(100, round(score))))
+    cvd_block = bool(score <= CVD_BLOCK_SCORE or fake_pump)
+
+    if cvd_block:
+        status = "CVD_BLOCK"
+    elif score >= 82:
+        status = "CVD COK GUCLU"
+    elif score >= 65:
+        status = "CVD POZITIF"
+    elif score <= 35:
+        status = "CVD NEGATIF"
+    elif score <= 45:
+        status = "CVD ZAYIF"
+    else:
+        status = "CVD NOTR"
+
+    if cvd60 > 0 and cvd30 >= 0:
+        trend = "YUKARI"
+    elif cvd60 < 0 and cvd30 <= 0:
+        trend = "ASAGI"
+    else:
+        trend = "KARISIK"
+
+    out.update({
+        "cvd_ok": True,
+        "cvd_score": score,
+        "cvd_status": status,
+        "cvd_trend": trend,
+        "cvd_30m": cvd30,
+        "cvd_60m": cvd60,
+        "cvd_120m": cvd120,
+        "cvd_delta_ratio_avg": avg_delta_ratio,
+        "cvd_price_change_pct": price_change,
+        "cvd_hidden_accumulation": hidden_accumulation,
+        "cvd_fake_pump": fake_pump,
+        "cvd_distribution_risk": distribution_risk,
+        "cvd_block": cvd_block,
+        "cvd_reason": ", ".join(reasons[:5]) if reasons else "NOTR",
+    })
+    return out
+
+
+def attach_cvd_context(symbol, d):
+    if not d:
+        return d
+    update_cvd_memory(symbol, d)
+    price = float(d.get("entry", d.get("price", 0)) or 0)
+    d.update(cvd_context(symbol, price))
     return d
 
 def btc_filter():
@@ -2947,6 +3506,398 @@ def late_rise_pullback_risk(d, support_modules=None):
     return False, "OK"
 
 
+def near_resistance_late_memory_block(d):
+    """
+    V24 KAT FIX:
+    Direnç çok yakınken hafıza/re-entry/second wave yüzünden geç AL gelmesini engeller.
+    Güçlü para olsa bile, fiyat direnç altında ve geçmiş radar çok tekrarlıysa Elite yerine izleme kalsın.
+    """
+    if not d or not d.get("sr_ok"):
+        return False, "OK"
+    if d.get("resistance_broken"):
+        return False, "OK"
+
+    module = d.get("module", "UNKNOWN")
+    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+    main_count = int(d.get("main_signal_count_120m", 0) or 0)
+    memory_like = bool(
+        d.get("memory_reentry")
+        or d.get("second_wave_bonus")
+        or d.get("main_repeat_buildup")
+        or d.get("money_memory_bonus")
+        or d.get("repeat_force")
+        or d.get("history_force")
+        or module == "HISTORY_BUILDUP"
+    )
+
+    # Dip/sweep sinyallerinde ana fikir likidite süpürme olduğu için bu blok daha esnek kalır.
+    if module in ("DIP", "SWEEP", "FAST_LIQUIDITY_SWEEP"):
+        return False, "OK"
+
+    # Direnç neredeyse sıfır mesafedeyse AL verme; kırılımı bekle.
+    if 0 <= resistance_distance <= SR_HARD_BLOCK_PCT:
+        return True, "DIRENC_COK_YAKIN_KIRILIM_BEKLE"
+
+    # Hafıza/re-entry ile gelen ve çok tekrar etmiş coin direnç altındaysa geç kalmış olabilir.
+    if (
+        memory_like
+        and 0 <= resistance_distance <= SR_MEMORY_LATE_BLOCK_PCT
+        and main_count >= SR_MEMORY_REPEAT_BLOCK_COUNT
+    ):
+        return True, "DIRENC_ALTINDA_GEC_MEMORY_REENTRY"
+
+    return False, "OK"
+
+def attach_live_pullback_context(symbol, d):
+    """
+    V25 CANLI PULLBACK KONTROLU:
+    Son 15m mumlarda satis basladi mi? MACD histogram zayifliyor mu?
+    OBV dusuyor mu? Fiyat tepe sonrasinda geri cekiliyor mu?
+    Bu bilgiler Elite kapisinda ve Yurume Skorunda kullanilir.
+    """
+    if not d:
+        return d
+    try:
+        df15 = fetch_df(symbol, "15m", 120)
+        if df15 is None or len(df15) < 8:
+            d["live_pullback_status"] = "VERI YOK"
+            d["live_pullback_penalty"] = 0
+            d["live_pullback_block"] = False
+            return d
+
+        last = df15.iloc[-1]
+        prev = df15.iloc[-2]
+        prev2 = df15.iloc[-3]
+        price = float(d.get("price", last.close) or last.close)
+
+        red_candle = bool(last.close < last.open)
+        close_down = bool(last.close < prev.close)
+        prev_red = bool(prev.close < prev.open)
+        two_red = bool(red_candle and prev_red)
+
+        macd_hist_now = float(last.macd - last.macd_signal)
+        macd_hist_prev = float(prev.macd - prev.macd_signal)
+        macd_hist_prev2 = float(prev2.macd - prev2.macd_signal)
+        macd_weakening = bool(macd_hist_now < macd_hist_prev)
+        macd_weakening_2 = bool(macd_hist_now < macd_hist_prev < macd_hist_prev2)
+
+        obv_falling = bool(float(last.obv) < float(prev.obv))
+        rsi_drop = float(prev.rsi - last.rsi)
+        rsi_fast_drop = bool(rsi_drop >= 4.0)
+        ema9_lost = bool(price < float(last.ema9))
+
+        high_24h = float(df15["high"].tail(96).max())
+        pullback_from_high = ((high_24h - price) / high_24h * 100) if high_24h > 0 else 0.0
+
+        resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+        module = d.get("module", "UNKNOWN")
+        dip_like = module in ("DIP", "SWEEP", "FAST_LIQUIDITY_SWEEP")
+
+        penalty = 0
+        reasons = []
+        if close_down or red_candle:
+            penalty += PULLBACK_RED_CANDLE_PENALTY
+            reasons.append("son mum kirmizi/zayif")
+        if two_red:
+            penalty += PULLBACK_TWO_RED_PENALTY
+            reasons.append("iki kirmizi mum")
+        if macd_weakening:
+            penalty += PULLBACK_MACD_WEAK_PENALTY
+            reasons.append("MACD hist zayifliyor")
+        if macd_weakening_2:
+            penalty += 6
+            reasons.append("MACD 2 mumdur zayif")
+        if obv_falling:
+            penalty += PULLBACK_OBV_FALL_PENALTY
+            reasons.append("OBV dusuyor")
+        if rsi_fast_drop:
+            penalty += PULLBACK_RSI_DROP_PENALTY
+            reasons.append("RSI hizli dusuyor")
+        if ema9_lost:
+            penalty += PULLBACK_EMA9_LOST_PENALTY
+            reasons.append("EMA9 alti")
+        if pullback_from_high >= PULLBACK_FROM_HIGH_WARN:
+            penalty += 10
+            reasons.append("tepeden geri cekilme")
+
+        # Blok kurallari: dip/sweep haric, satis basladiysa hafiza tek basina AL verdirmesin.
+        hard_block = False
+        if not dip_like:
+            if two_red and macd_weakening and obv_falling:
+                hard_block = True
+            if pullback_from_high >= PULLBACK_FROM_HIGH_BLOCK and (close_down or red_candle) and (macd_weakening or obv_falling):
+                hard_block = True
+            if 0 <= resistance_distance <= 1.20 and (close_down or red_candle) and (macd_weakening or obv_falling):
+                hard_block = True
+            if penalty >= PULLBACK_TOTAL_BLOCK_SCORE and (close_down or red_candle):
+                hard_block = True
+
+        if hard_block:
+            status = "SATIS_BASKISI_BLOCK"
+        elif penalty >= 22:
+            status = "SATIS_BASKISI_YUKSEK"
+        elif penalty >= 10:
+            status = "SATIS_BASKISI_VAR"
+        else:
+            status = "OK"
+
+        d.update({
+            "live_red_candle": bool(red_candle),
+            "live_close_down": bool(close_down),
+            "live_two_red": bool(two_red),
+            "live_macd_weakening": bool(macd_weakening),
+            "live_macd_weakening_2": bool(macd_weakening_2),
+            "live_obv_falling": bool(obv_falling),
+            "live_rsi_drop": rsi_drop,
+            "live_rsi_fast_drop": bool(rsi_fast_drop),
+            "live_ema9_lost": bool(ema9_lost),
+            "live_pullback_from_high": pullback_from_high,
+            "live_pullback_penalty": int(penalty),
+            "live_pullback_block": bool(hard_block),
+            "live_pullback_status": status,
+            "live_pullback_reasons": ", ".join(reasons[:5]) if reasons else "OK",
+        })
+        return d
+    except Exception as e:
+        print("Live pullback context hata:", symbol, e, flush=True)
+        d["live_pullback_status"] = "VERI HATA"
+        d["live_pullback_penalty"] = 0
+        d["live_pullback_block"] = False
+        return d
+
+def attach_graph_technical_alignment(symbol, d):
+    """
+    V26 GRAFIK-TEKNIK UYUM KONTROLU:
+    Teknik skor/hafiza guclu olsa bile 15m grafik son anda bozuluyorsa Elite AL'i keser.
+    Grafik tarafi: mum yonu, EMA, OBV, MACD histogram, tepeden geri cekilme, yakin direnc.
+    Teknik tarafi: para etkisi, hacim gucu, market etki, memory/re-entry, OI/Delta.
+    """
+    if not d:
+        return d
+    try:
+        df15 = fetch_df(symbol, "15m", 140)
+        df1h = fetch_df(symbol, "1h", 90)
+        if df15 is None or len(df15) < 8:
+            d.update({
+                "alignment_status": "VERI YOK",
+                "alignment_penalty": 0,
+                "alignment_block": False,
+                "alignment_score": 50,
+                "alignment_reasons": "VERI YOK",
+            })
+            return d
+
+        last = df15.iloc[-1]
+        prev = df15.iloc[-2]
+        prev2 = df15.iloc[-3]
+        price = float(d.get("price", last.close) or last.close)
+
+        # Grafik negatifleri
+        red_candle = bool(last.close < last.open)
+        close_down = bool(last.close < prev.close)
+        two_red = bool(red_candle and prev.close < prev.open)
+        ema9_lost = bool(price < float(last.ema9))
+        ema21_lost = bool(price < float(last.ema21))
+        macd_hist_now = float(last.macd - last.macd_signal)
+        macd_hist_prev = float(prev.macd - prev.macd_signal)
+        macd_hist_prev2 = float(prev2.macd - prev2.macd_signal)
+        macd_weak = bool(macd_hist_now < macd_hist_prev)
+        macd_weak_2 = bool(macd_hist_now < macd_hist_prev < macd_hist_prev2)
+        obv_down = bool(float(last.obv) < float(prev.obv))
+        rsi_drop = float(prev.rsi - last.rsi)
+        rsi_fast_drop = bool(rsi_drop >= 4.0)
+        high_24h = float(df15["high"].tail(96).max())
+        pullback_from_high = ((high_24h - price) / high_24h * 100) if high_24h > 0 else 0.0
+        resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+
+        graph_bad = 0
+        reasons = []
+        if close_down or red_candle:
+            graph_bad += 1; reasons.append("son mum zayif")
+        if two_red:
+            graph_bad += 2; reasons.append("iki kirmizi mum")
+        if macd_weak:
+            graph_bad += 1; reasons.append("MACD hist zayif")
+        if macd_weak_2:
+            graph_bad += 1; reasons.append("MACD 2 mum zayif")
+        if obv_down:
+            graph_bad += 1; reasons.append("OBV dusuyor")
+        if rsi_fast_drop:
+            graph_bad += 1; reasons.append("RSI hizli dusuyor")
+        if ema9_lost:
+            graph_bad += 1; reasons.append("EMA9 alti")
+        if ema21_lost:
+            graph_bad += 2; reasons.append("EMA21 alti")
+        if pullback_from_high >= 4.0:
+            graph_bad += 1; reasons.append("tepeden donus")
+        if 0 <= resistance_distance <= 1.0:
+            graph_bad += 1; reasons.append("direnc yakin")
+
+        # Teknik pozitifleri
+        money = max(float(d.get("money_impact", 0) or 0), float(d.get("effective_money_impact", 0) or 0), float(d.get("history_money_max", 0) or 0))
+        power = max(float(d.get("volume_power", 0) or 0), float(d.get("effective_volume_power", 0) or 0), float(d.get("history_power_max", 0) or 0))
+        market = max(float(d.get("market_impact_pct", 0) or 0), float(d.get("effective_market_impact_pct", 0) or 0), float(d.get("history_market_max", 0) or 0), float(d.get("money_market_60m", 0) or 0))
+        tech_good = 0
+        if money >= 2.5: tech_good += 1
+        if power >= 8: tech_good += 1
+        if market >= 0.35: tech_good += 1
+        if d.get("memory_reentry") or d.get("second_wave_bonus") or d.get("money_memory_bonus"): tech_good += 1
+        if d.get("oi_long_supported") or d.get("oi_strong_long_supported"): tech_good += 1
+        if d.get("buyer_dominant") or d.get("strong_buyer_dominant"): tech_good += 1
+
+        # Uyum skoru: 50 baz; teknik artirir, grafik bozulma dusurur.
+        alignment_score = 50 + tech_good * 7 - graph_bad * 10
+        alignment_score = int(max(0, min(100, alignment_score)))
+
+        penalty = 0
+        block = False
+        status = "POZITIF"
+        if graph_bad >= 6 and tech_good >= 2:
+            penalty = ALIGNMENT_BLOCK_PENALTY; block = True; status = "UYUMSUZ_BLOCK"
+        elif graph_bad >= 4 and (close_down or red_candle) and (macd_weak or obv_down):
+            penalty = ALIGNMENT_WEAK_PENALTY; status = "UYUMSUZ"
+        elif graph_bad >= 2:
+            penalty = ALIGNMENT_WARN_PENALTY; status = "NOTR/ZAYIF"
+
+        # Direnc cok yakin + grafik zayifsa daha sert davran.
+        if 0 <= resistance_distance <= 1.0 and (close_down or red_candle) and (macd_weak or obv_down):
+            penalty += 12
+            status = "DIRENC_ALTI_UYUMSUZ"
+            if graph_bad >= 4:
+                block = True
+
+        d.update({
+            "alignment_status": status,
+            "alignment_penalty": int(penalty),
+            "alignment_block": bool(block),
+            "alignment_score": alignment_score,
+            "alignment_graph_bad": int(graph_bad),
+            "alignment_tech_good": int(tech_good),
+            "alignment_reasons": ", ".join(reasons[:6]) if reasons else "OK",
+        })
+        return d
+    except Exception as e:
+        print("Graph technical alignment hata:", symbol, e, flush=True)
+        d.update({
+            "alignment_status": "HATA/ES GEC",
+            "alignment_penalty": 0,
+            "alignment_block": False,
+            "alignment_score": 50,
+            "alignment_reasons": "HATA",
+        })
+        return d
+
+
+def attach_higher_timeframe_trend_context(symbol, d):
+    """
+    V30 SAATLIK / 4S TREND + YUKSELIS YORGUNLUGU:
+    15m sinyal guclu olsa bile 1H/4H yapi zayifsa veya coin 6 saatte cok gidip
+    tepeden donmeye basladiysa Elite kapisini zorlastirir.
+    """
+    if not d:
+        return d
+    try:
+        df15 = fetch_df(symbol, "15m", 160)
+        df1h = fetch_df(symbol, "1h", 120)
+        df4h = fetch_df(symbol, "4h", 80)
+        if df15 is None or df1h is None or len(df15) < 30 or len(df1h) < 20:
+            d.update({
+                "htf_trend_score": 50,
+                "htf_trend_status": "HTF VERI YOK",
+                "htf_trend_reason": "VERI YOK",
+                "fatigue_block": False,
+                "fatigue_penalty": 0,
+            })
+            return d
+
+        m15 = df15.iloc[-1]
+        h1 = df1h.iloc[-1]
+        h1p = df1h.iloc[-2]
+        score = 50
+        reasons = []
+
+        if h1.close > h1.ema21:
+            score += 12; reasons.append("1H EMA21 ustu")
+        else:
+            score -= 12; reasons.append("1H EMA21 alti")
+        if h1.ema9 >= h1.ema21:
+            score += 8; reasons.append("1H EMA pozitif")
+        else:
+            score -= 6; reasons.append("1H EMA zayif")
+        if h1.macd > h1.macd_signal and h1.macd >= h1p.macd:
+            score += 10; reasons.append("1H MACD guclu")
+        elif h1.macd < h1.macd_signal:
+            score -= 8; reasons.append("1H MACD zayif")
+        if 45 <= float(h1.rsi) <= 68:
+            score += 6; reasons.append("1H RSI saglikli")
+        elif float(h1.rsi) >= 74:
+            score -= 10; reasons.append("1H RSI sisik")
+
+        if df4h is not None and len(df4h) >= 20:
+            h4 = df4h.iloc[-1]
+            h4p = df4h.iloc[-2]
+            if h4.close > h4.ema21:
+                score += 8; reasons.append("4H EMA21 ustu")
+            else:
+                score -= 6; reasons.append("4H EMA21 alti")
+            if h4.macd >= h4p.macd:
+                score += 5; reasons.append("4H MACD toparliyor")
+            else:
+                score -= 4; reasons.append("4H MACD zayif")
+
+        price = float(m15.close)
+        p6h = float(df15["close"].iloc[-25]) if len(df15) >= 25 else float(df15["close"].iloc[0])
+        high_6h = float(df15["high"].tail(24).max())
+        gain_6h = ((price - p6h) / p6h * 100) if p6h > 0 else 0.0
+        pullback_from_6h_high = ((high_6h - price) / high_6h * 100) if high_6h > 0 else 0.0
+        last_red = bool(df15["close"].iloc[-1] < df15["open"].iloc[-1])
+        prev_red = bool(df15["close"].iloc[-2] < df15["open"].iloc[-2])
+        macd_hist_now = float(df15["macd"].iloc[-1] - df15["macd_signal"].iloc[-1])
+        macd_hist_prev = float(df15["macd"].iloc[-2] - df15["macd_signal"].iloc[-2])
+        hist_weak = macd_hist_now < macd_hist_prev
+
+        fatigue_penalty = 0
+        fatigue_block = False
+        if gain_6h >= FATIGUE_6H_GAIN_WARN and (pullback_from_6h_high >= FATIGUE_PULLBACK_MIN or (last_red and hist_weak)):
+            fatigue_penalty += FATIGUE_PENALTY
+            reasons.append("6s yukselis yorgun")
+        if gain_6h >= FATIGUE_6H_GAIN_BLOCK and pullback_from_6h_high >= FATIGUE_PULLBACK_MIN and (last_red or prev_red or hist_weak):
+            fatigue_block = True
+            reasons.append("tepe sonrasi yorulma")
+
+        score = int(max(0, min(100, round(score - fatigue_penalty))))
+        if fatigue_block:
+            status = "YORGUNLUK_BLOCK"
+        elif score >= 76:
+            status = "HTF GUCLU"
+        elif score >= 60:
+            status = "HTF POZITIF"
+        elif score <= 38:
+            status = "HTF ZAYIF"
+        else:
+            status = "HTF NOTR"
+
+        d.update({
+            "htf_trend_score": score,
+            "htf_trend_status": status,
+            "htf_trend_reason": ", ".join(reasons[:6]) if reasons else "NOTR",
+            "htf_gain_6h": gain_6h,
+            "htf_pullback_from_high": pullback_from_6h_high,
+            "fatigue_block": bool(fatigue_block),
+            "fatigue_penalty": int(fatigue_penalty),
+        })
+        return d
+    except Exception as e:
+        print("HTF trend context hata:", symbol, e, flush=True)
+        d.update({
+            "htf_trend_score": 50,
+            "htf_trend_status": "HTF HATA",
+            "htf_trend_reason": "HATA",
+            "fatigue_block": False,
+            "fatigue_penalty": 0,
+        })
+        return d
+
 def elite_score_signal(d, support_modules=None):
     """
     V8 Elite puanlama + OI destegi:
@@ -3237,6 +4188,66 @@ def elite_score_signal(d, support_modules=None):
     score += int(d.get("sr_bonus", 0) or 0)
     score += int(d.get("sr_penalty", 0) or 0)
 
+    # V24 KAT FIX: Dirence cok yakin memory/re-entry sinyalleri Elite skorunu sismesin.
+    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+    if d.get("sr_ok") and not d.get("resistance_broken") and 0 <= resistance_distance <= SR_MEMORY_LATE_BLOCK_PCT:
+        score -= SR_NEAR_RESISTANCE_EXTRA_PENALTY
+
+    # V28: Order book duvarlari Elite skoruna etki etsin.
+    ob_score = int(d.get("orderbook_score", 50) or 50)
+    if ob_score >= 72:
+        score += ORDERBOOK_SCORE_BONUS_STRONG
+    elif ob_score >= 60:
+        score += ORDERBOOK_SCORE_BONUS_OK
+    elif ob_score <= 35:
+        score -= ORDERBOOK_SCORE_PENALTY_WEAK
+    if d.get("ask_wall_usdt", 0) > 0 and d.get("ask_wall_distance_pct", 999) <= ORDERBOOK_ASK_WALL_CLOSE_PCT:
+        score -= ORDERBOOK_ASK_WALL_PENALTY
+    if d.get("liquidity_gap_up"):
+        score += 5
+    if d.get("liquidity_gap_down"):
+        score -= 5
+
+    # V29: Order Flow / Likidite Boslugu / Likidasyon proxy skor etkisi.
+    of_score = int(d.get("orderflow_score", 50) or 50)
+    gap_score = int(d.get("liquidity_gap_score", 50) or 50)
+    if of_score >= ORDERFLOW_STRONG_SCORE:
+        score += ORDERFLOW_SCORE_BONUS_STRONG
+    elif of_score >= 65:
+        score += ORDERFLOW_SCORE_BONUS_OK
+    elif of_score <= ORDERFLOW_WEAK_SCORE:
+        score -= ORDERFLOW_SCORE_PENALTY_WEAK
+    if gap_score >= 75:
+        score += LIQUIDITY_GAP_SCORE_BONUS
+    elif gap_score <= 35:
+        score -= LIQUIDITY_GAP_SCORE_BONUS
+    if d.get("short_squeeze_proxy"):
+        score += LIQUIDATION_PROXY_BONUS
+    if d.get("long_squeeze_risk"):
+        score -= LIQUIDATION_PROXY_BONUS + 6
+
+    # V31: CVD / kümülatif delta skor etkisi.
+    cvd_score = int(d.get("cvd_score", 50) or 50)
+    if cvd_score >= CVD_STRONG_SCORE:
+        score += CVD_SCORE_BONUS_STRONG
+    elif cvd_score >= 65:
+        score += CVD_SCORE_BONUS_OK
+    elif cvd_score <= CVD_WEAK_SCORE:
+        score -= CVD_SCORE_PENALTY_WEAK
+    if d.get("cvd_hidden_accumulation"):
+        score += 6
+    if d.get("cvd_fake_pump") or d.get("cvd_distribution_risk"):
+        score -= CVD_DIVERGENCE_PENALTY
+
+    # V25: Canli satis baskisi skoru sisirmesin.
+    live_pullback_penalty = int(d.get("live_pullback_penalty", 0) or 0)
+    if live_pullback_penalty > 0:
+        score -= live_pullback_penalty
+
+    alignment_penalty = int(d.get("alignment_penalty", 0) or 0)
+    if alignment_penalty > 0:
+        score -= alignment_penalty
+
     late_risk, late_reason = late_rise_pullback_risk(d, support_modules)
     if late_risk:
         score -= LATE_RISE_SCORE_PENALTY
@@ -3244,6 +4255,21 @@ def elite_score_signal(d, support_modules=None):
 
     if is_fomo_block(d) and not fomo_exception:
         score -= 30
+
+    # V30: HTF trend, delta gucu ve cok yakin direnc sert kalite etkisi.
+    htf_score = int(d.get("htf_trend_score", 50) or 50)
+    if htf_score >= 76:
+        score += HTF_TREND_BONUS_STRONG
+    elif htf_score <= 38:
+        score -= HTF_TREND_PENALTY_WEAK
+    score -= int(d.get("fatigue_penalty", 0) or 0)
+
+    delta_ratio = float(d.get("delta_ratio_15m", 0) or 0)
+    orderflow_score = int(d.get("orderflow_score", 50) or 50)
+    if delta_ratio < DELTA_POWER_MIN_RATIO and orderflow_score < DELTA_POWER_MIN_ORDERFLOW:
+        score -= 14
+    if d.get("sr_ok") and not d.get("resistance_broken") and 0 <= resistance_distance <= HARD_RESISTANCE_BLOCK_PCT:
+        score -= 35
 
     return max(0, min(100, int(round(score))))
 
@@ -3273,6 +4299,52 @@ def is_elite_al_candidate(best, support_modules=None):
     if late_risk:
         return False, late_reason
 
+    # V24 KAT FIX: Direnc altinda, hafiza/re-entry ile gec gelen AL'i direkt kes.
+    nr_block, nr_reason = near_resistance_late_memory_block(best)
+    if nr_block:
+        return False, nr_reason
+
+    # V25: Son mumlarda satis baskisi basladiysa hafiza/re-entry bile AL verdirmesin.
+    if best.get("live_pullback_block"):
+        return False, best.get("live_pullback_status", "SATIS_BASKISI_BLOCK")
+
+    # V26: Teknik guclu ama grafik zayifsa Elite AL verme.
+    if best.get("alignment_block"):
+        return False, best.get("alignment_status", "GRAFIK_TEKNIK_UYUMSUZ")
+
+    # V28: Order book satici duvari cok yakin ise Elite AL verme.
+    if best.get("orderbook_block"):
+        return False, best.get("orderbook_status", "ORDERBOOK_SATICI_DUVARI")
+
+    # V29: Order flow agresif saticiya donduyse Elite AL verme.
+    if best.get("orderflow_block"):
+        return False, best.get("orderflow_status", "ORDER_FLOW_BLOCK")
+
+    # V31: CVD negatif / sahte yukselis varsa Elite AL verme.
+    if best.get("cvd_block"):
+        return False, best.get("cvd_status", "CVD_BLOCK")
+    if best.get("cvd_fake_pump") and int(best.get("orderflow_score", 50) or 50) < 70:
+        return False, "CVD_SAHTE_YUKSELIS"
+
+    # V30: Saatlik/4s trend, delta gucu ve cok yakin direnc sert kapilari.
+    if best.get("fatigue_block"):
+        return False, best.get("htf_trend_status", "YUKSELIS_YORGUNLUGU_BLOCK")
+    if int(best.get("htf_trend_score", 50) or 50) < HTF_TREND_MIN_FOR_ELITE and module not in ("DIP", "SWEEP", "FAST_LIQUIDITY_SWEEP"):
+        return False, "HTF_TREND_ZAYIF"
+    if (
+        float(best.get("delta_ratio_15m", 0) or 0) < DELTA_POWER_MIN_RATIO
+        and int(best.get("orderflow_score", 50) or 50) < DELTA_POWER_BLOCK_ORDERFLOW
+        and not best.get("strong_buyer_dominant")
+    ):
+        return False, "DELTA_ORDERFLOW_ZAYIF"
+    if (
+        best.get("sr_ok")
+        and not best.get("resistance_broken")
+        and 0 <= float(best.get("resistance_distance_pct", 999) or 999) <= HARD_RESISTANCE_BLOCK_PCT
+        and not best.get("short_squeeze_proxy")
+    ):
+        return False, "DIRENC_030_COK_YAKIN"
+
     # V19 Destek/Direnc kapisi:
     # Fiyat dirence cok yakin ve henuz kirmamissa Elite AL yerine izleme kalsin.
     # Cok guclu para/market etkisi varsa tamamen bloklama, skor cezasina birak.
@@ -3285,7 +4357,6 @@ def is_elite_al_candidate(best, support_modules=None):
         effective_market >= SR_STRONG_EXCEPTION_MARKET
         or effective_power >= SR_STRONG_EXCEPTION_POWER
         or effective_money >= SR_STRONG_EXCEPTION_MONEY
-        or best.get("support_near")
     )
     if sr_close and not sr_strong_exception and module not in ("DIP", "SWEEP", "FAST_LIQUIDITY_SWEEP"):
         return False, "DIRENC_COK_YAKIN"
@@ -3511,6 +4582,12 @@ def is_elite_gold_signal(d, elite_score=0, support_modules=None, symbol=None):
 
     if is_fomo_block(d) or oi_bad or delta_bad or not (42 <= rsi_value <= 70):
         return False
+    if int(d.get("htf_trend_score", 50) or 50) < HTF_TREND_MIN_FOR_GOLD:
+        return False
+    if int(d.get("orderflow_score", 50) or 50) < 65:
+        return False
+    if d.get("sr_ok") and not d.get("resistance_broken") and 0 <= float(d.get("resistance_distance_pct", 999) or 999) <= 1.0:
+        return False
 
     # 1) Birikimli GOLD: VELVET/HIGH/MAGMA tarzı radar+para hafızası.
     buildup_gold = (
@@ -3541,6 +4618,8 @@ def is_elite_gold_signal(d, elite_score=0, support_modules=None, symbol=None):
     elite_gold = bool(buildup_gold or attack_gold)
 
     if elite_gold and not gold_trend_guard(symbol, d):
+        return False
+    if elite_gold and int(d.get("cvd_score", 50) or 50) < 58:
         return False
 
     return elite_gold
@@ -3659,8 +4738,10 @@ def walking_score_signal(d, support_modules=None):
         score += 6; reasons.append("Direnc rahat")
     elif resistance_distance >= 4 and resistance_distance < 900:
         score += 4; reasons.append("Direnc uzak")
+    elif 0 <= resistance_distance <= 0.9:
+        score -= 22; reasons.append("Direnc cok yakin")
     elif 0 <= resistance_distance <= 1.5:
-        score -= 10; reasons.append("Direnc yakin")
+        score -= 14; reasons.append("Direnc yakin")
     if d.get("resistance_broken"):
         score += 5; reasons.append("Direnc kirilimi")
     if d.get("buyer_dominant"):
@@ -3704,6 +4785,41 @@ def walking_score_signal(d, support_modules=None):
     if module == "MOMENTUM" and radar_count <= 1:
         score -= 8; reasons.append("Tek momentum riskli")
 
+    # V25: Yurume skorunda canli satis baskisini daha net goster.
+    live_pullback_penalty = int(d.get("live_pullback_penalty", 0) or 0)
+    if live_pullback_penalty >= 30:
+        score -= 20; reasons.append("Canli satis baskisi yuksek")
+    elif live_pullback_penalty >= 18:
+        score -= 12; reasons.append("Canli satis baskisi var")
+    elif live_pullback_penalty >= 10:
+        score -= 7; reasons.append("Son mum zayif")
+
+    alignment_penalty = int(d.get("alignment_penalty", 0) or 0)
+    if alignment_penalty >= 30:
+        score -= 18; reasons.append("Grafik-teknik uyumsuz")
+    elif alignment_penalty >= 18:
+        score -= 10; reasons.append("Grafik zayif")
+    elif alignment_penalty >= 10:
+        score -= 5; reasons.append("Uyum notr")
+
+    # V29: Yurume skorunda order flow ve likidite boslugu etkisi.
+    of_score = int(d.get("orderflow_score", 50) or 50)
+    gap_score = int(d.get("liquidity_gap_score", 50) or 50)
+    if of_score >= 82:
+        score += 12; reasons.append("Agresif alici")
+    elif of_score >= 65:
+        score += 6; reasons.append("Order flow alici")
+    elif of_score <= 35:
+        score -= 14; reasons.append("Order flow satici")
+    if gap_score >= 75:
+        score += 7; reasons.append("Yukari likidite boslugu")
+    elif gap_score <= 35:
+        score -= 8; reasons.append("Asagi bosluk riski")
+    if d.get("short_squeeze_proxy"):
+        score += 8; reasons.append("Short sikisma adayi")
+    if d.get("long_squeeze_risk"):
+        score -= 12; reasons.append("Long sikisma riski")
+
     score = max(0, min(100, int(round(score))))
     if score >= 92:
         quality = "A+"
@@ -3720,148 +4836,276 @@ def walking_score_signal(d, support_modules=None):
     reason_text = ", ".join(reasons[:6]) if reasons else "Nötr"
     return {"walking_score": score, "quality_class": quality, "walking_reasons": reason_text}
 
+
 def format_elite_signal(symbol, d, elite_score, support_modules=None):
+    """
+    V29 SADE TELEGRAM MESAJI:
+    Radar/para hafizasi detaylari bot icinde kalir; Telegram sadece karar verdiren bilgileri gosterir.
+    Coin adi belirgin olsun diye Unicode bold kullanilir, parse_mode gerektirmez.
+    """
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
-    support_text = ", ".join(support_modules) if support_modules else "YOK"
     combo_score, radar_count = radar_combo_score(d, support_modules)
     levels = build_entry_levels(d)
     elite_gold = is_elite_gold_signal(d, elite_score, support_modules, symbol)
-    title = "🔥 BINANCE ELITE GOLD AL ONAY" if elite_gold else "BINANCE ELITE AL ONAY"
-    gold_note = "🔥 ELITE GOLD: VAR" if elite_gold else "ELITE GOLD: YOK"
     walk = walking_score_signal(d, support_modules)
 
-    extra = ""
-    if module in ("MONEY_ACCEL", "MONEY", "MOMENTUM"):
-        extra = f"""
-Ilk Fiyat: {d.get('first_price', 0):.8f}
-Simdiki Fiyat: {d.get('price', 0):.8f}
-Ilk Sinyalden Sonra: %{d.get('price_gain_from_first', 0):.2f}
-Para Buyume: {d.get('money_growth', 1):.2f}x
-Hacim Gucu Buyume: {d.get('power_growth', 1):.2f}x
-Sure: {d.get('age_min', 0):.1f} dk
-"""
-    elif module in ("SWEEP", "FAST_LIQUIDITY_SWEEP"):
-        extra = f"""
-15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
-Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
-Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
-"""
-    elif module == "PRE_ROCKET_SQUEEZE":
-        extra = f"""
-PRE-ROCKET SQUEEZE: VAR
-BB Width: {d.get('bb_width', 0):.4f}
-Yatay Kirilim: {"VAR" if d.get("range_break") else "YOK"}
-Ust Bant Temasi: {"VAR" if d.get("upper_break") else "YOK"}
-OBV Giris: {"VAR" if d.get("obv_up") else "YOK"}
-MACD Donus: {"VAR" if d.get("macd_turn") else "YOK"}
-"""
-    elif module == "TREND_BUILDUP":
-        extra = f"""
-6s Yukselis: %{d.get('price_change_6h', 0):.2f}
-12s Yukselis: %{d.get('price_change_12h', 0):.2f}
-24s Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
-Higher Low: {d.get('higher_low_count', 0)}
-Higher High: {d.get('higher_high_count', 0)}
-EMA21 Ustu Mum: {d.get('close_above_ema21_count', 0)}/12
-OBV Birikim: {"VAR" if d.get("obv_up") else "YOK"}
-MACD Toparlanma: {"VAR" if d.get("macd_turn") else "YOK"}
-"""
-    elif module == "HISTORY_BUILDUP":
-        extra = f"""
-Radar Hafiza Puani: {d.get('history_points', 0)}
-Radar Hafiza Modulleri: {d.get('history_text', 'YOK')}
-Hafiza Suresi: {d.get('history_age_min', 0):.1f} dk
-Ilk Hafiza Fiyati: {d.get('history_first_price', 0):.8f}
-Hafizadan Sonra: %{d.get('history_price_gain', 0):.2f}
-Max Para Etkisi: {d.get('history_money_max', 0):.2f}x
-Max Hacim Gucu: {d.get('history_power_max', 0):.2f}
-Money Memory Bonus: {"VAR" if d.get("money_memory_bonus") else "YOK"}
-Para Hafiza 60dk: {int(d.get('money_mem_60m', 0))} USDT
-Para Hafiza 30dk: {int(d.get('money_mem_30m', 0))} USDT
-Para Hafiza 15dk: {int(d.get('money_mem_15m', 0))} USDT
-Para Dalga Sayisi: {d.get('money_wave_count', 0)}
-Toplam Market Etki 60dk: %{d.get('money_market_60m', 0):.3f}
-Fast Money Hafiza: {"VAR" if d.get("fast_money_bonus") else "YOK"}
-Ana Kanal Tekrar 60dk: {d.get('main_signal_count_60m', 0)}
-Ana Kanal Tekrar 120dk: {d.get('main_signal_count_120m', 0)}
-Memory Re-Entry: {"VAR" if d.get("memory_reentry") else "YOK"}
-Second Wave: {"VAR" if d.get("second_wave_bonus") else "YOK"}
-"""
+    def bold_text(s):
+        normal = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        bold = "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
+        table = str.maketrans({a: b for a, b in zip(normal, bold)})
+        return str(s).upper().translate(table)
+
+    def fmt_usdt(v):
+        try:
+            v = float(v or 0)
+        except Exception:
+            v = 0.0
+        if abs(v) >= 1_000_000:
+            return f"{v/1_000_000:.2f}M"
+        if abs(v) >= 1_000:
+            return f"{v/1_000:.0f}K"
+        return f"{v:.0f}"
+
+    def yes_no(v):
+        return "VAR" if v else "YOK"
+
+    q = walk.get("quality_class", "D")
+    walk_score = int(walk.get("walking_score", 0) or 0)
+
+    market_impact = max(
+        float(d.get("market_impact_pct", 0) or 0),
+        float(d.get("effective_market_impact_pct", 0) or 0),
+        float(d.get("history_market_max", 0) or 0),
+        float(d.get("money_market_60m", 0) or 0),
+    )
+    money_impact = max(
+        float(d.get("money_impact", 0) or 0),
+        float(d.get("effective_money_impact", 0) or 0),
+        float(d.get("history_money_max", 0) or 0),
+    )
+    volume_power = max(
+        float(d.get("volume_power", 0) or 0),
+        float(d.get("effective_volume_power", 0) or 0),
+        float(d.get("history_power_max", 0) or 0),
+    )
+
+    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+    support_distance = float(d.get("support_distance_pct", 999) or 999)
+    delta_status = d.get("delta_status", "DELTA VERI YOK")
+    oi_status = d.get("oi_status", "OI VERI YOK")
+    alignment_status = d.get("alignment_status", "YOK")
+    alignment_score = int(d.get("alignment_score", 0) or 0)
+    alignment_penalty = int(d.get("alignment_penalty", 0) or 0)
+    live_pullback_penalty = int(d.get("live_pullback_penalty", 0) or 0)
+    orderbook_status = d.get("orderbook_status", "ORDERBOOK VERI YOK")
+    orderbook_score = int(d.get("orderbook_score", 50) or 50)
+    orderflow_status = d.get("orderflow_status", "ORDER FLOW VERI YOK")
+    orderflow_score = int(d.get("orderflow_score", 50) or 50)
+    gap_status = d.get("liquidity_gap_status", "BOSLUK VERI YOK")
+    gap_score = int(d.get("liquidity_gap_score", 50) or 50)
+    liq_status = d.get("liquidation_proxy_status", "LIKIDASYON NOTR")
+    liq_score = int(d.get("liquidation_proxy_score", 50) or 50)
+    cvd_status = d.get("cvd_status", "CVD VERI YOK")
+    cvd_score = int(d.get("cvd_score", 50) or 50)
+    cvd_trend = d.get("cvd_trend", "YOK")
+
+    risk_reasons = []
+    positives = []
+    negatives = []
+
+    if walk_score >= 90:
+        positives.append("Yurume skoru cok guclu")
+    elif walk_score >= 80:
+        positives.append("Yurume skoru guclu")
+
+    if money_impact >= 3:
+        positives.append("Para guclu")
+    elif money_impact >= 2:
+        positives.append("Para iyi")
+
+    if volume_power >= 10:
+        positives.append("Hacim gucu cok yuksek")
+    elif volume_power >= 5:
+        positives.append("Hacim gucu iyi")
+
+    if market_impact >= 1:
+        positives.append("Market etki guclu")
+
+    if radar_count >= 3:
+        positives.append("Radarlar guclu")
+
+    if d.get("memory_reentry"):
+        positives.append("Memory Re-Entry")
+    if d.get("second_wave_bonus"):
+        positives.append("Second Wave")
+    if d.get("buyer_dominant") or d.get("strong_buyer_dominant"):
+        positives.append("Delta alici baskin")
+    if d.get("oi_long_supported") or d.get("oi_strong_long_supported"):
+        positives.append("OI long destekli")
+    if orderbook_score >= 70:
+        positives.append("Order book alici")
+    if d.get("liquidity_gap_up"):
+        positives.append("Yukari likidite boslugu")
+    if orderflow_score >= 80:
+        positives.append("Agresif alici")
+    elif orderflow_score >= 65:
+        positives.append("Order flow alici")
+    if d.get("short_squeeze_proxy"):
+        positives.append("Short sikisma adayi")
+    if cvd_score >= 78:
+        positives.append("CVD cok guclu")
+    elif cvd_score >= 65:
+        positives.append("CVD pozitif")
+    if d.get("cvd_hidden_accumulation"):
+        positives.append("CVD gizli toplama")
+
+    if d.get("orderbook_block") or orderbook_score <= 35:
+        risk_reasons.append("Order book satici")
+        negatives.append("Order book satici")
+    elif d.get("ask_wall_usdt", 0) > 0 and d.get("ask_wall_distance_pct", 999) <= ORDERBOOK_ASK_WALL_CLOSE_PCT:
+        risk_reasons.append("Yakin satis duvari")
+        negatives.append("Yakin satis duvari")
+
+    if d.get("orderflow_block") or orderflow_score <= 35:
+        risk_reasons.append("Order flow satici")
+        negatives.append("Order flow satici")
+    elif d.get("long_squeeze_risk"):
+        risk_reasons.append("Long sikisma riski")
+        negatives.append("Long sikisma riski")
+
+    if d.get("cvd_block") or cvd_score <= 35:
+        risk_reasons.append("CVD negatif")
+        negatives.append("CVD negatif")
+    elif d.get("cvd_fake_pump"):
+        risk_reasons.append("CVD sahte yukselis")
+        negatives.append("CVD sahte yukselis")
+    elif d.get("cvd_distribution_risk"):
+        risk_reasons.append("CVD dagitim riski")
+        negatives.append("CVD dagitim riski")
+
+    if 0 <= resistance_distance <= 0.80:
+        risk_reasons.append("Direnc cok yakin")
+        negatives.append("Direnc cok yakin")
+    elif 0 <= resistance_distance <= 1.50:
+        risk_reasons.append("Direnc yakin")
+        negatives.append("Direnc yakin")
+
+    if "SATICI" in str(delta_status):
+        risk_reasons.append("Delta satici baskin")
+        negatives.append("Delta satici baskin")
+    elif "NOTR" in str(delta_status):
+        negatives.append("Delta notr")
+
+    if "ZAYIF" in str(oi_status):
+        risk_reasons.append("OI zayif")
+        negatives.append("OI zayif")
+
+    if "UYUMSUZ" in str(alignment_status) or alignment_penalty >= 30:
+        risk_reasons.append("Grafik-teknik uyumsuz")
+        negatives.append("Grafik-teknik uyumsuz")
+    elif alignment_penalty >= 18:
+        risk_reasons.append("Grafik zayif")
+        negatives.append("Grafik zayif")
+
+    if live_pullback_penalty >= 24:
+        risk_reasons.append("Canli satis baskisi")
+        negatives.append("Canli satis baskisi")
+
+    if not positives:
+        positives.append("Filtrelerden gecti")
+    if not negatives:
+        negatives.append("Belirgin negatif yok")
+
+    if len(risk_reasons) >= 2 or resistance_distance <= 0.55 or "UYUMSUZ" in str(alignment_status):
+        risk_status = "YUKSEK"
+        result = "DIKKATLI AL / KIRILIM BEKLE"
+    elif risk_reasons or q in ("C", "D"):
+        risk_status = "ORTA"
+        result = "KONTROLLU AL"
+    elif q in ("A+", "A") and walk_score >= 84:
+        risk_status = "DUSUK"
+        result = "GUCLU AL"
+    else:
+        risk_status = "ORTA"
+        result = "NORMAL AL"
+
+    title = "🔥 BINANCE ELITE GOLD AL ONAY" if elite_gold else "🚀 BINANCE ELITE AL ONAY"
+    coin_line = f"🔥 {bold_text(symbol.replace(':USDT',''))} 🔥"
+
+    positives_text = "\n".join([f"✔ {x}" for x in positives[:4]])
+    negatives_text = "\n".join([f"❌ {x}" for x in negatives[:4]])
+    risk_reason_text = ", ".join(risk_reasons[:3]) if risk_reasons else "Belirgin ana risk yok"
 
     return f"""
 {title}
 
-Coin: {symbol}
+{coin_line}
+
+🏆 Kalite: {q}
+📈 Yurume Skoru: {walk_score}/100
+✅ Grafik-Teknik Uyum: {alignment_status} ({alignment_score}/100)
+🧭 1H/4H Trend: {d.get('htf_trend_status', 'YOK')} ({int(d.get('htf_trend_score', 50) or 50)}/100)
+⚠️ Risk Durumu: {risk_status}
+
+━━━━━━━━━━━━━━━━
+
 Mod: {module}
 Karar: AL
-{gold_note}
-Elite Giris Skoru: {elite_score}/100
+Elite Skoru: {elite_score}/100
+Radar: {radar_count} | Kombinasyon: {combo_score}
 
-Giris: {levels['entry']:.8f}
-Stop: {levels['stop']:.8f}
+🎯 Giris: {levels['entry']:.8f}
+🛑 Stop: {levels['stop']:.8f}
 TP1: {levels['tp1']:.8f}
 TP2: {levels['tp2']:.8f}
 TP3: {levels['tp3']:.8f}
-Risk: %{levels['risk_pct']:.2f}
 TP Sistemi: {levels.get('tp_system', 'RISK_KATLI')}
-TP Referans: {levels.get('tp_reference', 'Stop mesafesi')}
 
-Fiyat: {d.get('price', 0):.8f}
-RS Skoru: {d.get('rs', 0):.1f}/100
-Radar Skoru: {d.get('score', 0)}
-Radar Sayisi: {radar_count}
-Radar Kombinasyon Puani: {combo_score}
+━━━━━━━━━━━━━━━━
 
-Yurume Skoru: {walk.get('walking_score', 0)}/100
-Kalite Sinifi: {walk.get('quality_class', 'D')}
-Yurume Sebep: {walk.get('walking_reasons', 'YOK')}
-
-24s Hacim: {int(d.get('daily_quote_volume', 0))} USDT
-Market Etki: %{max(d.get('market_impact_pct', 0), d.get('effective_market_impact_pct', 0), d.get('history_market_max', 0), d.get('money_market_60m', 0)):.4f}
-Market Etki Skoru: {d.get('market_impact_score', 0)}/20
-
-Para Etkisi: {max(d.get('money_impact', 0), d.get('effective_money_impact', 0), d.get('history_money_max', 0)):.2f}x
-Hacim Gucu: {max(d.get('volume_power', 0), d.get('effective_volume_power', 0), d.get('history_power_max', 0)):.2f}
-Market Etki: %{max(d.get('market_impact_pct', 0), d.get('effective_market_impact_pct', 0), d.get('history_market_max', 0), d.get('money_market_60m', 0)):.4f}
-Market Etki Skoru: {d.get('market_impact_score', 0)}/20
-RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
-FOMO 15m: %{d.get('price_gain_15m', 0):.2f}
-FOMO 30m: %{d.get('price_gain_30m', 0):.2f}
-Gec Yukselis Kontrol: {d.get('late_rise_block_reason', 'OK')}
-
-Destek: {d.get('support_level', 0):.8f}
-Direnc: {d.get('resistance_level', 0):.8f}
-Destek Mesafesi: %{d.get('support_distance_pct', 0):.2f}
-Direnc Mesafesi: %{d.get('resistance_distance_pct', 0):.2f}
+🟢 Destek: {d.get('support_level', 0):.8f}
+🔴 Direnc: {d.get('resistance_level', 0):.8f}
+📏 Destek Mesafesi: %{support_distance:.2f}
+📏 Direnc Mesafesi: %{resistance_distance:.2f}
 Direnc Durumu: {d.get('sr_status', 'SR VERI YOK')}
-SR Puan Etkisi: {int(d.get('sr_bonus', 0) or 0) + int(d.get('sr_penalty', 0) or 0)}
 
-OI 15m: %{d.get('oi_15m_pct', 0):.2f}
-OI 1h: %{d.get('oi_1h_pct', 0):.2f}
-OI Yorum: {d.get('oi_status', 'OI VERI YOK')}
+━━━━━━━━━━━━━━━━
 
-Long Akisi 15m: {int(d.get('long_flow_15m', 0))} USDT
-Short Akisi 15m: {int(d.get('short_flow_15m', 0))} USDT
-Net Delta 15m: {int(d.get('net_delta_15m', 0))} USDT
-Delta Orani 15m: %{d.get('delta_ratio_15m', 0):.2f}
-Delta Yorum: {d.get('delta_status', 'DELTA VERI YOK')}
-Fast Money Bonus: {"VAR" if d.get("fast_money_bonus") else "YOK"}
-Ana Kanal Tekrar 60dk: {d.get('main_signal_count_60m', 0)}
-Ana Kanal Tekrar 120dk: {d.get('main_signal_count_120m', 0)}
-Memory Re-Entry: {"VAR" if d.get("memory_reentry") else "YOK"}
-Second Wave: {"VAR" if d.get("second_wave_bonus") else "YOK"}
+💰 Para Etkisi: {money_impact:.2f}x
+📊 Hacim Gucu: {volume_power:.2f}
+🌊 Market Etki: %{market_impact:.2f}
 
-Ek Gecen Radarlar:
-{support_text}
+📚 Order Book: {orderbook_status} ({orderbook_score}/100)
+🟢 Alis Duvari: {fmt_usdt(d.get('bid_wall_usdt', 0))} @ {d.get('bid_wall_price', 0):.8f}
+🔴 Satis Duvari: {fmt_usdt(d.get('ask_wall_usdt', 0))} @ {d.get('ask_wall_price', 0):.8f}
 
-{extra}
+⚡ Order Flow: {orderflow_status} ({orderflow_score}/100)
+🚀 Likidite Boslugu: {gap_status} ({gap_score}/100)
+🔥 Likidasyon Proxy: {liq_status} ({liq_score}/100)
+📈 CVD: {cvd_status} ({cvd_score}/100) | Trend: {cvd_trend}
 
-Not:
-Bu mesaj Binance karar botunda AL kapisindan gecen sinyal icin atilir.
-Momentum tek basina AL degildir. FOMO / gec giris / yuksek RSI elendi.
+📈 OI: {oi_status}
+⚖️ Delta: {delta_status}
+
+🟢 Long Akisi: {fmt_usdt(d.get('long_flow_15m', 0))} USDT
+🔴 Short Akisi: {fmt_usdt(d.get('short_flow_15m', 0))} USDT
+Net Delta: {fmt_usdt(d.get('net_delta_15m', 0))} USDT
+
+━━━━━━━━━━━━━━━━
+
+📝 BOT OZETI
+
+{positives_text}
+
+{negatives_text}
+
+Risk Sebebi:
+{risk_reason_text}
+
+Sonuc:
+{result}
 """.strip()
-
 
 
 def elite_day_key():
@@ -3890,6 +5134,24 @@ def send_elite_signal(symbol, best, support):
 
     # V19: Elite karari verilmeden once destek/direnc baglamini ekle.
     best = attach_support_resistance_context(symbol, best)
+
+    # V25: Elite karari verilmeden once son 15m canli satis/pullback durumunu ekle.
+    best = attach_live_pullback_context(symbol, best)
+
+    # V26: Grafik ve teknik uyumlu mu kontrol et.
+    best = attach_graph_technical_alignment(symbol, best)
+
+    # V30: 1H / 4H trend ve yukselis yorgunlugu kontrolu.
+    best = attach_higher_timeframe_trend_context(symbol, best)
+
+    # V28: Emir defteri / order book duvarlarini ekle.
+    best = attach_orderbook_context(symbol, best)
+
+    # V29: Order flow / likidite boslugu / likidasyon proxy ekle.
+    best = attach_orderflow_context(symbol, best)
+
+    # V31: CVD / kümülatif delta hafizasini ekle.
+    best = attach_cvd_context(symbol, best)
 
     ok, reason = is_elite_al_candidate(best, support)
     if not ok:
@@ -4057,6 +5319,7 @@ def analyze(item, btc_ok, btc_status):
         for _sig in [early_data, money_data, momentum_data, safe_data, dip_data, sweep_data, fast_sweep_data, pre_rocket_data, trend_data, history_data]:
             attach_oi_context(_sig, oi_context)
             attach_taker_flow_context(_sig, taker_context)
+            attach_cvd_context(symbol, _sig)
 
         if early_ok:
             signals.append(early_data)
