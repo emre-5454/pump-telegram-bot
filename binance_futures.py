@@ -18,8 +18,9 @@ TELEGRAM_TOKEN = "8937020446:AAEmdROw4hfDYArdz4eJ47oGHAT_9u4HhIM"
 CHAT_ID = "7553607277"
 
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
+BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V31"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V32"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -3417,8 +3418,15 @@ def select_best_signal(signals):
 
 
 sent_elite = {}
+sent_elite_prep = {}
 
 ELITE_MIN_SCORE = 88
+ELITE_PREP_MIN_SCORE = 75
+ELITE_PREP_MAX_SCORE = ELITE_MIN_SCORE - 1
+ELITE_PREP_MIN_WALK = 70
+ELITE_PREP_MIN_ORDERFLOW = 50
+ELITE_PREP_MIN_TREND = 55
+ELITE_PREP_COOLDOWN = 45 * 60
 ELITE_COOLDOWN = 6 * 60 * 60
 ELITE_DAILY_LIMIT = 25
 elite_daily_counter = {}
@@ -4837,6 +4845,173 @@ def walking_score_signal(d, support_modules=None):
     return {"walking_score": score, "quality_class": quality, "walking_reasons": reason_text}
 
 
+
+def is_elite_prep_candidate(best, elite_score, support_modules=None):
+    """
+    V32 BINANCE ELITE HAZIRLIK:
+    Elite AL icin henuz yeterli olmayan ama kapıya yaklaşan coinleri ayrı kanala yollar.
+    Bu AL değildir; izleme / hazırlık mesajıdır.
+    """
+    if not best:
+        return False, "VERI_YOK"
+
+    module = best.get("module", "UNKNOWN")
+    if module in ("EARLY",):
+        return False, "COK_ERKEN"
+
+    if elite_score < ELITE_PREP_MIN_SCORE or elite_score > ELITE_PREP_MAX_SCORE:
+        return False, "SKOR_ARALIK_DISI"
+
+    walk = walking_score_signal(best, support_modules)
+    walk_score = int(walk.get("walking_score", 0) or 0)
+    orderflow_score = int(best.get("orderflow_score", 50) or 50)
+    htf_score = int(best.get("htf_trend_score", 50) or 50)
+    cvd_score = int(best.get("cvd_score", 50) or 50)
+    resistance_distance = float(best.get("resistance_distance_pct", 999) or 999)
+
+    # Sert risk varsa hazirlik bile verme; sadece ana kanalda kalsin.
+    if best.get("orderbook_block") or best.get("orderflow_block") or best.get("cvd_block"):
+        return False, "SERT_FLOW_BLOCK"
+    if best.get("alignment_block") or best.get("live_pullback_block"):
+        return False, "GRAFIK_SATIS_BLOCK"
+    if 0 <= resistance_distance <= HARD_RESISTANCE_BLOCK_PCT:
+        return False, "DIRENC_COK_YAKIN"
+    if best.get("fatigue_block"):
+        return False, "YORGUNLUK_BLOCK"
+
+    if walk_score < ELITE_PREP_MIN_WALK:
+        return False, "YURUME_ZAYIF"
+    if orderflow_score < ELITE_PREP_MIN_ORDERFLOW:
+        return False, "ORDER_FLOW_ZAYIF"
+    if htf_score < ELITE_PREP_MIN_TREND:
+        return False, "TREND_ZAYIF"
+    if cvd_score < 45:
+        return False, "CVD_ZAYIF"
+
+    return True, "OK"
+
+
+def format_elite_prep_signal(symbol, d, elite_score, support_modules=None):
+    support_modules = support_modules or []
+    walk = walking_score_signal(d, support_modules)
+    walk_score = int(walk.get("walking_score", 0) or 0)
+    q = walk.get("quality_class", "D")
+    combo_score, radar_count = radar_combo_score(d, support_modules)
+
+    module = d.get("module", "UNKNOWN")
+    price = float(d.get("entry", d.get("price", 0)) or 0)
+    support = float(d.get("support_level", 0) or 0)
+    resistance = float(d.get("resistance_level", 0) or 0)
+    support_distance = float(d.get("support_distance_pct", 0) or 0)
+    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
+
+    money_impact = max(float(d.get("money_impact", 0) or 0), float(d.get("effective_money_impact", 0) or 0))
+    volume_power = max(float(d.get("volume_power", 0) or 0), float(d.get("effective_volume_power", 0) or 0))
+    market_impact = max(float(d.get("market_impact_pct", 0) or 0), float(d.get("effective_market_impact_pct", 0) or 0))
+
+    orderflow_status = d.get("orderflow_status", "ORDER FLOW VERI YOK")
+    orderflow_score = int(d.get("orderflow_score", 50) or 50)
+    cvd_status = d.get("cvd_status", "CVD VERI YOK")
+    cvd_score = int(d.get("cvd_score", 50) or 50)
+    cvd_trend = d.get("cvd_trend", "YOK")
+    alignment_status = d.get("alignment_status", "UYUM VERI YOK")
+    alignment_score = int(d.get("alignment_score", 50) or 50)
+
+    positives = []
+    watch_reasons = []
+    if walk_score >= 80:
+        positives.append("Yurume skoru guclu")
+    if orderflow_score >= 65:
+        positives.append("Order flow alici")
+    if cvd_score >= 65:
+        positives.append("CVD pozitif")
+    if d.get("short_squeeze_proxy"):
+        positives.append("Short sikisma adayi")
+    if d.get("memory_reentry") or d.get("second_wave_bonus"):
+        positives.append("Hafiza / ikinci dalga var")
+    if money_impact >= 2:
+        positives.append("Para etkisi var")
+    if volume_power >= 5:
+        positives.append("Hacim gucu iyi")
+
+    if resistance_distance <= 1.5:
+        watch_reasons.append("Direnc yakin, kirilim beklenmeli")
+    if orderflow_score < 65:
+        watch_reasons.append("Order flow Elite icin biraz daha guclenmeli")
+    if cvd_score < 65:
+        watch_reasons.append("CVD henuz tam guclu degil")
+    if elite_score < ELITE_MIN_SCORE:
+        watch_reasons.append("Elite skoru AL icin henuz eksik")
+
+    positives_text = "\n".join([f"✔ {x}" for x in positives[:4]]) if positives else "✔ Elite kapisina yaklasiyor"
+    watch_text = "\n".join([f"• {x}" for x in watch_reasons[:4]]) if watch_reasons else "• Elite AL icin son onay beklenir"
+
+    return f"""
+🏆 BINANCE ELITE HAZIRLIK
+
+🔥 {symbol.replace(':USDT','')} 🔥
+
+🏆 Kalite: {q}
+📈 Yurume Skoru: {walk_score}/100
+✅ Grafik-Teknik Uyum: {alignment_status} ({alignment_score}/100)
+🧭 1H/4H Trend: {d.get('htf_trend_status', 'YOK')} ({int(d.get('htf_trend_score', 50) or 50)}/100)
+
+━━━━━━━━━━━━━━━━
+
+Mod: {module}
+Karar: IZLEME / AL DEGIL
+Elite Aday Skoru: {elite_score}/100
+Radar: {radar_count} | Kombinasyon: {combo_score}
+Fiyat: {price:.8f}
+
+🟢 Destek: {support:.8f}
+🔴 Direnc: {resistance:.8f}
+📏 Destek Mesafesi: %{support_distance:.2f}
+📏 Direnc Mesafesi: %{resistance_distance:.2f}
+Direnc Durumu: {d.get('sr_status', 'SR VERI YOK')}
+
+━━━━━━━━━━━━━━━━
+
+💰 Para Etkisi: {money_impact:.2f}x
+📊 Hacim Gucu: {volume_power:.2f}
+🌊 Market Etki: %{market_impact:.2f}
+
+⚡ Order Flow: {orderflow_status} ({orderflow_score}/100)
+📈 CVD: {cvd_status} ({cvd_score}/100) | Trend: {cvd_trend}
+📈 OI: {d.get('oi_status', 'OI VERI YOK')}
+⚖️ Delta: {d.get('delta_status', 'DELTA VERI YOK')}
+
+━━━━━━━━━━━━━━━━
+
+📝 HAZIRLIK OZETI
+
+{positives_text}
+
+Beklenen Onay:
+{watch_text}
+
+Sonuc:
+AL DEGIL - ELITE AL ONAY BEKLE
+""".strip()
+
+
+def send_elite_prep_signal(symbol, best, support, elite_score):
+    if not BINANCE_ELITE_PREP_CHAT_ID:
+        return False
+
+    ok, reason = is_elite_prep_candidate(best, elite_score, support)
+    if not ok:
+        print("ELITE PREP BLOCK:", symbol, best.get("module"), reason, "EliteScore:", elite_score, flush=True)
+        return False
+
+    key = symbol + "_ELITE_PREP"
+    if not can_send(sent_elite_prep, key, ELITE_PREP_COOLDOWN):
+        return False
+
+    send_telegram(format_elite_prep_signal(symbol, best, elite_score, support), BINANCE_ELITE_PREP_CHAT_ID)
+    print("ELITE PREP SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+    return True
+
 def format_elite_signal(symbol, d, elite_score, support_modules=None):
     """
     V29 SADE TELEGRAM MESAJI:
@@ -5153,14 +5328,17 @@ def send_elite_signal(symbol, best, support):
     # V31: CVD / kümülatif delta hafizasini ekle.
     best = attach_cvd_context(symbol, best)
 
+    elite_score = elite_score_signal(best, support)
+
     ok, reason = is_elite_al_candidate(best, support)
     if not ok:
-        print("ELITE BLOCK:", symbol, best.get("module"), reason, flush=True)
+        print("ELITE BLOCK:", symbol, best.get("module"), reason, "EliteScore:", elite_score, flush=True)
+        send_elite_prep_signal(symbol, best, support, elite_score)
         return False
 
-    elite_score = elite_score_signal(best, support)
     if elite_score < ELITE_MIN_SCORE:
         print("ELITE SCORE LOW:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+        send_elite_prep_signal(symbol, best, support, elite_score)
         return False
 
     if not can_send_elite_today():
