@@ -20,7 +20,7 @@ CHAT_ID = "7553607277"
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V32"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V33"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -4892,6 +4892,12 @@ def is_elite_prep_candidate(best, elite_score, support_modules=None):
 
 
 def format_elite_prep_signal(symbol, d, elite_score, support_modules=None):
+    """
+    V33 SADE ELITE HAZIRLIK MESAJI:
+    Hazirlik kanali sadece erken takip ekranidir.
+    Order Flow / CVD / Delta / OI / Order Book / Likidite / Trend gibi detaylar
+    Elite AL ONAY mesajinda gosterilir.
+    """
     support_modules = support_modules or []
     walk = walking_score_signal(d, support_modules)
     walk_score = int(walk.get("walking_score", 0) or 0)
@@ -4900,100 +4906,43 @@ def format_elite_prep_signal(symbol, d, elite_score, support_modules=None):
 
     module = d.get("module", "UNKNOWN")
     price = float(d.get("entry", d.get("price", 0)) or 0)
-    support = float(d.get("support_level", 0) or 0)
-    resistance = float(d.get("resistance_level", 0) or 0)
-    support_distance = float(d.get("support_distance_pct", 0) or 0)
-    resistance_distance = float(d.get("resistance_distance_pct", 999) or 999)
 
-    money_impact = max(float(d.get("money_impact", 0) or 0), float(d.get("effective_money_impact", 0) or 0))
-    volume_power = max(float(d.get("volume_power", 0) or 0), float(d.get("effective_volume_power", 0) or 0))
-    market_impact = max(float(d.get("market_impact_pct", 0) or 0), float(d.get("effective_market_impact_pct", 0) or 0))
-
-    orderflow_status = d.get("orderflow_status", "ORDER FLOW VERI YOK")
-    orderflow_score = int(d.get("orderflow_score", 50) or 50)
-    cvd_status = d.get("cvd_status", "CVD VERI YOK")
-    cvd_score = int(d.get("cvd_score", 50) or 50)
-    cvd_trend = d.get("cvd_trend", "YOK")
-    alignment_status = d.get("alignment_status", "UYUM VERI YOK")
-    alignment_score = int(d.get("alignment_score", 50) or 50)
-
-    positives = []
-    watch_reasons = []
+    short_notes = []
     if walk_score >= 80:
-        positives.append("Yurume skoru guclu")
-    if orderflow_score >= 65:
-        positives.append("Order flow alici")
-    if cvd_score >= 65:
-        positives.append("CVD pozitif")
-    if d.get("short_squeeze_proxy"):
-        positives.append("Short sikisma adayi")
+        short_notes.append("Yurume guclu")
+    elif walk_score >= 70:
+        short_notes.append("Yurume aday")
+
+    if int(d.get("orderflow_score", 50) or 50) >= 65:
+        short_notes.append("Alici akisi var")
+    if int(d.get("cvd_score", 50) or 50) >= 65:
+        short_notes.append("CVD pozitif")
     if d.get("memory_reentry") or d.get("second_wave_bonus"):
-        positives.append("Hafiza / ikinci dalga var")
-    if money_impact >= 2:
-        positives.append("Para etkisi var")
-    if volume_power >= 5:
-        positives.append("Hacim gucu iyi")
+        short_notes.append("Hafiza / ikinci dalga")
+    if float(d.get("resistance_distance_pct", 999) or 999) <= 1.5:
+        short_notes.append("Direnc yakin, kirilim beklenmeli")
 
-    if resistance_distance <= 1.5:
-        watch_reasons.append("Direnc yakin, kirilim beklenmeli")
-    if orderflow_score < 65:
-        watch_reasons.append("Order flow Elite icin biraz daha guclenmeli")
-    if cvd_score < 65:
-        watch_reasons.append("CVD henuz tam guclu degil")
-    if elite_score < ELITE_MIN_SCORE:
-        watch_reasons.append("Elite skoru AL icin henuz eksik")
-
-    positives_text = "\n".join([f"✔ {x}" for x in positives[:4]]) if positives else "✔ Elite kapisina yaklasiyor"
-    watch_text = "\n".join([f"• {x}" for x in watch_reasons[:4]]) if watch_reasons else "• Elite AL icin son onay beklenir"
+    note_text = " | ".join(short_notes[:3]) if short_notes else "Elite kapisina yaklasiyor"
 
     return f"""
 🏆 BINANCE ELITE HAZIRLIK
 
 🔥 {symbol.replace(':USDT','')} 🔥
 
-🏆 Kalite: {q}
-📈 Yurume Skoru: {walk_score}/100
-✅ Grafik-Teknik Uyum: {alignment_status} ({alignment_score}/100)
-🧭 1H/4H Trend: {d.get('htf_trend_status', 'YOK')} ({int(d.get('htf_trend_score', 50) or 50)}/100)
-
-━━━━━━━━━━━━━━━━
-
 Mod: {module}
-Karar: IZLEME / AL DEGIL
-Elite Aday Skoru: {elite_score}/100
-Radar: {radar_count} | Kombinasyon: {combo_score}
 Fiyat: {price:.8f}
 
-🟢 Destek: {support:.8f}
-🔴 Direnc: {resistance:.8f}
-📏 Destek Mesafesi: %{support_distance:.2f}
-📏 Direnc Mesafesi: %{resistance_distance:.2f}
-Direnc Durumu: {d.get('sr_status', 'SR VERI YOK')}
+Elite Aday Skoru: {elite_score}/100
+Yurume Skoru: {walk_score}/100
+Kalite: {q}
+Radar: {radar_count} | Kombinasyon: {combo_score}
 
-━━━━━━━━━━━━━━━━
+Kisa Not:
+{note_text}
 
-💰 Para Etkisi: {money_impact:.2f}x
-📊 Hacim Gucu: {volume_power:.2f}
-🌊 Market Etki: %{market_impact:.2f}
-
-⚡ Order Flow: {orderflow_status} ({orderflow_score}/100)
-📈 CVD: {cvd_status} ({cvd_score}/100) | Trend: {cvd_trend}
-📈 OI: {d.get('oi_status', 'OI VERI YOK')}
-⚖️ Delta: {d.get('delta_status', 'DELTA VERI YOK')}
-
-━━━━━━━━━━━━━━━━
-
-📝 HAZIRLIK OZETI
-
-{positives_text}
-
-Beklenen Onay:
-{watch_text}
-
-Sonuc:
+Karar:
 AL DEGIL - ELITE AL ONAY BEKLE
 """.strip()
-
 
 def send_elite_prep_signal(symbol, best, support, elite_score):
     if not BINANCE_ELITE_PREP_CHAT_ID:
