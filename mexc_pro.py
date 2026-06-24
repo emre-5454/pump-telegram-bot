@@ -16,7 +16,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V40"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V44"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -207,6 +207,52 @@ SR_BREAKOUT_BONUS = 12
 SR_SUPPORT_BONUS = 8
 SR_FLOATING_PENALTY = 6
 
+# V41 GRAFIK / TEKNIK UYUMSUZLUK FILTRESI:
+# Teknik/hafiza/para AL diyor ama grafik son mumlarda dusus/yorulma gosteriyorsa
+# Elite AL yerine izleme kalsin. MEXC tarafinda delta olmadigi icin OBV/MACD/EMA/fitil agirlikli calisir.
+GTU_WARN_PENALTY = 8
+GTU_WEAK_PENALTY = 16
+GTU_BLOCK_PENALTY = 30
+GTU_BLOCK_SCORE = 44
+
+# V43 ORDER BOOK / ORDER FLOW / LIKIDITE BOSLUGU / SQUEEZE PROXY:
+# MEXC order book ince oldugu icin yakin satis duvari, yukari bosluk ve alici saldirisini
+# Elite puanina yansitir. Gercek Coinglass likidasyon degildir; order book + para/OBV/MACD proxy'dir.
+MEXC_OB_CACHE_SECONDS = 20
+MEXC_OB_LIMIT = 50
+MEXC_OB_NEAR_PCT = 1.00
+MEXC_OB_WALL_LOOK_PCT = 2.00
+MEXC_OB_WALL_MULTIPLIER = 3.00
+MEXC_OB_MIN_WALL_USDT = 5_000
+MEXC_OB_STRONG_IMBALANCE = 1.60
+MEXC_OB_WEAK_IMBALANCE = 0.65
+MEXC_OB_ASK_WALL_CLOSE_PCT = 0.75
+MEXC_OB_BID_WALL_CLOSE_PCT = 0.75
+MEXC_OB_ASK_WALL_BLOCK_PCT = 0.45
+MEXC_OB_SCORE_BONUS_STRONG = 8
+MEXC_OB_SCORE_BONUS_OK = 4
+MEXC_OB_SCORE_PENALTY_WEAK = 10
+MEXC_OB_ASK_WALL_PENALTY = 14
+
+MEXC_ORDER_FLOW_STRONG = 78
+MEXC_ORDER_FLOW_WEAK = 38
+MEXC_LIQ_GAP_STRONG = 75
+MEXC_SQUEEZE_PROXY_STRONG = 80
+MEXC_WHALE_SWEEP_STRONG = 80
+
+# V44 SERT KALITE KAPILARI:
+# V43 profesyonel katmanlari uretir; V44 bunlari AL kapisinda daha sert kullanir.
+MEXC_HTF_TREND_MIN_FOR_ELITE = 46
+MEXC_HTF_TREND_MIN_FOR_GOLD = 62
+MEXC_HTF_TREND_BONUS_STRONG = 8
+MEXC_HTF_TREND_PENALTY_WEAK = 14
+MEXC_HARD_RESISTANCE_BLOCK_PCT = 0.30
+MEXC_ORDER_FLOW_BLOCK_SCORE = 35
+MEXC_FATIGUE_6H_GAIN_WARN = 12.0
+MEXC_FATIGUE_6H_GAIN_BLOCK = 15.0
+MEXC_FATIGUE_PULLBACK_MIN = 1.2
+MEXC_FATIGUE_PENALTY = 20
+
 sent_early = {}
 early_daily_counter = {}
 sent_safe = {}
@@ -234,6 +280,7 @@ radar_history = {}
 money_memory = {}
 sent_mexc_elite = {}
 main_signal_memory = {}
+mexc_orderbook_cache = {}
 
 exchange = ccxt.mexc({
     "enableRateLimit": True,
@@ -632,6 +679,386 @@ def attach_support_resistance_context(symbol, d):
     d.update(sr)
     return d
 
+
+def fetch_mexc_orderbook_context(symbol, price=None):
+    """
+    V43 MEXC ORDER BOOK:
+    Emir defterinden yakin alis/satis duvarlarini ve yukari/asagi likidite boslugunu olcer.
+    MEXC'te order book ince oldugu icin bu skor PRE_ROCKET / SQUEEZE / EARLY_REVERSAL icin kritiktir.
+    """
+    cache_key = f"{symbol}_mexc_ob"
+    now = time.time()
+    cached = mexc_orderbook_cache.get(cache_key)
+    if cached and now - cached.get("time", 0) < MEXC_OB_CACHE_SECONDS:
+        return cached.get("data")
+
+    out = {
+        "orderbook_ok": False,
+        "orderbook_score": 50,
+        "orderbook_status": "ORDERBOOK VERI YOK",
+        "bid_wall_price": 0.0,
+        "bid_wall_usdt": 0.0,
+        "bid_wall_distance_pct": 999.0,
+        "ask_wall_price": 0.0,
+        "ask_wall_usdt": 0.0,
+        "ask_wall_distance_pct": 999.0,
+        "bid_usdt_1pct": 0.0,
+        "ask_usdt_1pct": 0.0,
+        "book_imbalance": 1.0,
+        "liquidity_gap_up": False,
+        "liquidity_gap_down": False,
+        "orderbook_block": False,
+        "orderbook_reason": "VERI YOK",
+        "liquidity_gap_score": 50,
+    }
+
+    try:
+        ob = exchange.fetch_order_book(symbol, limit=MEXC_OB_LIMIT)
+        bids = ob.get("bids", []) or []
+        asks = ob.get("asks", []) or []
+        if not bids or not asks:
+            mexc_orderbook_cache[cache_key] = {"time": now, "data": out}
+            return out
+
+        live_price = float(price or 0)
+        if live_price <= 0:
+            live_price = float((bids[0][0] + asks[0][0]) / 2)
+        if live_price <= 0:
+            mexc_orderbook_cache[cache_key] = {"time": now, "data": out}
+            return out
+
+        def level_usdt(level):
+            return float(level[0]) * float(level[1])
+
+        bids_1 = [b for b in bids if 0 <= (live_price - float(b[0])) / live_price * 100 <= MEXC_OB_NEAR_PCT]
+        asks_1 = [a for a in asks if 0 <= (float(a[0]) - live_price) / live_price * 100 <= MEXC_OB_NEAR_PCT]
+        bids_2 = [b for b in bids if 0 <= (live_price - float(b[0])) / live_price * 100 <= MEXC_OB_WALL_LOOK_PCT]
+        asks_2 = [a for a in asks if 0 <= (float(a[0]) - live_price) / live_price * 100 <= MEXC_OB_WALL_LOOK_PCT]
+
+        bid_usdt_1 = sum(level_usdt(x) for x in bids_1)
+        ask_usdt_1 = sum(level_usdt(x) for x in asks_1)
+        imbalance = (bid_usdt_1 + 1.0) / (ask_usdt_1 + 1.0)
+
+        avg_bid = (sum(level_usdt(x) for x in bids_2) / len(bids_2)) if bids_2 else 0.0
+        avg_ask = (sum(level_usdt(x) for x in asks_2) / len(asks_2)) if asks_2 else 0.0
+        bid_wall = max(bids_2, key=level_usdt) if bids_2 else None
+        ask_wall = max(asks_2, key=level_usdt) if asks_2 else None
+
+        bid_wall_price = float(bid_wall[0]) if bid_wall else 0.0
+        ask_wall_price = float(ask_wall[0]) if ask_wall else 0.0
+        bid_wall_usdt = level_usdt(bid_wall) if bid_wall else 0.0
+        ask_wall_usdt = level_usdt(ask_wall) if ask_wall else 0.0
+        bid_wall_dist = ((live_price - bid_wall_price) / live_price * 100) if bid_wall_price > 0 else 999.0
+        ask_wall_dist = ((ask_wall_price - live_price) / live_price * 100) if ask_wall_price > 0 else 999.0
+
+        real_bid_wall = bid_wall_usdt >= max(MEXC_OB_MIN_WALL_USDT, avg_bid * MEXC_OB_WALL_MULTIPLIER) if avg_bid > 0 else False
+        real_ask_wall = ask_wall_usdt >= max(MEXC_OB_MIN_WALL_USDT, avg_ask * MEXC_OB_WALL_MULTIPLIER) if avg_ask > 0 else False
+
+        liquidity_gap_up = bool(ask_usdt_1 > 0 and bid_usdt_1 > ask_usdt_1 * 1.8 and (not real_ask_wall or ask_wall_dist > 1.2))
+        liquidity_gap_down = bool(bid_usdt_1 > 0 and ask_usdt_1 > bid_usdt_1 * 1.8 and (not real_bid_wall or bid_wall_dist > 1.2))
+
+        score = 50
+        gap_score = 50
+        reasons = []
+        if imbalance >= MEXC_OB_STRONG_IMBALANCE:
+            score += 18; gap_score += 10; reasons.append("alis tarafi guclu")
+        elif imbalance >= 1.15:
+            score += 8; gap_score += 5; reasons.append("alis tarafi onde")
+        elif imbalance <= MEXC_OB_WEAK_IMBALANCE:
+            score -= 18; gap_score -= 10; reasons.append("satis tarafi guclu")
+        elif imbalance <= 0.85:
+            score -= 8; gap_score -= 5; reasons.append("satis tarafi onde")
+
+        if real_bid_wall and bid_wall_dist <= MEXC_OB_BID_WALL_CLOSE_PCT:
+            score += 10; reasons.append("yakinda alis duvari")
+        if real_ask_wall and ask_wall_dist <= MEXC_OB_ASK_WALL_CLOSE_PCT:
+            score -= 16; gap_score -= 12; reasons.append("yakinda satis duvari")
+        if liquidity_gap_up:
+            score += 10; gap_score += 25; reasons.append("yukari likidite boslugu")
+        if liquidity_gap_down:
+            score -= 10; gap_score -= 20; reasons.append("asagi likidite boslugu")
+
+        orderbook_block = bool(real_ask_wall and ask_wall_dist <= MEXC_OB_ASK_WALL_BLOCK_PCT and imbalance <= 1.05 and ask_wall_usdt > bid_wall_usdt * 1.2)
+        if orderbook_block:
+            reasons.append("satis duvari cok yakin")
+
+        score = int(max(0, min(100, round(score))))
+        gap_score = int(max(0, min(100, round(gap_score))))
+        if orderbook_block:
+            status = "SATICI_DUVARI_BLOCK"
+        elif score >= 72:
+            status = "ALICI USTUN"
+        elif score >= 60:
+            status = "ALICI AVANTAJLI"
+        elif score <= 30:
+            status = "SATICI USTUN"
+        elif score <= 42:
+            status = "SATICI AVANTAJLI"
+        else:
+            status = "DENGELI"
+
+        out.update({
+            "orderbook_ok": True,
+            "orderbook_score": score,
+            "orderbook_status": status,
+            "bid_wall_price": bid_wall_price,
+            "bid_wall_usdt": bid_wall_usdt if real_bid_wall else 0.0,
+            "bid_wall_distance_pct": bid_wall_dist if real_bid_wall else 999.0,
+            "ask_wall_price": ask_wall_price,
+            "ask_wall_usdt": ask_wall_usdt if real_ask_wall else 0.0,
+            "ask_wall_distance_pct": ask_wall_dist if real_ask_wall else 999.0,
+            "bid_usdt_1pct": bid_usdt_1,
+            "ask_usdt_1pct": ask_usdt_1,
+            "book_imbalance": imbalance,
+            "liquidity_gap_up": liquidity_gap_up,
+            "liquidity_gap_down": liquidity_gap_down,
+            "liquidity_gap_score": gap_score,
+            "orderbook_block": orderbook_block,
+            "orderbook_reason": ", ".join(reasons[:5]) if reasons else "DENGELI",
+        })
+        mexc_orderbook_cache[cache_key] = {"time": now, "data": out}
+        return out
+    except Exception as e:
+        print("MEXC order book context hata:", symbol, e, flush=True)
+        mexc_orderbook_cache[cache_key] = {"time": now, "data": out}
+        return out
+
+
+def attach_mexc_orderbook_context(symbol, d):
+    if not d:
+        return d
+    price = float(d.get("entry", d.get("price", 0)) or 0)
+    ob = fetch_mexc_orderbook_context(symbol, price)
+    d.update(ob)
+    return d
+
+
+def attach_mexc_order_flow_package(symbol, d):
+    """
+    V43 MEXC ORDER FLOW / LIKIDASYON PROXY:
+    MEXC'te Binance gibi temiz taker long/short verisi her zaman olmadigi icin sentetik hesap kullanir.
+    Para etkisi, hacim gucu, OBV/MACD/EMA, order book ve likidite boslugu birlikte degerlendirilir.
+    """
+    if not d:
+        return d
+
+    money = float(d.get("money_impact", 0) or 0)
+    power = float(d.get("volume_power", 0) or 0)
+    market = float(d.get("market_impact_pct", 0) or 0)
+    flow_score = int(d.get("flow_score", 0) or 0)
+    ob_score = int(d.get("orderbook_score", 50) or 50)
+    gap_score = int(d.get("liquidity_gap_score", 50) or 50)
+    rsi_value = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+    module = d.get("module", "UNKNOWN")
+
+    order_flow = 50
+    reasons = []
+    if money >= 3.0:
+        order_flow += 14; reasons.append("para agresif")
+    elif money >= 2.0:
+        order_flow += 9; reasons.append("para guclu")
+    elif money >= 1.4:
+        order_flow += 5; reasons.append("para var")
+
+    if power >= 10:
+        order_flow += 14; reasons.append("hacim saldirisi")
+    elif power >= 5:
+        order_flow += 9; reasons.append("hacim guclu")
+    elif power >= 2.5:
+        order_flow += 5; reasons.append("hacim destekli")
+
+    if flow_score >= FLOW_SCORE_STRONG:
+        order_flow += 12; reasons.append("sentetik alici baskisi")
+    elif flow_score >= FLOW_SCORE_MIN_FOR_GOLD:
+        order_flow += 6; reasons.append("alici baskisi var")
+    else:
+        order_flow -= 8; reasons.append("alici baskisi zayif")
+
+    if ob_score >= 72:
+        order_flow += 10; reasons.append("order book alici")
+    elif ob_score <= 42:
+        order_flow -= 10; reasons.append("order book satici")
+
+    if gap_score >= MEXC_LIQ_GAP_STRONG:
+        order_flow += 8; reasons.append("yukari bosluk")
+    elif gap_score <= 35:
+        order_flow -= 8; reasons.append("asagi bosluk")
+
+    if d.get("gtu_block") or d.get("live_guard_ok") is False:
+        order_flow -= 15; reasons.append("grafik zayif")
+    if rsi_value >= 78:
+        order_flow -= 10; reasons.append("rsi sisik")
+
+    order_flow = int(max(0, min(100, round(order_flow))))
+    if order_flow >= 82:
+        of_status = "AGRESIF ALICI"
+    elif order_flow >= 68:
+        of_status = "ALICI BASKIN"
+    elif order_flow <= 30:
+        of_status = "AGRESIF SATICI"
+    elif order_flow <= 42:
+        of_status = "SATICI BASKIN"
+    else:
+        of_status = "NOTR"
+
+    # Likidasyon proxy: gercek likidasyon haritasi degildir; squeeze ihtimali icin tahmini skor.
+    squeeze_score = 50
+    squeeze_reasons = []
+    if order_flow >= 75:
+        squeeze_score += 14; squeeze_reasons.append("alici saldirisi")
+    if gap_score >= 75:
+        squeeze_score += 14; squeeze_reasons.append("ust bosluk")
+    if ob_score >= 68:
+        squeeze_score += 8; squeeze_reasons.append("satici duvari zayif")
+    if market >= 1.0:
+        squeeze_score += 8; squeeze_reasons.append("market etki")
+    if module in ("SQUEEZE_EXPLOSION", "ROCKET", "PRE_ROCKET_WATCH"):
+        squeeze_score += 8; squeeze_reasons.append("squeeze/rocket mod")
+    if d.get("orderbook_block") or gap_score <= 35:
+        squeeze_score -= 18; squeeze_reasons.append("duvar/bosluk riski")
+    if rsi_value >= 80:
+        squeeze_score -= 8; squeeze_reasons.append("rsi cok yuksek")
+    squeeze_score = int(max(0, min(100, round(squeeze_score))))
+
+    # Balina supurme: dip/igne radarlarinin kalitesini tek skorda toplar.
+    whale_score = 50
+    whale_reasons = []
+    if float(d.get("lower_wick", 0) or 0) >= 0.35:
+        whale_score += 12; whale_reasons.append("alt fitil")
+    if float(d.get("recovery_ratio", 0) or 0) >= 0.60:
+        whale_score += 12; whale_reasons.append("mum geri aldi")
+    if d.get("deep_sweep") or d.get("touched_bb") or d.get("close_back_inside"):
+        whale_score += 12; whale_reasons.append("sweep/bb tepki")
+    if d.get("obv_up"):
+        whale_score += 8; whale_reasons.append("obv toparliyor")
+    if money >= 1.5 and power >= 2.5:
+        whale_score += 8; whale_reasons.append("tepkide para")
+    if d.get("reclaim_ema9") or d.get("reclaim_mid") or d.get("ema_reclaim"):
+        whale_score += 6; whale_reasons.append("ema geri alma")
+    if module not in ("V_DIP_RECOVERY", "EARLY_REVERSAL", "DIP_REACTION", "DIP", "ELITE_WHALE"):
+        whale_score -= 12
+    whale_score = int(max(0, min(100, round(whale_score))))
+
+    d["order_flow_score"] = order_flow
+    d["order_flow_status"] = of_status
+    d["order_flow_reason"] = ", ".join(reasons[:5]) if reasons else "NOTR"
+    d["squeeze_proxy_score"] = squeeze_score
+    d["squeeze_proxy_status"] = "SHORT SIKISMA ADAYI" if squeeze_score >= MEXC_SQUEEZE_PROXY_STRONG else ("NOTR" if squeeze_score >= 45 else "LONG RISK")
+    d["squeeze_proxy_reason"] = ", ".join(squeeze_reasons[:4]) if squeeze_reasons else "NOTR"
+    d["whale_sweep_score"] = whale_score
+    d["whale_sweep_status"] = "BALINA SUPURME GUCLU" if whale_score >= MEXC_WHALE_SWEEP_STRONG else ("VAR" if whale_score >= 65 else "YOK/NOTR")
+    d["whale_sweep_reason"] = ", ".join(whale_reasons[:4]) if whale_reasons else "NOTR"
+    d["aggressive_buyer"] = bool(order_flow >= 75)
+    d["aggressive_seller"] = bool(order_flow <= 35)
+    d["short_squeeze_candidate"] = bool(squeeze_score >= MEXC_SQUEEZE_PROXY_STRONG)
+    return d
+
+
+
+def attach_mexc_higher_timeframe_trend_context(symbol, d):
+    """
+    V44 MEXC 1H/4H TREND + YORGUNLUK:
+    MEXC ince order book nedeniyle 15m sinyaller cok hizli yanabilir.
+    1H/4H yapi zayifsa veya 6s yukselisten sonra tepe donusu basladiysa Elite kapisi sertlesir.
+    """
+    if not d:
+        return d
+    try:
+        df15 = fetch_df(symbol, "15m", 160)
+        df1h = fetch_df(symbol, "1h", 120)
+        df4h = fetch_df(symbol, "4h", 80)
+        if df15 is None or df1h is None or len(df15) < 30 or len(df1h) < 20:
+            d.update({
+                "htf_trend_score": 50,
+                "htf_trend_status": "HTF VERI YOK",
+                "htf_trend_reason": "VERI YOK",
+                "fatigue_block": False,
+                "fatigue_penalty": 0,
+            })
+            return d
+
+        m15 = df15.iloc[-1]
+        h1 = df1h.iloc[-1]
+        h1p = df1h.iloc[-2]
+        score = 50
+        reasons = []
+        if h1.close > h1.ema21:
+            score += 12; reasons.append("1H EMA21 ustu")
+        else:
+            score -= 12; reasons.append("1H EMA21 alti")
+        if h1.ema9 >= h1.ema21:
+            score += 8; reasons.append("1H EMA pozitif")
+        else:
+            score -= 6; reasons.append("1H EMA zayif")
+        if h1.macd > h1.macd_signal and h1.macd >= h1p.macd:
+            score += 10; reasons.append("1H MACD guclu")
+        elif h1.macd < h1.macd_signal:
+            score -= 8; reasons.append("1H MACD zayif")
+        if 42 <= float(h1.rsi) <= 68:
+            score += 6; reasons.append("1H RSI saglikli")
+        elif float(h1.rsi) >= 74:
+            score -= 10; reasons.append("1H RSI sisik")
+
+        if df4h is not None and len(df4h) >= 20:
+            h4 = df4h.iloc[-1]
+            h4p = df4h.iloc[-2]
+            if h4.close > h4.ema21:
+                score += 8; reasons.append("4H EMA21 ustu")
+            else:
+                score -= 6; reasons.append("4H EMA21 alti")
+            if h4.macd >= h4p.macd:
+                score += 5; reasons.append("4H MACD toparliyor")
+            else:
+                score -= 4; reasons.append("4H MACD zayif")
+
+        price = float(m15.close)
+        p6h = float(df15["close"].iloc[-25]) if len(df15) >= 25 else float(df15["close"].iloc[0])
+        high_6h = float(df15["high"].tail(24).max())
+        gain_6h = ((price - p6h) / p6h * 100) if p6h > 0 else 0.0
+        pullback_from_6h_high = ((high_6h - price) / high_6h * 100) if high_6h > 0 else 0.0
+        last_red = bool(df15["close"].iloc[-1] < df15["open"].iloc[-1])
+        prev_red = bool(df15["close"].iloc[-2] < df15["open"].iloc[-2])
+        macd_hist_now = float(df15["macd"].iloc[-1] - df15["macd_signal"].iloc[-1])
+        macd_hist_prev = float(df15["macd"].iloc[-2] - df15["macd_signal"].iloc[-2])
+        hist_weak = macd_hist_now < macd_hist_prev
+        fatigue_penalty = 0
+        fatigue_block = False
+        if gain_6h >= MEXC_FATIGUE_6H_GAIN_WARN and (pullback_from_6h_high >= MEXC_FATIGUE_PULLBACK_MIN or (last_red and hist_weak)):
+            fatigue_penalty += MEXC_FATIGUE_PENALTY; reasons.append("6s yukselis yorgun")
+        if gain_6h >= MEXC_FATIGUE_6H_GAIN_BLOCK and pullback_from_6h_high >= MEXC_FATIGUE_PULLBACK_MIN and (last_red or prev_red or hist_weak):
+            fatigue_block = True; reasons.append("tepe sonrasi yorulma")
+
+        score = int(max(0, min(100, round(score - fatigue_penalty))))
+        if fatigue_block:
+            status = "YORGUNLUK_BLOCK"
+        elif score >= 76:
+            status = "HTF GUCLU"
+        elif score >= 60:
+            status = "HTF POZITIF"
+        elif score <= 38:
+            status = "HTF ZAYIF"
+        else:
+            status = "HTF NOTR"
+        d.update({
+            "htf_trend_score": score,
+            "htf_trend_status": status,
+            "htf_trend_reason": ", ".join(reasons[:6]) if reasons else "NOTR",
+            "htf_gain_6h": gain_6h,
+            "htf_pullback_from_high": pullback_from_6h_high,
+            "fatigue_block": bool(fatigue_block),
+            "fatigue_penalty": int(fatigue_penalty),
+        })
+        return d
+    except Exception as e:
+        print("MEXC HTF trend context hata:", symbol, e, flush=True)
+        d.update({
+            "htf_trend_score": 50,
+            "htf_trend_status": "HTF HATA",
+            "htf_trend_reason": "HATA",
+            "fatigue_block": False,
+            "fatigue_penalty": 0,
+        })
+        return d
 
 def sr_elite_gate_ok(d):
     """
@@ -3944,6 +4371,128 @@ def live_momentum_guard_ok(symbol, d):
 
 
 
+def attach_graph_technical_alignment_mexc(symbol, d):
+    """
+    V41 GRAFIK-TEKNIK UYUM KONTROLU:
+    Teknik puan/hafiza/para guclu ama 15m grafik son anda zayifliyorsa Elite AL'i keser.
+    MEXC'te gercek delta sinirli oldugu icin OBV + MACD histogram + EMA + mum yonu kullanilir.
+    """
+    if not d:
+        return d
+    try:
+        df15 = fetch_df(symbol, "15m", 140)
+        df1h = fetch_df(symbol, "1h", 90)
+        if df15 is None or len(df15) < 8:
+            d.update({
+                "gtu_status": "VERI YOK",
+                "gtu_penalty": 0,
+                "gtu_block": False,
+                "gtu_score": 50,
+                "gtu_reasons": "VERI YOK",
+            })
+            return d
+
+        last = df15.iloc[-1]
+        prev = df15.iloc[-2]
+        prev2 = df15.iloc[-3]
+        price = float(d.get("price", last.close) or last.close)
+        module = d.get("module", "UNKNOWN")
+        dip_like = module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY")
+
+        red_candle = bool(last.close < last.open)
+        close_down = bool(last.close < prev.close)
+        two_red = bool(red_candle and prev.close < prev.open)
+        ema9_lost = bool(price < float(last.ema9))
+        ema21_lost = bool(price < float(last.ema21))
+        macd_hist_now = float(last.macd - last.macd_signal)
+        macd_hist_prev = float(prev.macd - prev.macd_signal)
+        macd_hist_prev2 = float(prev2.macd - prev2.macd_signal)
+        macd_weak = bool(macd_hist_now < macd_hist_prev)
+        macd_weak_2 = bool(macd_hist_now < macd_hist_prev < macd_hist_prev2)
+        obv_down = bool(float(last.obv) < float(prev.obv))
+        rsi_drop = float(prev.rsi - last.rsi)
+        rsi_fast_drop = bool(rsi_drop >= 4.5)
+        upper_wick_reject = bool(red_candle and float(last.upper_wick) >= 0.35)
+        high_24h = float(df15["high"].tail(96).max())
+        pullback_from_high = ((high_24h - price) / high_24h * 100) if high_24h > 0 else 0.0
+        resistance_distance = float(d.get("sr_resistance_distance_pct", 999) or 999)
+
+        graph_bad = 0
+        reasons = []
+        if close_down or red_candle:
+            graph_bad += 1; reasons.append("son mum zayif")
+        if two_red:
+            graph_bad += 2; reasons.append("iki kirmizi mum")
+        if macd_weak:
+            graph_bad += 1; reasons.append("MACD hist zayif")
+        if macd_weak_2:
+            graph_bad += 1; reasons.append("MACD 2 mum zayif")
+        if obv_down:
+            graph_bad += 1; reasons.append("OBV dusuyor")
+        if rsi_fast_drop:
+            graph_bad += 1; reasons.append("RSI hizli dusuyor")
+        if ema9_lost:
+            graph_bad += 1; reasons.append("EMA9 alti")
+        if ema21_lost and not dip_like:
+            graph_bad += 2; reasons.append("EMA21 alti")
+        if upper_wick_reject:
+            graph_bad += 1; reasons.append("ust fitil red")
+        if pullback_from_high >= 4.0:
+            graph_bad += 1; reasons.append("tepeden donus")
+        if 0 <= resistance_distance <= 1.2:
+            graph_bad += 1; reasons.append("direnc yakin")
+
+        money = max(float(d.get("money_impact", 0) or 0), float(d.get("history_money_max", 0) or 0))
+        power = max(float(d.get("volume_power", 0) or 0), float(d.get("history_power_max", 0) or 0))
+        market = max(float(d.get("market_impact_pct", 0) or 0), float(d.get("history_market_max", 0) or 0), float(d.get("money_memory_market_60m", 0) or 0))
+        flow_score = int(d.get("flow_score", 0) or 0)
+        tech_good = 0
+        if money >= 2.0: tech_good += 1
+        if power >= 5.0: tech_good += 1
+        if market >= 0.30: tech_good += 1
+        if d.get("money_memory_bonus") or d.get("memory_reentry_bonus") or d.get("second_wave_bonus"): tech_good += 1
+        if flow_score >= 3: tech_good += 1
+
+        gtu_score = 50 + tech_good * 8 - graph_bad * 10
+        gtu_score = int(max(0, min(100, gtu_score)))
+
+        penalty = 0
+        block = False
+        status = "POZITIF"
+        if not dip_like and graph_bad >= 6 and tech_good >= 2:
+            penalty = GTU_BLOCK_PENALTY; block = True; status = "UYUMSUZ_BLOCK"
+        elif not dip_like and graph_bad >= 4 and (close_down or red_candle) and (macd_weak or obv_down):
+            penalty = GTU_WEAK_PENALTY; status = "UYUMSUZ"
+        elif graph_bad >= 2:
+            penalty = GTU_WARN_PENALTY; status = "NOTR/ZAYIF"
+
+        if not dip_like and 0 <= resistance_distance <= 1.2 and (close_down or red_candle) and (macd_weak or obv_down):
+            penalty += 10
+            status = "DIRENC_ALTI_UYUMSUZ"
+            if graph_bad >= 4:
+                block = True
+
+        d.update({
+            "gtu_status": status,
+            "gtu_penalty": int(penalty),
+            "gtu_block": bool(block),
+            "gtu_score": gtu_score,
+            "gtu_graph_bad": int(graph_bad),
+            "gtu_tech_good": int(tech_good),
+            "gtu_reasons": ", ".join(reasons[:6]) if reasons else "OK",
+        })
+        return d
+    except Exception as e:
+        print("MEXC graph technical alignment hata:", symbol, e, flush=True)
+        d.update({
+            "gtu_status": "HATA/ES GEC",
+            "gtu_penalty": 0,
+            "gtu_block": False,
+            "gtu_score": 50,
+            "gtu_reasons": "HATA",
+        })
+        return d
+
 def mexc_elite_gold_signal(d, support_modules=None):
     """
     Ayni Elite kanalinda GOLD etiketi:
@@ -4382,6 +4931,14 @@ def mexc_yurume_skoru(d, support_modules=None):
         score -= 4; reasons.append("Tek red flag")
     score -= min(live_penalty, 30) * 0.20
 
+    gtu_penalty = int(d.get("gtu_penalty", 0) or 0)
+    if gtu_penalty >= 28:
+        score -= 16; reasons.append("Grafik-teknik uyumsuz")
+    elif gtu_penalty >= 16:
+        score -= 9; reasons.append("Grafik zayif")
+    elif gtu_penalty >= 8:
+        score -= 4; reasons.append("Uyum notr")
+
     if rs >= 85:
         score += 5
     elif rs >= 75:
@@ -4418,26 +4975,47 @@ def mexc_yurume_skoru(d, support_modules=None):
     }
 
 
+
 def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
+    """
+    V42 SADE TELEGRAM MESAJI:
+    Radar/para hafizasi detaylari bot icinde kalir; Telegram sadece karar verdiren bilgileri gosterir.
+    MEXC tarafinda gercek long/short delta olmadigi icin alici baskisi sentetik flow skoru ile gosterilir.
+    """
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
-    support_text = ", ".join(support_modules) if support_modules else "YOK"
     radar_count = 1 + len(support_modules)
     radar_points = radar_strength_points(module, support_modules)
     elite_gold = mexc_elite_gold_signal(d, support_modules)
-    title = "🔥 MEXC ELITE GOLD AL ONAY" if elite_gold else "MEXC ELITE AL ONAY"
     yurume = mexc_yurume_skoru(d, support_modules)
 
-    price = d.get("price", d.get("entry", 0))
-    entry = d.get("entry", price)
+    def bold_text(s):
+        normal = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        bold = "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
+        table = str.maketrans({a: b for a, b in zip(normal, bold)})
+        return str(s).upper().translate(table)
+
+    def fmt_usdt(v):
+        try:
+            v = float(v or 0)
+        except Exception:
+            v = 0.0
+        if abs(v) >= 1_000_000:
+            return f"{v/1_000_000:.2f}M"
+        if abs(v) >= 1_000:
+            return f"{v/1_000:.0f}K"
+        return f"{v:.0f}"
+
+    price = float(d.get("price", d.get("entry", 0)) or 0)
+    entry = float(d.get("entry", price) or 0)
 
     # SAFE zaten kendi stop/TP hesapliyor. Diger AL sinyallerinde dinamik risk kullan.
     if module == "SAFE":
-        stop = d.get("stop", entry * 0.975)
-        tp1 = d.get("tp1", entry * 1.012)
-        tp2 = d.get("tp2", entry * 1.020)
-        tp3 = d.get("tp3", entry * 1.032)
-        risk_pct = d.get("risk_pct", ((entry - stop) / entry * 100 if entry else 0))
+        stop = float(d.get("stop", entry * 0.975) or 0)
+        tp1 = float(d.get("tp1", entry * 1.012) or 0)
+        tp2 = float(d.get("tp2", entry * 1.020) or 0)
+        tp3 = float(d.get("tp3", entry * 1.032) or 0)
+        risk_pct = float(d.get("risk_pct", ((entry - stop) / entry * 100 if entry else 0)) or 0)
     else:
         risk_pct = 2.8
         if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
@@ -4454,198 +5032,199 @@ def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     tp1 = sr_tp.get("tp1", tp1)
     tp2 = sr_tp.get("tp2", tp2)
     tp3 = sr_tp.get("tp3", tp3)
-    d["tp_mode"] = sr_tp.get("tp_mode", "RISK_BAZLI")
-    d["tp_reference"] = sr_tp.get("tp_reference", "YOK")
+    tp_mode = sr_tp.get("tp_mode", "RISK_BAZLI")
+    tp_reference = sr_tp.get("tp_reference", "YOK")
+    d["tp_mode"] = tp_mode
+    d["tp_reference"] = tp_reference
 
     extend_tp = elite_extend_tp_levels(entry, tp3, d, module, support_modules)
     if extend_tp.get("extend_ok"):
-        extend_text = f"""
-
-Devam Potansiyeli: VAR
-Devam Sebep: {extend_tp.get('reason','YOK')}
+        tp_extra = f"""
 TP4: {extend_tp.get('tp4',0):.8f}
 TP5: {extend_tp.get('tp5',0):.8f}
-TP6: {extend_tp.get('tp6',0):.8f}
+Devam Potansiyeli: VAR
 """
     else:
-        extend_text = ""
+        tp_extra = ""
 
-    extra = ""
-    if module in ("MONEY", "MOMENTUM", "EARLY_CONFIRM"):
-        extra = f"""
-Ilk Fiyat: {d.get('first_price', 0):.8f}
-Simdiki Fiyat: {d.get('price', 0):.8f}
-Ilk Sinyalden Sonra: %{d.get('price_gain_from_first', 0):.2f}
-Para Buyume: {d.get('money_growth', 1):.2f}x
-Hacim Gucu Buyume: {d.get('power_growth', 1):.2f}x
-Sure: {d.get('age_min', 0):.1f} dk
-"""
-    elif module in ("REVERSAL", "DIP_REACTION", "STRONG_WICK", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
-        extra = f"""
-15m Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
-Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
-Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
-Dump Dusus: %{d.get('drop_from_high', 0):.2f}
-Dipten Donus: %{d.get('recovery_from_low', 0):.2f}
-Eski Tepeye Uzaklik: %{d.get('still_below_high', 0):.2f}
-"""
-    elif module in ("SQUEEZE", "SQUEEZE_EXPLOSION"):
-        extra = f"""
-BB Width: {d.get('bb_width', 0):.4f}
-Yatay Kirilim: {'VAR' if d.get('range_break') else 'YOK'}
-Ust Bant Kirilim: {'VAR' if d.get('upper_break') else 'YOK'}
-Pre-Rocket Elite: {'VAR' if d.get('squeeze_fast_pre_elite') or squeeze_fast_pre_elite_ok(d) else 'YOK'}
-"""
-    elif module == "ROCKET":
-        extra = f"""
-ROCKET: VAR
-15m Degisim: %{d.get('price_gain_15m',0):.2f}
-30m Degisim: %{d.get('price_gain_30m',0):.2f}
-Market Etki: %{d.get('market_impact_pct',0):.3f}
-Market Etki Skoru: {d.get('market_impact_score',0)}/100
-OBV Giris: {'VAR' if d.get('obv_up') else 'YOK'}
-MACD Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
-"""
-    elif module == "HISTORY_BUILDUP":
-        extra = f"""
-Radar Hafiza Puani: {d.get('history_points',0)}
-Radar Hafiza Modulleri: {d.get('history_text','YOK')}
-Hafiza Suresi: {d.get('history_age_min',0):.1f} dk
-Ilk Hafiza Fiyati: {d.get('history_first_price',0):.8f}
-Hafizadan Sonra: %{d.get('history_price_gain',0):.2f}
-Max Para Etkisi: {d.get('history_money_max',0):.2f}x
-Max Hacim Gucu: {d.get('history_power_max',0):.2f}
-Long Memory Bonus: {'VAR' if d.get('history_long_memory_bonus') else 'YOK'}
-Money Memory Bonus: {'VAR' if d.get('money_memory_bonus') else 'YOK'}
-Para Hafiza 60dk: {int(d.get('money_memory_total_60m',0))} USDT
-Para Hafiza 30dk: {int(d.get('money_memory_total_30m',0))} USDT
-Para Hafiza 15dk: {int(d.get('money_memory_total_15m',0))} USDT
-Para Dalga Sayisi: {d.get('money_memory_waves_60m',0)}
-Toplam Market Etki 60dk: %{d.get('money_memory_market_60m',0):.3f}
-"""
-    elif module == "ROCKET":
-        extra = f"""
-ROCKET: VAR
-15m Degisim: %{d.get('price_gain_15m',0):.2f}
-30m Degisim: %{d.get('price_gain_30m',0):.2f}
-Market Etki: %{d.get('market_impact_pct',0):.3f}
-Market Etki Skoru: {d.get('market_impact_score',0)}/100
-OBV Giris: {'VAR' if d.get('obv_up') else 'YOK'}
-MACD Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
-"""
-    elif module == "HISTORY_BUILDUP":
-        extra = f"""
-Radar Hafiza Puani: {d.get('history_points',0)}
-Radar Hafiza Modulleri: {d.get('history_text','YOK')}
-Hafiza Suresi: {d.get('history_age_min',0):.1f} dk
-Ilk Hafiza Fiyati: {d.get('history_first_price',0):.8f}
-Hafizadan Sonra: %{d.get('history_price_gain',0):.2f}
-Max Para Etkisi: {d.get('history_money_max',0):.2f}x
-Max Hacim Gucu: {d.get('history_power_max',0):.2f}
-Long Memory Bonus: {'VAR' if d.get('history_long_memory_bonus') else 'YOK'}
-Money Memory Bonus: {'VAR' if d.get('money_memory_bonus') else 'YOK'}
-Para Hafiza 60dk: {int(d.get('money_memory_total_60m',0))} USDT
-Para Hafiza 30dk: {int(d.get('money_memory_total_30m',0))} USDT
-Para Hafiza 15dk: {int(d.get('money_memory_total_15m',0))} USDT
-Para Dalga Sayisi: {d.get('money_memory_waves_60m',0)}
-Toplam Market Etki 60dk: %{d.get('money_memory_market_60m',0):.3f}
-"""
-    elif module == "TREND_BUILDUP":
-        extra = f"""
-6s Yukselis: %{d.get('price_change_6h', 0):.2f}
-12s Yukselis: %{d.get('price_change_12h', 0):.2f}
-24s Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
-Higher Low: {d.get('higher_low_count', 0)}
-Higher High: {d.get('higher_high_count', 0)}
-EMA21 Ustu Mum: {d.get('close_above_ema21_count', 0)}/12
-OBV Birikim: {'VAR' if d.get('obv_up') else 'YOK'}
-MACD Toparlanma: {'VAR' if d.get('macd_turn') else 'YOK'}
-"""
+    grade = yurume.get("grade", "C")
+    walk_score = int(yurume.get("score", 0) or 0)
+    gtu_status = d.get("gtu_status", "YOK")
+    gtu_score = int(d.get("gtu_score", 0) or 0)
+    gtu_penalty = int(d.get("gtu_penalty", 0) or 0)
+
+    resistance_distance = float(d.get("sr_resistance_distance_pct", 999) or 999)
+    support_distance = float(d.get("sr_support_distance_pct", 999) or 999)
+    flow_score = int(d.get("flow_score", 0) or 0)
+    buyer_pressure = "GUCLU" if d.get("buyer_pressure_strong") else ("VAR" if d.get("buyer_pressure_ok") else "ZAYIF/NOTR")
+    ob_score = int(d.get("orderbook_score", 50) or 50)
+    ob_status = d.get("orderbook_status", "YOK")
+    order_flow_score = int(d.get("order_flow_score", 50) or 50)
+    order_flow_status = d.get("order_flow_status", "YOK")
+    gap_score = int(d.get("liquidity_gap_score", 50) or 50)
+    squeeze_proxy_score = int(d.get("squeeze_proxy_score", 50) or 50)
+    squeeze_proxy_status = d.get("squeeze_proxy_status", "YOK")
+    whale_sweep_score = int(d.get("whale_sweep_score", 50) or 50)
+    whale_sweep_status = d.get("whale_sweep_status", "YOK")
+
+    positives = []
+    negatives = []
+    risk_reasons = []
+
+    if walk_score >= 90:
+        positives.append("Yurume skoru cok guclu")
+    elif walk_score >= 80:
+        positives.append("Yurume skoru guclu")
+
+    if float(d.get("money_impact", 0) or 0) >= 3:
+        positives.append("Para guclu")
+    elif float(d.get("money_impact", 0) or 0) >= 2:
+        positives.append("Para iyi")
+
+    if float(d.get("volume_power", 0) or 0) >= 10:
+        positives.append("Hacim gucu cok yuksek")
+    elif float(d.get("volume_power", 0) or 0) >= 5:
+        positives.append("Hacim gucu iyi")
+
+    if float(d.get("market_impact_pct", 0) or 0) >= 1:
+        positives.append("Market etki guclu")
+
+    if radar_count >= 3:
+        positives.append("Radarlar guclu")
+
+    if d.get("memory_reentry_bonus") or memory_reentry_bonus_ok(d):
+        positives.append("Memory Re-Entry")
+    if d.get("second_wave_bonus") or second_wave_bonus_ok(d):
+        positives.append("Second Wave")
+    if flow_score >= FLOW_SCORE_STRONG:
+        positives.append("Alici baskisi guclu")
+    if order_flow_score >= MEXC_ORDER_FLOW_STRONG:
+        positives.append("Order Flow guclu")
+    if ob_score >= 72:
+        positives.append("Order Book alici")
+    if gap_score >= MEXC_LIQ_GAP_STRONG:
+        positives.append("Yukari likidite boslugu")
+    if squeeze_proxy_score >= MEXC_SQUEEZE_PROXY_STRONG:
+        positives.append("Short squeeze adayi")
+
+    if 0 <= resistance_distance <= SR_RESISTANCE_VERY_NEAR_PCT:
+        risk_reasons.append("Direnc cok yakin")
+        negatives.append("Direnc cok yakin")
+    elif 0 <= resistance_distance <= SR_RESISTANCE_NEAR_PCT:
+        risk_reasons.append("Direnc yakin")
+        negatives.append("Direnc yakin")
+
+    if flow_score < FLOW_SCORE_MIN_FOR_GOLD:
+        negatives.append("Alici baskisi zayif/notr")
+    if ob_score <= 42:
+        negatives.append("Order Book satici")
+    if order_flow_score <= MEXC_ORDER_FLOW_WEAK:
+        negatives.append("Order Flow zayif")
+    if d.get("orderbook_block"):
+        risk_reasons.append("Satis duvari block")
+        negatives.append("Satis duvari cok yakin")
+
+    if "UYUMSUZ" in str(gtu_status) or gtu_penalty >= GTU_BLOCK_PENALTY:
+        risk_reasons.append("Grafik-teknik uyumsuz")
+        negatives.append("Grafik-teknik uyumsuz")
+    elif gtu_penalty >= GTU_WEAK_PENALTY:
+        risk_reasons.append("Grafik zayif")
+        negatives.append("Grafik zayif")
+
+    if d.get("live_guard_ok") is False or int(d.get("live_penalty", 0) or 0) >= 20:
+        risk_reasons.append("Canli momentum zayif")
+        negatives.append("Canli momentum zayif")
+
+    if not positives:
+        positives.append("Filtrelerden gecti")
+    if not negatives:
+        negatives.append("Belirgin negatif yok")
+
+    if len(risk_reasons) >= 2 or resistance_distance <= SR_RESISTANCE_VERY_NEAR_PCT or "UYUMSUZ" in str(gtu_status):
+        risk_status = "YUKSEK"
+        result = "DIKKATLI AL / KIRILIM BEKLE"
+    elif risk_reasons or grade in ("C", "D"):
+        risk_status = "ORTA"
+        result = "KONTROLLU AL"
+    elif grade in ("A+", "A") and walk_score >= 84:
+        risk_status = "DUSUK"
+        result = "GUCLU AL"
+    else:
+        risk_status = "ORTA"
+        result = "NORMAL AL"
+
+    title = "🔥 MEXC ELITE GOLD AL ONAY" if elite_gold else "🚀 MEXC ELITE AL ONAY"
+    coin_line = f"🔥 {bold_text(symbol.replace(':USDT',''))} 🔥"
+
+    positives_text = "\n".join([f"✔ {x}" for x in positives[:4]])
+    negatives_text = "\n".join([f"❌ {x}" for x in negatives[:4]])
+    risk_reason_text = ", ".join(risk_reasons[:3]) if risk_reasons else "Belirgin ana risk yok"
 
     return f"""
 {title}
 
-Coin: {symbol}
+{coin_line}
+
+🏆 Kalite: {grade} - {yurume.get('label', 'YOK')}
+📈 Yurume Skoru: {walk_score}/100
+✅ Grafik-Teknik Uyum: {gtu_status} ({gtu_score}/100)
+🧭 1H/4H Trend: {d.get('htf_trend_status', 'YOK')} ({int(d.get('htf_trend_score', 50) or 50)}/100)
+⚠️ Risk Durumu: {risk_status}
+
+━━━━━━━━━━━━━━━━
+
 Mod: {module}
 Karar: AL
-Elite Giris Skoru: {elite_score}/100
-Yurume Skoru: {yurume.get('score', 0)}/100
-Kalite Sinifi: {yurume.get('grade', 'C')} - {yurume.get('label', 'YOK')}
-Yurume Sebep: {yurume.get('reasons', 'YOK')}
+Elite Skoru: {elite_score}/100
+Radar: {radar_count} | Kombinasyon: {radar_points}
 
-Giris: {entry:.8f}
-Stop: {stop:.8f}
+🎯 Giris: {entry:.8f}
+🛑 Stop: {stop:.8f}
 TP1: {tp1:.8f}
 TP2: {tp2:.8f}
 TP3: {tp3:.8f}
-Risk: %{risk_pct:.2f}
-TP Sistemi: {d.get('tp_mode', 'RISK_BAZLI')}
-TP Referans: {d.get('tp_reference', 'YOK')}{extend_text}
+{tp_extra}TP Sistemi: {tp_mode}
+TP Referans: {tp_reference}
 
-Fiyat: {price:.8f}
-RS Skoru: {d.get('rs', 0):.1f}/100
-Radar Skoru: {d.get('score', 0)}
+━━━━━━━━━━━━━━━━
 
-Para Etkisi: {d.get('money_impact', 0):.2f}x
-Hacim Gucu: {d.get('volume_power', 0):.2f}
-USDT Hacim: {int(d.get('usdt_vol', 0))} USDT
-24s Hacim: {int(d.get('daily_qv', 0))} USDT
-Market Etki: %{d.get('market_impact_pct', 0):.3f}
-Market Etki Skoru: {d.get('market_impact_score', 0):.0f}/100
-Para Kalitesi Terfisi: {'VAR' if money_quality_upgrade(d) else 'YOK'}
-RSI: {d.get('rsi', d.get('rsi15', 0)):.2f}
-
-Destek: {d.get('sr_support', 0):.8f}
-Direnc: {d.get('sr_resistance', 0):.8f}
-Destek Mesafesi: %{d.get('sr_support_distance_pct', 0):.2f}
-Direnc Mesafesi: %{d.get('sr_resistance_distance_pct', 0):.2f}
+🟢 Destek: {d.get('sr_support', 0):.8f}
+🔴 Direnc: {d.get('sr_resistance', 0):.8f}
+📏 Destek Mesafesi: %{support_distance:.2f}
+📏 Direnc Mesafesi: %{resistance_distance:.2f}
 Direnc Durumu: {d.get('sr_status', 'YOK')}
-SR Bonus/Ceza: +{d.get('sr_bonus', 0)} / -{d.get('sr_penalty', 0)}
-Canli Momentum Koruma: {'OK' if d.get('live_guard_ok', True) else 'RED'}
-Canli Koruma Sebep: {d.get('live_guard_reason', 'YOK')}
-EMA9 Alti: {'VAR' if d.get('live_price_below_ema9') else 'YOK'}
-MACD Hist Dusus: {'VAR' if d.get('live_macd_hist_down') else 'YOK'}
-RSI Dusus: {'VAR' if d.get('live_rsi_down') else 'YOK'}
-OBV Dusus: {'VAR' if d.get('live_obv_down') else 'YOK'}
-Canli Red Flag: {d.get('live_red_flags', 0)}
-Canli Ceza: {d.get('live_penalty', 0)}
-Alici Baski Puani: {d.get('flow_score', 0)}/5
-Alici Baski: {'GUCLU' if d.get('buyer_pressure_strong') else ('VAR' if d.get('buyer_pressure_ok') else 'ZAYIF/NOTR')}
-Alici Baski Sebep: {d.get('flow_reasons', 'YOK')}
 
-Ek Gecen Radarlar:
-{support_text}
+━━━━━━━━━━━━━━━━
 
-Toplam Radar: {radar_count}
-Radar Kombinasyon Puani: {radar_points}
-Elite Gold: {'VAR' if elite_gold else 'YOK'}
+💰 Para Etkisi: {float(d.get('money_impact', 0) or 0):.2f}x
+📊 Hacim Gucu: {float(d.get('volume_power', 0) or 0):.2f}
+🌊 Market Etki: %{float(d.get('market_impact_pct', 0) or 0):.2f}
+USDT Hacim: {fmt_usdt(d.get('usdt_vol', 0))} USDT
 
-{extra}
-Ana Kanal Tekrar 60dk: {d.get('main_signal_count_60m', 0)}
-Ana Kanal Tekrar 120dk: {d.get('main_signal_count_120m', 0)}
-Ana Kanal Tekrar Bonusu: {d.get('main_signal_bonus', 0)}
-Ana Kanal Modulleri: {d.get('main_signal_text', 'YOK')}
-Memory Re-Entry: {'VAR' if d.get('memory_reentry_bonus') or memory_reentry_bonus_ok(d) else 'YOK'}
-Second Wave: {'VAR' if d.get('second_wave_bonus') or second_wave_bonus_ok(d) else 'YOK'}
+⚖️ Alici Baskisi: {buyer_pressure}
+Alici Baski Puani: {flow_score}/5
 
-Not:
-Bu mesaj sadece AL kapisindan gecen sinyal icin atilir.
-Gec momentum, FOMO mumu, yuksek RSI ve kotu giris elendi.
+📚 Order Book: {ob_status} ({ob_score}/100)
+⚡ Order Flow: {order_flow_status} ({order_flow_score}/100)
+🚀 Likidite Boslugu: {gap_score}/100
+🔥 Likidasyon Proxy: {squeeze_proxy_status} ({squeeze_proxy_score}/100)
+🐋 Balina Supurme: {whale_sweep_status} ({whale_sweep_score}/100)
+BTC: {d.get('btc_status', 'YOK') if d.get('btc_status') else 'Mesaj disi'}
+
+━━━━━━━━━━━━━━━━
+
+📝 BOT OZETI
+
+{positives_text}
+
+{negatives_text}
+
+Risk Sebebi:
+{risk_reason_text}
+
+Sonuc:
+{result}
 """.strip()
-
-def mexc_elite_allowed(best, support=None, btc_status=""):
-    """
-    Elite kanal kapisi: sadece AL denebilecek kalite gecsin.
-    BTW gibi gec momentum/FOMO sinyalleri burada elenir.
-    """
-    support = support or []
-    elite_score = entry_quality_score(best, support, btc_status)
-
-    if elite_score < MEXC_ELITE_MIN_SCORE:
-        return False
-
-    return entry_decision_allowed(best, support, btc_status)
-
 
 
 def send_mexc_elite_signal(symbol, best, support, btc_status=""):
@@ -4659,10 +5238,47 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
     # V37: Elite kapısından hemen önce destek/direnç konumunu hesapla.
     attach_support_resistance_context(symbol, best)
 
+    # V41: Teknik sinyal ile grafik görüntüsü uyumlu mu kontrol et.
+    attach_graph_technical_alignment_mexc(symbol, best)
+
+    # V44: 1H / 4H trend ve yukselis yorgunlugu kontrolu.
+    attach_mexc_higher_timeframe_trend_context(symbol, best)
+
+    # V43: Order book / order flow / likidite boslugu / squeeze proxy paketini ekle.
+    attach_mexc_orderbook_context(symbol, best)
+    attach_mexc_order_flow_package(symbol, best)
+
     elite_score = mexc_elite_score_signal(best, support, btc_status)
 
     if best.get("live_guard_ok") is False:
         print("MEXC LIVE GUARD RED:", symbol, best.get("module"), best.get("live_guard_reason"), "Flags:", best.get("live_red_flags"), flush=True)
+        return False
+
+    if best.get("gtu_block"):
+        print("MEXC GTU BLOCK:", symbol, best.get("module"), best.get("gtu_status"), best.get("gtu_reasons"), flush=True)
+        return False
+
+    if best.get("orderbook_block"):
+        print("MEXC ORDERBOOK BLOCK:", symbol, best.get("module"), best.get("orderbook_status"), best.get("orderbook_reason"), flush=True)
+        return False
+
+    # V44: Order flow / HTF / cok yakin direnc sert bloklari.
+    if best.get("aggressive_seller") or int(best.get("order_flow_score", 50) or 50) <= MEXC_ORDER_FLOW_BLOCK_SCORE:
+        print("MEXC ORDER FLOW BLOCK:", symbol, best.get("module"), best.get("order_flow_status"), best.get("order_flow_reason"), flush=True)
+        return False
+    if best.get("fatigue_block"):
+        print("MEXC FATIGUE BLOCK:", symbol, best.get("module"), best.get("htf_trend_status"), best.get("htf_trend_reason"), flush=True)
+        return False
+    if int(best.get("htf_trend_score", 50) or 50) < MEXC_HTF_TREND_MIN_FOR_ELITE and best.get("module") not in ("DIP", "DIP_REACTION", "V_DIP_RECOVERY", "ELITE_WHALE"):
+        print("MEXC HTF TREND LOW:", symbol, best.get("module"), best.get("htf_trend_score"), flush=True)
+        return False
+    if (
+        best.get("sr_ok")
+        and not best.get("sr_breakout")
+        and 0 <= float(best.get("sr_resistance_distance_pct", 999) or 999) <= MEXC_HARD_RESISTANCE_BLOCK_PCT
+        and not best.get("short_squeeze_candidate")
+    ):
+        print("MEXC HARD RESISTANCE BLOCK:", symbol, best.get("module"), best.get("sr_resistance_distance_pct"), flush=True)
         return False
 
     if not mexc_elite_allowed(best, support, btc_status):
@@ -5166,8 +5782,41 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
         score += sr_bonus
         score -= sr_penalty
 
+    # V43: Order book / order flow / likidite boslugu Elite puan etkisi.
+    ob_score = int(d.get("orderbook_score", 50) or 50)
+    of_score = int(d.get("order_flow_score", 50) or 50)
+    gap_score = int(d.get("liquidity_gap_score", 50) or 50)
+    squeeze_proxy = int(d.get("squeeze_proxy_score", 50) or 50)
+    whale_sweep = int(d.get("whale_sweep_score", 50) or 50)
+    if d.get("orderbook_block"):
+        score -= 24
+    elif ob_score >= 72:
+        score += MEXC_OB_SCORE_BONUS_STRONG
+    elif ob_score >= 60:
+        score += MEXC_OB_SCORE_BONUS_OK
+    elif ob_score <= 42:
+        score -= MEXC_OB_SCORE_PENALTY_WEAK
+
+    if of_score >= MEXC_ORDER_FLOW_STRONG:
+        score += 10
+    elif of_score <= MEXC_ORDER_FLOW_WEAK:
+        score -= 12
+
+    if gap_score >= MEXC_LIQ_GAP_STRONG:
+        score += 8
+    elif gap_score <= 35:
+        score -= 8
+
+    if squeeze_proxy >= MEXC_SQUEEZE_PROXY_STRONG:
+        score += 8
+    if whale_sweep >= MEXC_WHALE_SWEEP_STRONG and module in ("V_DIP_RECOVERY", "EARLY_REVERSAL", "DIP_REACTION", "DIP", "ELITE_WHALE"):
+        score += 10
+
     # V26: Canli momentum cezasi. Hafiza puani, son mumdaki zayifligi ezmesin.
     score -= int(d.get("live_penalty", 0) or 0)
+
+    # V41: Grafik-teknik uyumsuzluk cezasi. Teknik guclu ama grafik zayifsa puan dusur.
+    score -= int(d.get("gtu_penalty", 0) or 0)
 
     return max(0, min(100, int(score)))
 
@@ -5227,6 +5876,10 @@ def entry_decision_allowed(best, support=None, btc_status=""):
 
     # V37: Destek/direnÃ§ kapisi. Para var diye direncin hemen altinda AL basma.
     if not sr_elite_gate_ok(best):
+        return False
+
+    # V41: Grafik-teknik uyumsuzsa Elite AL verme.
+    if best.get("gtu_block"):
         return False
 
     # Elite icin radar kombinasyonu: genel olarak 3 radar veya guclu erken/dip istisnasi gerekir.
