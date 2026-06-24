@@ -1108,7 +1108,7 @@ def build_universe():
             if qv < 3_000_000:
                 continue
 
-            if volatility < 1.5:
+            if volatility < 1.0:
                 continue
 
             rows.append({
