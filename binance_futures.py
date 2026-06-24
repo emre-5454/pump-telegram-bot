@@ -20,7 +20,7 @@ CHAT_ID = "7553607277"
 ELITE_CHAT_ID = os.getenv("ELITE_CHAT_ID") or "-1003961962823"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V33"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V34"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
@@ -1108,7 +1108,7 @@ def build_universe():
             if qv < 3_000_000:
                 continue
 
-            if volatility < 1.0:
+            if volatility < 1.5:
                 continue
 
             rows.append({
@@ -3420,12 +3420,12 @@ def select_best_signal(signals):
 sent_elite = {}
 sent_elite_prep = {}
 
-ELITE_MIN_SCORE = 85
-ELITE_PREP_MIN_SCORE = 75
-ELITE_PREP_MAX_SCORE = ELITE_MIN_SCORE - 1
-ELITE_PREP_MIN_WALK = 70
-ELITE_PREP_MIN_ORDERFLOW = 50
-ELITE_PREP_MIN_TREND = 55
+ELITE_MIN_SCORE = 88
+ELITE_PREP_MIN_SCORE = 68
+ELITE_PREP_MAX_SCORE = 100
+ELITE_PREP_MIN_WALK = 60
+ELITE_PREP_MIN_ORDERFLOW = 40
+ELITE_PREP_MIN_TREND = 45
 ELITE_PREP_COOLDOWN = 45 * 60
 ELITE_COOLDOWN = 6 * 60 * 60
 ELITE_DAILY_LIMIT = 25
@@ -4885,11 +4885,52 @@ def is_elite_prep_candidate(best, elite_score, support_modules=None):
         return False, "ORDER_FLOW_ZAYIF"
     if htf_score < ELITE_PREP_MIN_TREND:
         return False, "TREND_ZAYIF"
-    if cvd_score < 45:
-        return False, "CVD_ZAYIF"
+    if cvd_score < 35:
+        return False, "CVD_COK_ZAYIF"
 
     return True, "OK"
 
+
+
+
+def weak_elite_should_go_prep(best, support_modules=None):
+    """
+    V34 ZAYIF ELITE -> HAZIRLIK:
+    Elite skoru yuksek olsa bile kalite C/D, CVD zayif, order flow dengeli/zayif,
+    delta notr/negatif veya order book satici ise direkt Elite AL yerine Hazirlik kanalina atar.
+    Amac: SNDK tipi "skor 100 ama alici saldirisi net degil" sinyalleri AL kanalindan once izlemeye almak.
+    """
+    support_modules = support_modules or []
+    if not best:
+        return False, "VERI_YOK"
+
+    walk = walking_score_signal(best, support_modules)
+    walk_score = int(walk.get("walking_score", 0) or 0)
+    quality = walk.get("quality_class", "D")
+    orderflow_score = int(best.get("orderflow_score", 50) or 50)
+    cvd_score = int(best.get("cvd_score", 50) or 50)
+    delta_ratio = float(best.get("delta_ratio_15m", 0) or 0)
+    orderbook_score = int(best.get("orderbook_score", 50) or 50)
+    resistance_distance = float(best.get("resistance_distance_pct", 999) or 999)
+
+    weak_flags = []
+    if quality in ("C", "D") or walk_score < 70:
+        weak_flags.append("kalite/yurume zayif")
+    if orderflow_score < 55:
+        weak_flags.append("order flow net degil")
+    if cvd_score < 45:
+        weak_flags.append("cvd zayif")
+    if delta_ratio < 3:
+        weak_flags.append("delta notr/negatif")
+    if orderbook_score < 35:
+        weak_flags.append("order book satici")
+    if 0 <= resistance_distance <= 1.00:
+        weak_flags.append("direnc yakin")
+
+    # En az iki zayiflik varsa Elite AL yerine Hazirlik'a dusur.
+    if len(weak_flags) >= 2:
+        return True, ", ".join(weak_flags[:4])
+    return False, "OK"
 
 def format_elite_prep_signal(symbol, d, elite_score, support_modules=None):
     """
@@ -5278,6 +5319,12 @@ def send_elite_signal(symbol, best, support):
     best = attach_cvd_context(symbol, best)
 
     elite_score = elite_score_signal(best, support)
+
+    weak_prep, weak_reason = weak_elite_should_go_prep(best, support)
+    if elite_score >= ELITE_MIN_SCORE and weak_prep:
+        print("ELITE WEAK -> PREP:", symbol, best.get("module"), weak_reason, "EliteScore:", elite_score, flush=True)
+        send_elite_prep_signal(symbol, best, support, elite_score)
+        return False
 
     ok, reason = is_elite_al_candidate(best, support)
     if not ok:
