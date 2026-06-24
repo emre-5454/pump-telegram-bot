@@ -16,7 +16,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V39"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V40"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -4203,6 +4203,221 @@ def elite_extend_tp_levels(entry, tp3, d, module, support_modules):
         "reason": reason,
     }
 
+
+def mexc_yurume_skoru(d, support_modules=None):
+    """
+    V40 YURUME SKORU:
+    Elite filtresinden gecen adaylarin hangisinin daha cok devam etme ihtimali
+    tasidigini ayirmak icin ek kalite puani.
+    Bu AL kapisini gevsetmez; sadece A+ / A / B / C onceliklendirmesi yapar.
+    """
+    support_modules = support_modules or []
+    if not d:
+        return {"score": 0, "grade": "C", "label": "VERI YOK", "reasons": "YOK"}
+
+    module = d.get("module", "UNKNOWN")
+    modules = set(support_modules)
+    modules.add(module)
+
+    money = max(
+        float(d.get("money_impact", 0) or 0),
+        float(d.get("history_money_max", 0) or 0),
+    )
+    power = max(
+        float(d.get("volume_power", 0) or 0),
+        float(d.get("history_power_max", 0) or 0),
+    )
+    market = max(
+        float(d.get("market_impact_pct", 0) or 0),
+        float(d.get("history_market_max", 0) or 0),
+        float(d.get("money_memory_market_60m", 0) or 0),
+    )
+    usdt = max(
+        float(d.get("usdt_vol", 0) or 0),
+        float(d.get("signal_usdt_vol", 0) or 0),
+        float(d.get("money_memory_total_15m", 0) or 0),
+    )
+    rs = float(d.get("rs", 0) or 0)
+    rsi = float(d.get("rsi", d.get("rsi15", 0)) or 0)
+    radar_count = 1 + len(support_modules)
+    radar_points = radar_strength_points(module, support_modules)
+
+    mem_bonus = bool(d.get("money_memory_bonus") or money_memory_buildup_ok(d))
+    reentry = bool(d.get("memory_reentry_bonus") or memory_reentry_bonus_ok(d))
+    second_wave = bool(d.get("second_wave_bonus") or second_wave_bonus_ok(d))
+    main_repeat = int(d.get("main_signal_count_120m", 0) or 0)
+
+    support_distance = float(d.get("sr_support_distance_pct", 999) or 999)
+    resistance_distance = float(d.get("sr_resistance_distance_pct", 999) or 999)
+    sr_breakout = bool(d.get("sr_breakout"))
+    sr_near_resistance = bool(d.get("sr_near_resistance") or d.get("sr_very_near_resistance"))
+
+    live_flags = int(d.get("live_red_flags", 0) or 0)
+    live_penalty = int(d.get("live_penalty", 0) or 0)
+    flow_score = int(d.get("flow_score", 0) or 0)
+
+    fomo = fomo_gain_pct(d)
+    dist = float(d.get("dist_from_low", 999) or 999)
+    price_gain_15m = float(d.get("price_gain_15m", 0) or 0)
+    price_gain_30m = float(d.get("price_gain_30m", 0) or 0)
+
+    score = 0
+    reasons = []
+
+    # 1) Para kalitesi - en yuksek agirlik.
+    if money >= 4.0:
+        score += 22; reasons.append("Para etkisi cok guclu")
+    elif money >= 3.0:
+        score += 18; reasons.append("Para etkisi guclu")
+    elif money >= 2.2:
+        score += 14; reasons.append("Para etkisi iyi")
+    elif money >= 1.6:
+        score += 9; reasons.append("Para etkisi orta")
+    elif money >= 1.2:
+        score += 5; reasons.append("Para etkisi erken")
+
+    if power >= 12:
+        score += 22; reasons.append("Hacim gucu cok guclu")
+    elif power >= 8:
+        score += 18; reasons.append("Hacim gucu guclu")
+    elif power >= 5:
+        score += 14; reasons.append("Hacim gucu iyi")
+    elif power >= 3:
+        score += 9; reasons.append("Hacim gucu orta")
+    elif power >= 2:
+        score += 5; reasons.append("Hacim gucu erken")
+
+    if market >= 3.0:
+        score += 14; reasons.append("Market etki cok yuksek")
+    elif market >= 1.0:
+        score += 11; reasons.append("Market etki guclu")
+    elif market >= 0.50:
+        score += 8; reasons.append("Market etki iyi")
+    elif market >= 0.20:
+        score += 5; reasons.append("Market etki var")
+    elif market < 0.06 and usdt < 50_000:
+        score -= 8; reasons.append("Market etki zayif")
+
+    # 2) Radar kombinasyonu.
+    if radar_count >= 4:
+        score += 14; reasons.append("Radar kombinasyonu cok guclu")
+    elif radar_count == 3:
+        score += 11; reasons.append("3 radar beraber")
+    elif radar_count == 2:
+        score += 7; reasons.append("2 radar beraber")
+    else:
+        score -= 6; reasons.append("Tek radar riski")
+
+    if radar_points >= 14:
+        score += 8
+    elif radar_points >= 9:
+        score += 5
+    elif radar_points >= 5:
+        score += 2
+
+    # 3) Hafiza / devam potansiyeli.
+    if mem_bonus:
+        score += 10; reasons.append("Money memory var")
+    if reentry:
+        score += 10; reasons.append("Memory Re-Entry var")
+    if second_wave:
+        score += 9; reasons.append("Second Wave var")
+    if main_repeat >= 5:
+        score += 7; reasons.append("Ana kanal tekrar guclu")
+    elif main_repeat >= 3:
+        score += 4; reasons.append("Ana kanal tekrar var")
+
+    # 4) Yapi kalitesi.
+    if sr_breakout:
+        score += 8; reasons.append("Direnc kirilimi")
+    elif resistance_distance >= 4:
+        score += 7; reasons.append("Direnc rahat")
+    elif resistance_distance >= 2:
+        score += 4; reasons.append("Direnc mesafesi uygun")
+    elif 0 <= resistance_distance < 1.2:
+        score -= 12; reasons.append("Direnc yakin")
+
+    if 0 <= support_distance <= 3:
+        score += 7; reasons.append("Destek ustu")
+    elif 3 < support_distance <= 6:
+        score += 3; reasons.append("Destek makul")
+    elif support_distance >= 10 and not sr_breakout:
+        score -= 6; reasons.append("Destekten uzak")
+
+    if flow_score >= 5:
+        score += 8; reasons.append("Alici baskisi cok guclu")
+    elif flow_score >= 4:
+        score += 6; reasons.append("Alici baskisi guclu")
+    elif flow_score >= 3:
+        score += 3; reasons.append("Alici baskisi var")
+    elif flow_score <= 1:
+        score -= 4; reasons.append("Alici baskisi zayif")
+
+    # 5) Gec kalma ve canlı bozulma cezasi.
+    if rsi >= 78:
+        score -= 12; reasons.append("RSI sisik")
+    elif rsi >= 72:
+        score -= 6; reasons.append("RSI yuksek")
+    elif 45 <= rsi <= 66:
+        score += 4; reasons.append("RSI saglikli")
+
+    if fomo > 12:
+        score -= 14; reasons.append("FOMO riski")
+    elif fomo > 8:
+        score -= 7; reasons.append("Biraz gec giris riski")
+
+    if dist > 24 and not sr_breakout:
+        score -= 10; reasons.append("Dipten uzak")
+    elif dist <= 12:
+        score += 4; reasons.append("Dibe cok uzak degil")
+
+    if price_gain_15m > 7 or price_gain_30m > 13:
+        score -= 10; reasons.append("Son mum hareketi fazla")
+
+    if live_flags >= 3:
+        score -= 14; reasons.append("Canli momentum zayifliyor")
+    elif live_flags == 2:
+        score -= 8; reasons.append("Canli red flag var")
+    elif live_flags == 1:
+        score -= 4; reasons.append("Tek red flag")
+    score -= min(live_penalty, 30) * 0.20
+
+    if rs >= 85:
+        score += 5
+    elif rs >= 75:
+        score += 3
+
+    score = int(max(0, min(100, round(score))))
+
+    if score >= 92:
+        grade = "A+"
+        label = "EN IYI ADAY"
+    elif score >= 84:
+        grade = "A"
+        label = "GUCLU ADAY"
+    elif score >= 74:
+        grade = "B"
+        label = "ORTA-GUCLU"
+    elif score >= 62:
+        grade = "C"
+        label = "SECICI GIRIS"
+    else:
+        grade = "D"
+        label = "ZAYIF ADAY"
+
+    # Mesaji sisirmemek icin en onemli ilk 4 sebep.
+    clean_reasons = []
+    for r in reasons:
+        if r not in clean_reasons:
+            clean_reasons.append(r)
+    return {
+        "score": score,
+        "grade": grade,
+        "label": label,
+        "reasons": ", ".join(clean_reasons[:4]) if clean_reasons else "YOK",
+    }
+
+
 def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
@@ -4211,6 +4426,7 @@ def format_mexc_elite_signal(symbol, d, elite_score, support_modules=None):
     radar_points = radar_strength_points(module, support_modules)
     elite_gold = mexc_elite_gold_signal(d, support_modules)
     title = "🔥 MEXC ELITE GOLD AL ONAY" if elite_gold else "MEXC ELITE AL ONAY"
+    yurume = mexc_yurume_skoru(d, support_modules)
 
     price = d.get("price", d.get("entry", 0))
     entry = d.get("entry", price)
@@ -4353,6 +4569,9 @@ Coin: {symbol}
 Mod: {module}
 Karar: AL
 Elite Giris Skoru: {elite_score}/100
+Yurume Skoru: {yurume.get('score', 0)}/100
+Kalite Sinifi: {yurume.get('grade', 'C')} - {yurume.get('label', 'YOK')}
+Yurume Sebep: {yurume.get('reasons', 'YOK')}
 
 Giris: {entry:.8f}
 Stop: {stop:.8f}
