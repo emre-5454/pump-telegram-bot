@@ -3420,7 +3420,7 @@ def select_best_signal(signals):
 sent_elite = {}
 sent_elite_prep = {}
 
-ELITE_MIN_SCORE = 88
+ELITE_MIN_SCORE = 85
 ELITE_PREP_MIN_SCORE = 75
 ELITE_PREP_MAX_SCORE = ELITE_MIN_SCORE - 1
 ELITE_PREP_MIN_WALK = 70
