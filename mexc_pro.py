@@ -14,7 +14,6 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
-MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 # V48 KANAL YAPISI NETLESTIRME:
 # Hazirlik ve Gold kanallari guvenlik nedeniyle yenilendi.
 # Environment variable varsa onu kullanir; yoksa asagidaki yeni kanal ID'leri devreye girer.
