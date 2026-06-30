@@ -26,10 +26,17 @@ CHAT_ID = "7553607277"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V41"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V42"
 
-MAX_SYMBOLS = 120
-SLEEP_SECONDS = 120
+MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
+
+# V42 BINANCE ANA KANAL GEVSETME:
+# Binance tarafinda ana radara az sinyal dustugu icin sadece ana radar/adayi gevsetildi.
+# Elite Hazirlik ve Gold kapilari yine kendi sert kalite filtrelerinden gecmeye devam eder.
+BINANCE_MAIN_RELAX_ENABLED = os.getenv("BINANCE_MAIN_RELAX_ENABLED", "1") == "1"
+BINANCE_UNIVERSE_MIN_QV = float(os.getenv("BINANCE_UNIVERSE_MIN_QV", "2000000"))
+BINANCE_UNIVERSE_MIN_VOLATILITY = float(os.getenv("BINANCE_UNIVERSE_MIN_VOLATILITY", "1.10"))
 
 # V40 PROFESYONEL GOLD + PIE RADAR IQ:
 # Gold mesajinda para akisi, orderflow, CVD, OI ve gecmis performans ozeti birlikte gosterilir.
@@ -310,9 +317,9 @@ ELITE_REENTRY_COOLDOWN = 90 * 60
 # V16 STO/BEL/LUMIA FIX: Ana kanalda tam yerinde görünen squeeze patlamaları
 # tek radar diye Elite kapısından dönmesin. Henüz fiyat kaçmadan gelen
 # sıkışma kırılımı + para/hacim + OBV/MACD birleşimini Elite’e zorlar.
-PRE_ROCKET_MIN_MONEY = 2.0
-PRE_ROCKET_MIN_VOL_RATIO = 2.2
-PRE_ROCKET_MIN_POWER = 6.0
+PRE_ROCKET_MIN_MONEY = 1.75
+PRE_ROCKET_MIN_VOL_RATIO = 1.80
+PRE_ROCKET_MIN_POWER = 4.80
 PRE_ROCKET_MAX_RSI = 78
 PRE_ROCKET_MAX_15M_GAIN = 7.0
 PRE_ROCKET_MAX_30M_GAIN = 13.0
@@ -464,8 +471,8 @@ BINANCE_ELITE_CONFIDENCE_BLOCK_SCORE = 35
 BINANCE_ELITE_CONFIDENCE_WARN_SCORE = 55
 BINANCE_ELITE_CONFIDENCE_BONUS_SCORE = 75
 
-MIN_EARLY_RS = 74
-MIN_SAFE_CONFIDENCE = 72
+MIN_EARLY_RS = 70
+MIN_SAFE_CONFIDENCE = 68
 MAX_RISK_PCT = 4.5
 
 sent_early = {}
@@ -1511,10 +1518,10 @@ def build_universe():
 
             volatility = ((high - low) / last) * 100
 
-            if qv < 3_000_000:
+            if qv < BINANCE_UNIVERSE_MIN_QV:
                 continue
 
-            if volatility < 1.5:
+            if volatility < BINANCE_UNIVERSE_MIN_VOLATILITY:
                 continue
 
             rows.append({
@@ -2558,11 +2565,11 @@ def early_radar(symbol, rs):
         reasons.append("15m EMA21 ustu")
 
     valid = (
-        score >= 13
+        score >= 12
         and rs >= MIN_EARLY_RS
-        and (vol_ratio_1h >= 1.3 or vol_ratio_15m >= 1.4)
-        and (usdt_vol_1h >= 25000 or usdt_vol_15m >= 12000)
-        and money_impact >= 1.55
+        and (vol_ratio_1h >= 1.20 or vol_ratio_15m >= 1.25)
+        and (usdt_vol_1h >= 20000 or usdt_vol_15m >= 9000)
+        and money_impact >= 1.35
         and (
             obv_up_1h
             or obv_up_15m
@@ -2570,8 +2577,8 @@ def early_radar(symbol, rs):
             or macd_turn_15m
             or bb_expanding
         )
-        and 42 <= h1.rsi <= 78
-        and dist_from_low <= 12
+        and 40 <= h1.rsi <= 80
+        and dist_from_low <= 16
     )
 
     return valid, {
@@ -2669,17 +2676,17 @@ def safe_long(symbol, rs, btc_ok, funding):
     )
 
     valid = (
-        confidence >= 72
+        confidence >= MIN_SAFE_CONFIDENCE
         and not fomo_block
-        and vol_ratio >= 1.7
-        and usdt_vol >= 30000
-        and money_impact >= 1.35
-        and volume_power >= 2.6
-        and change_3m >= 0.10
+        and vol_ratio >= 1.45
+        and usdt_vol >= 25000
+        and money_impact >= 1.20
+        and volume_power >= 2.10
+        and change_3m >= 0.05
         and (trend_new or trend_up)
         and (macd_turn or macd_bull or obv_up)
-        and 45 <= t15.rsi <= 72
-        and dist_from_low <= 18
+        and 43 <= t15.rsi <= 74
+        and dist_from_low <= 22
         and (
             strong_breakout
             or volume_power >= 3.0
@@ -2808,10 +2815,10 @@ def big_dip_radar(symbol, rs):
         reasons.append("24s dip bolgesine yakin")
 
     valid = (
-        score >= 10
-        and vol_ratio >= 1.5
-        and usdt_vol >= 75000
-        and h1.lower_wick >= 0.50
+        score >= 9
+        and vol_ratio >= 1.35
+        and usdt_vol >= 50000
+        and h1.lower_wick >= 0.45
         and (
             bb_touch
             or near_1h_lower_bb
@@ -2822,7 +2829,7 @@ def big_dip_radar(symbol, rs):
             rsi_turn
             or obv_up
             or macd_turn
-            or money_impact >= 1.2
+            or money_impact >= 1.10
         )
     )
 
@@ -2929,15 +2936,15 @@ def liquidity_sweep_watch(symbol, rs):
         reasons.append("RS destekli")
 
     valid = (
-        score >= 10
+        score >= 9
         and sweep
-        and lower_wick >= 0.45
-        and recovery >= 0.60
-        and vol_ratio >= 1.45
-        and usdt_vol >= 40000
-        and money_impact >= 1.20
-        and 28 <= m15.rsi <= 58
-        and dist_from_low <= 8
+        and lower_wick >= 0.40
+        and recovery >= 0.55
+        and vol_ratio >= 1.30
+        and usdt_vol >= 30000
+        and money_impact >= 1.10
+        and 28 <= m15.rsi <= 62
+        and dist_from_low <= 10
         and (
             obv_turn
             or rsi_turn
@@ -3075,13 +3082,13 @@ def fast_liquidity_sweep_signal(symbol, rs):
         score += 1; reasons.append("RS yeterli")
 
     valid = (
-        score >= 16
-        and dist_from_low <= 12
-        and recovery >= 0.55
-        and lower_wick >= 0.25
-        and vol_ratio >= 1.15
-        and money_impact >= 1.05
-        and volume_power >= 1.25
+        score >= 15
+        and dist_from_low <= 14
+        and recovery >= 0.50
+        and lower_wick >= 0.22
+        and vol_ratio >= 1.10
+        and money_impact >= 1.00
+        and volume_power >= 1.15
         and 30 <= m15.rsi <= 68
         and (swept_lower_bb or touched_lower_bb or drop_from_high >= 10 or lower_wick >= 0.35)
         and (rsi_turn or macd_turn or obv_turn or reclaim_ema9 or green_reclaim)
@@ -3250,7 +3257,7 @@ def pre_rocket_squeeze_signal(symbol, rs):
         score += 2; reasons.append("RS yeterli")
 
     valid = (
-        score >= 23
+        score >= 21
         and bb_was_squeezed
         and (range_break or upper_break)
         and ma_reclaim
@@ -3343,10 +3350,10 @@ def money_continue_signal(symbol, d):
         cont_score += 1; reasons.append("Bollinger aciliyor")
 
     valid = (
-        cont_score >= 7
-        and 0.6 <= price_gain <= 5.0
-        and money_now >= 1.45
-        and power_now >= 2.8
+        cont_score >= 6
+        and 0.4 <= price_gain <= 5.5
+        and money_now >= 1.30
+        and power_now >= 2.20
         and rsi_now <= 72
         and (
             money_growth >= 1.10
@@ -3426,10 +3433,10 @@ def momentum_continue_signal(symbol, d):
         reasons.append("Bollinger aciliyor")
 
     valid = (
-        mom_score >= 8
-        and price_gain >= 1.5
-        and money_now >= 1.55
-        and power_now >= 3.2
+        mom_score >= 7
+        and price_gain >= 1.20
+        and money_now >= 1.40
+        and power_now >= 2.60
         and (
             money_growth >= 1.12
             or power_growth >= 1.18
