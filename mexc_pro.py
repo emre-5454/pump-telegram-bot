@@ -21,7 +21,7 @@ MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
 MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V48"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V49"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -34,6 +34,169 @@ PIE_ENABLED = os.getenv("PIE_ENABLED", "1") == "1"
 PIE_DATA_FILE = os.getenv("PIE_DATA_FILE", "/tmp/mexc_pie_signals.json")
 PIE_MAX_TRACK_HOURS = float(os.getenv("PIE_MAX_TRACK_HOURS", "48"))
 PIE_UPDATE_COOLDOWN_SECONDS = 10 * 60
+
+# V49/V39 PIE RAPOR + RED ACIKLAMA KATMANI:
+# Günlük performans raporu ve "neden sinyal gelmedi?" sorusuna log cevabı verir.
+PIE_DAILY_REPORT_ENABLED = os.getenv("PIE_DAILY_REPORT_ENABLED", "1") == "1"
+PIE_DAILY_REPORT_HOUR_UTC = int(os.getenv("PIE_DAILY_REPORT_HOUR_UTC", "6"))  # Turkiye sabah 09:00
+PIE_DAILY_REPORT_STATE_FILE = os.getenv("PIE_DAILY_REPORT_STATE_FILE", PIE_DATA_FILE + ".daily_state")
+EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
+EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
+EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
+
+
+def pie_combo_key(rec):
+    mods = [str(rec.get("module", "UNKNOWN"))]
+    mods += [str(x) for x in rec.get("support_modules", []) if x]
+    mods = sorted(set(mods))
+    return " + ".join(mods) if mods else "UNKNOWN"
+
+
+def pie_is_success(rec):
+    return bool(rec.get("tp1_hit") or rec.get("status") in ("TP1", "TP2", "TP3"))
+
+
+def pie_is_stop(rec):
+    return bool(rec.get("stop_hit") or rec.get("status") == "STOP")
+
+
+def pie_daily_report_text(records, market_name="BOT"):
+    now_ts = time.time()
+    day_ago = now_ts - 24 * 60 * 60
+    recent = [r for r in records if float(r.get("created_ts", 0) or 0) >= day_ago]
+    if not recent:
+        return f"📊 {market_name} GUNLUK PERFORMANS\n\nSon 24 saatte kayitli Elite sinyali yok."
+
+    total = len(recent)
+    tp1 = sum(1 for r in recent if r.get("tp1_hit") or r.get("status") in ("TP1", "TP2", "TP3"))
+    tp2 = sum(1 for r in recent if r.get("tp2_hit") or r.get("status") in ("TP2", "TP3"))
+    tp3 = sum(1 for r in recent if r.get("tp3_hit") or r.get("status") == "TP3")
+    stop = sum(1 for r in recent if pie_is_stop(r))
+    open_count = sum(1 for r in recent if r.get("status") in ("OPEN", "TP1", "TP2"))
+    success = (tp1 / total * 100) if total else 0
+
+    by_module = {}
+    by_combo = {}
+    for r in recent:
+        module = r.get("module", "UNKNOWN")
+        by_module.setdefault(module, {"n": 0, "tp1": 0, "stop": 0})
+        by_module[module]["n"] += 1
+        by_module[module]["tp1"] += 1 if pie_is_success(r) else 0
+        by_module[module]["stop"] += 1 if pie_is_stop(r) else 0
+
+        combo = pie_combo_key(r)
+        by_combo.setdefault(combo, {"n": 0, "tp1": 0, "stop": 0})
+        by_combo[combo]["n"] += 1
+        by_combo[combo]["tp1"] += 1 if pie_is_success(r) else 0
+        by_combo[combo]["stop"] += 1 if pie_is_stop(r) else 0
+
+    def best_item(d):
+        if not d:
+            return "YOK"
+        items = sorted(
+            d.items(),
+            key=lambda kv: ((kv[1]["tp1"] / kv[1]["n"]) if kv[1]["n"] else 0, kv[1]["n"]),
+            reverse=True
+        )
+        name, st = items[0]
+        rate = st["tp1"] / st["n"] * 100 if st["n"] else 0
+        return f"{name} ({st['tp1']}/{st['n']} TP1, %{rate:.0f})"
+
+    def weak_item(d):
+        if not d:
+            return "YOK"
+        items = sorted(
+            d.items(),
+            key=lambda kv: ((kv[1]["tp1"] / kv[1]["n"]) if kv[1]["n"] else 0, -kv[1]["stop"])
+        )
+        name, st = items[0]
+        rate = st["tp1"] / st["n"] * 100 if st["n"] else 0
+        return f"{name} ({st['tp1']}/{st['n']} TP1, Stop {st['stop']}, %{rate:.0f})"
+
+    avg_max = sum(float(r.get("max_gain_pct", 0) or 0) for r in recent) / total
+    avg_dd = sum(float(r.get("max_dd_pct", 0) or 0) for r in recent) / total
+
+    return f"""
+📊 {market_name} GUNLUK PERFORMANS RAPORU
+
+Son 24s Elite: {total}
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}
+Stop: {stop}
+Acik: {open_count}
+
+Basari: %{success:.1f}
+Ort. Max: %{avg_max:.2f}
+Ort. DD: %{avg_dd:.2f}
+
+En iyi mod:
+{best_item(by_module)}
+
+En zayif mod:
+{weak_item(by_module)}
+
+En iyi kombinasyon:
+{best_item(by_combo)}
+
+Not:
+Bu rapor PIE kayitlarina gore uretilir. Veri arttikca Radar IQ daha guvenilir olur.
+""".strip()
+
+
+def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
+    if not PIE_ENABLED or not PIE_DAILY_REPORT_ENABLED:
+        return
+    now = datetime.utcnow()
+    if now.hour < PIE_DAILY_REPORT_HOUR_UTC:
+        return
+    today_key = now.strftime("%Y-%m-%d")
+    try:
+        if os.path.exists(PIE_DAILY_REPORT_STATE_FILE):
+            with open(PIE_DAILY_REPORT_STATE_FILE, "r", encoding="utf-8") as f:
+                if f.read().strip() == today_key:
+                    return
+    except Exception:
+        pass
+
+    records = pie_load_records()
+    send_telegram(pie_daily_report_text(records, market_name), chat_id)
+    try:
+        with open(PIE_DAILY_REPORT_STATE_FILE, "w", encoding="utf-8") as f:
+            f.write(today_key)
+    except Exception as e:
+        print("PIE daily state hata:", e, flush=True)
+
+
+def explain_reject_summary(symbol, rs, funding_status, flags, money_state_present=False, extra=None):
+    if not EXPLAIN_REJECTS:
+        return
+    try:
+        if float(rs or 0) < EXPLAIN_REJECT_MIN_RS and not money_state_present:
+            return
+    except Exception:
+        pass
+
+    true_flags = [k for k, v in flags.items() if bool(v)]
+    false_flags = [k for k, v in flags.items() if not bool(v)]
+    main_reason = "Radar kosullari henuz olusmadi"
+    if float(rs or 0) < EXPLAIN_REJECT_MIN_RS:
+        main_reason = f"RS dusuk ({float(rs or 0):.1f} < {EXPLAIN_REJECT_MIN_RS:.0f})"
+    elif money_state_present and not true_flags:
+        main_reason = "Para hafizasi var ama onay radarlari eksik"
+    elif true_flags:
+        main_reason = "Aday izleri var ama Elite/Hazirlik kapisi tamamlanmadi"
+
+    shown_false = ", ".join(false_flags[:EXPLAIN_REJECT_MAX_LINES])
+    shown_true = ", ".join(true_flags[:EXPLAIN_REJECT_MAX_LINES]) if true_flags else "YOK"
+    msg = (
+        f"RED OZET: {symbol} | RS {float(rs or 0):.1f} | Funding {funding_status} | "
+        f"Aktif: {shown_true} | Eksik: {shown_false} | Sebep: {main_reason}"
+    )
+    if extra:
+        msg += " | " + str(extra)
+    print(msg, flush=True)
+
 
 # STOCK / tokenized stock ürünlerini tarama dışı bırak.
 # Örnek: ASTSSTOCK/USDT:USDT, TSLAStock benzeri semboller.
@@ -6554,7 +6717,33 @@ def analyze(item, btc_ok, btc_status):
         if signals:
             send_selected_signal(symbol, signals, funding, btc_status)
         else:
-            print(symbol, "RS:", round(rs,1), "Funding:", funding["status"], "Early:", early_ok, "EarlyConfirm:", early_confirm_ok, "Money:", money_ok, "Momentum:", momentum_ok, "Watch:", watch_ok, "Safe:", safe_ok, "Dip:", dip_ok, "Reaction:", reaction_ok, "DipSweep:", strong_wick_ok, "EliteWhale:", elite_whale_ok, "Reversal:", reversal_ok, "Squeeze:", squeeze_ok, "SqueezeExplosion:", squeeze_explosion_ok, "EarlyReversal:", early_reversal_ok, "Rocket:", rocket_ok, "TrendBuild:", trend_ok, "VDip:", vdip_ok, "Wakeup:", wakeup_ok, "ElitePrep:", elite_prep_ok, "PreRocketWatch:", pre_rocket_watch_ok, "IC FILTRE", flush=True)
+            explain_reject_summary(
+                symbol, rs, funding["status"],
+                {
+                    "Wakeup": wakeup_ok,
+                    "ElitePrep": elite_prep_ok,
+                    "PreRocketWatch": pre_rocket_watch_ok,
+                    "Early": early_ok,
+                    "EarlyConfirm": early_confirm_ok,
+                    "Money": money_ok,
+                    "Momentum": momentum_ok,
+                    "Watch": watch_ok,
+                    "Safe": safe_ok,
+                    "Dip": dip_ok,
+                    "Reaction": reaction_ok,
+                    "DipSweep": strong_wick_ok,
+                    "EliteWhale": elite_whale_ok,
+                    "Reversal": reversal_ok,
+                    "Squeeze": squeeze_ok,
+                    "SqueezeExplosion": squeeze_explosion_ok,
+                    "EarlyReversal": early_reversal_ok,
+                    "Rocket": rocket_ok,
+                    "TrendBuild": trend_ok,
+                    "VDip": vdip_ok,
+                },
+                money_state_present=(symbol in money_state),
+                extra="IC FILTRE"
+            )
     except Exception as e:
         print("Analiz hata:", symbol, e, flush=True)
 
@@ -6573,6 +6762,7 @@ def run_bot():
             cleanup_money_memory()
             cleanup_main_signal_memory()
             pie_update_open_signals(MEXC_ELITE_CHAT_ID)
+            pie_daily_report_if_due(MEXC_ELITE_CHAT_ID, "MEXC")
             universe = build_universe()
             print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), "MainSignalMemory:", len(main_signal_memory), flush=True)
             for item in universe:
@@ -6588,7 +6778,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V47 + PIE Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V49 + PIE RAPOR Aktif", 200
 
 
 if __name__ == "__main__":
