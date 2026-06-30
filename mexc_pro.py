@@ -2,6 +2,7 @@ from flask import Flask
 import threading
 import time
 import os
+import json
 import requests
 import ccxt
 import pandas as pd
@@ -14,14 +15,25 @@ TELEGRAM_TOKEN = "8920800668:AAHRaIYDqHiX5qLFkzfV_tCTNiKlYWR7P0w"
 CHAT_ID = "6977265844"
 
 MEXC_ELITE_CHAT_ID = os.getenv("MEXC_ELITE_CHAT_ID") or "-1003758052977"
-MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1004388954738"
+# V48 KANAL YAPISI NETLESTIRME:
+# Hazirlik ve Gold kanallari guvenlik nedeniyle yenilendi.
+# Environment variable varsa onu kullanir; yoksa asagidaki yeni kanal ID'leri devreye girer.
+MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
+MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V44"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V48"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
 MIN_UNIVERSE_VOLATILITY = 0.8
 SLEEP_SECONDS = 120
+
+# V47 PERFORMANCE INTELLIGENCE ENGINE (PIE):
+# Bot attigi Elite sinyalleri dosyaya kaydeder, sonraki turlarda TP/Stop durumunu izler.
+PIE_ENABLED = os.getenv("PIE_ENABLED", "1") == "1"
+PIE_DATA_FILE = os.getenv("PIE_DATA_FILE", "/tmp/mexc_pie_signals.json")
+PIE_MAX_TRACK_HOURS = float(os.getenv("PIE_MAX_TRACK_HOURS", "48"))
+PIE_UPDATE_COOLDOWN_SECONDS = 10 * 60
 
 # STOCK / tokenized stock ürünlerini tarama dışı bırak.
 # Örnek: ASTSSTOCK/USDT:USDT, TSLAStock benzeri semboller.
@@ -59,7 +71,7 @@ MIN_EARLY_RS = 70
 MIN_SAFE_CONFIDENCE = 62
 MAX_RISK_PCT = 4.5
 
-MEXC_ELITE_MIN_SCORE = 94
+MEXC_ELITE_MIN_SCORE = 88
 MEXC_ELITE_COOLDOWN = 120 * 60
 
 # HISTORY_BUILDUP kalite filtresi: 100+ Elite yagmurunu azaltmak icin.
@@ -247,11 +259,24 @@ MEXC_HTF_TREND_MIN_FOR_GOLD = 62
 MEXC_HTF_TREND_BONUS_STRONG = 8
 MEXC_HTF_TREND_PENALTY_WEAK = 14
 MEXC_HARD_RESISTANCE_BLOCK_PCT = 0.30
-MEXC_ORDER_FLOW_BLOCK_SCORE = 35
+MEXC_ORDER_FLOW_BLOCK_SCORE = 28
 MEXC_FATIGUE_6H_GAIN_WARN = 12.0
 MEXC_FATIGUE_6H_GAIN_BLOCK = 15.0
 MEXC_FATIGUE_PULLBACK_MIN = 1.2
 MEXC_FATIGUE_PENALTY = 20
+
+# V45 GEVSETME AYARI:
+# MEXC Elite kapisi V44'te fazla sikilasti.
+# Elite min skor 94 -> 88, Order Flow blok 35 -> 28 yapildi.
+# Direnc/yorgunluk/HTF bloklari korunur; kotu sinyalleri kesmeye devam eder.
+
+# V46 AI KARAR KATMANI:
+# Radarlar artik sadece sayilmaz; agirlik + gelis sirasina gore Elite Guven Skoru uretilir.
+# Amac: HISTORY/MOMENTUM gibi gec radarlarla gelen geri donusleri azaltmak,
+# Early -> Money -> Squeeze / Dip -> Reversal -> Money gibi olgunlasan yapilari odullendirmek.
+MEXC_ELITE_CONFIDENCE_BLOCK_SCORE = 35
+MEXC_ELITE_CONFIDENCE_WARN_SCORE = 55
+MEXC_ELITE_CONFIDENCE_BONUS_SCORE = 75
 
 sent_early = {}
 early_daily_counter = {}
@@ -302,6 +327,190 @@ def send_telegram(msg, chat_id=None):
         )
     except Exception as e:
         print("Telegram hata:", e, flush=True)
+
+
+
+def pie_now_iso():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def pie_load_records():
+    if not PIE_ENABLED:
+        return []
+    try:
+        if not os.path.exists(PIE_DATA_FILE):
+            return []
+        with open(PIE_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print("PIE load hata:", e, flush=True)
+        return []
+
+
+def pie_save_records(records):
+    if not PIE_ENABLED:
+        return
+    try:
+        tmp = PIE_DATA_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, PIE_DATA_FILE)
+    except Exception as e:
+        print("PIE save hata:", e, flush=True)
+
+
+def pie_float(x, default=0.0):
+    try:
+        return float(x or default)
+    except Exception:
+        return float(default)
+
+
+def pie_build_mexc_levels(d):
+    module = d.get("module", "UNKNOWN")
+    price = pie_float(d.get("price", d.get("entry", 0)))
+    entry = pie_float(d.get("entry", price))
+    if entry <= 0:
+        return {"entry": 0, "stop": 0, "tp1": 0, "tp2": 0, "tp3": 0, "risk_pct": 0, "tp_system": "YOK"}
+    if module == "SAFE":
+        stop = pie_float(d.get("stop", entry * 0.975))
+        tp1 = pie_float(d.get("tp1", entry * 1.012))
+        tp2 = pie_float(d.get("tp2", entry * 1.020))
+        tp3 = pie_float(d.get("tp3", entry * 1.032))
+        risk_pct = pie_float(d.get("risk_pct", ((entry - stop) / entry * 100 if entry else 0)))
+    else:
+        risk_pct = 2.8
+        if module in ("DIP", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE", "V_DIP_RECOVERY"):
+            risk_pct = 3.2
+        elif module in ("MONEY", "WATCH", "EARLY", "SQUEEZE", "SQUEEZE_EXPLOSION", "TREND_BUILDUP", "HISTORY_BUILDUP"):
+            risk_pct = 2.5
+        stop = entry * (1 - risk_pct / 100)
+        tp1 = entry * (1 + risk_pct * 1.2 / 100)
+        tp2 = entry * (1 + risk_pct * 1.8 / 100)
+        tp3 = entry * (1 + risk_pct * 2.6 / 100)
+    try:
+        sr_tp = sr_based_tp_levels(entry, stop, tp1, tp2, tp3, d)
+        tp1, tp2, tp3 = sr_tp.get("tp1", tp1), sr_tp.get("tp2", tp2), sr_tp.get("tp3", tp3)
+        tp_system = sr_tp.get("tp_mode", "RISK_BAZLI")
+    except Exception:
+        tp_system = d.get("tp_mode", "RISK_BAZLI")
+    return {"entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "tp3": tp3, "risk_pct": risk_pct, "tp_system": tp_system}
+
+
+def pie_record_elite_signal(symbol, d, support_modules, elite_score, levels=None, market="MEXC"):
+    if not PIE_ENABLED:
+        return
+    levels = levels or pie_build_mexc_levels(d)
+    records = pie_load_records()
+    now_ts = time.time()
+    signal_id = f"{market}_{symbol}_{d.get('module','UNKNOWN')}_{int(now_ts)}"
+    rec = {
+        "id": signal_id,
+        "market": market,
+        "bot_name": BOT_NAME,
+        "symbol": symbol,
+        "module": d.get("module", "UNKNOWN"),
+        "support_modules": list(support_modules or []),
+        "created_at": pie_now_iso(),
+        "created_ts": now_ts,
+        "status": "OPEN",
+        "entry": pie_float(levels.get("entry")),
+        "stop": pie_float(levels.get("stop")),
+        "tp1": pie_float(levels.get("tp1")),
+        "tp2": pie_float(levels.get("tp2")),
+        "tp3": pie_float(levels.get("tp3")),
+        "tp_system": levels.get("tp_system", d.get("tp_mode", "YOK")),
+        "elite_score": int(elite_score or 0),
+        "elite_confidence_score": int(d.get("elite_confidence_score", 50) or 50),
+        "elite_confidence_label": d.get("elite_confidence_label", "YOK"),
+        "radar_count": 1 + len(support_modules or []),
+        "btc_status": d.get("btc_status", ""),
+        "market_impact_pct": pie_float(d.get("market_impact_pct")),
+        "money_impact": pie_float(d.get("money_impact")),
+        "volume_power": pie_float(d.get("volume_power")),
+        "order_flow_score": int(d.get("order_flow_score", 50) or 50),
+        "orderbook_score": int(d.get("orderbook_score", 50) or 50),
+        "htf_trend_score": int(d.get("htf_trend_score", 50) or 50),
+        "sr_resistance_distance_pct": pie_float(d.get("sr_resistance_distance_pct", 999), 999),
+        "max_price": pie_float(levels.get("entry")),
+        "min_price": pie_float(levels.get("entry")),
+        "max_gain_pct": 0.0,
+        "max_dd_pct": 0.0,
+        "tp1_hit": False,
+        "tp2_hit": False,
+        "tp3_hit": False,
+        "stop_hit": False,
+        "last_update_ts": 0,
+    }
+    records.append(rec)
+    # Dosya sisip kalmasin: son 500 kayit yeterli.
+    pie_save_records(records[-500:])
+    print("PIE RECORD:", signal_id, symbol, d.get("module"), "Entry:", rec["entry"], "TP1:", rec["tp1"], "Stop:", rec["stop"], flush=True)
+
+
+def pie_format_update(rec, event, price):
+    elapsed_min = int((time.time() - float(rec.get("created_ts", time.time()))) / 60)
+    return f"""
+📊 PIE SINYAL TAKIP - {event}
+
+Coin: {rec.get('symbol')}
+Mod: {rec.get('module')}
+Giris: {pie_float(rec.get('entry')):.8f}
+Anlik: {pie_float(price):.8f}
+Max: %{pie_float(rec.get('max_gain_pct')):.2f}
+DD: %{pie_float(rec.get('max_dd_pct')):.2f}
+Sure: {elapsed_min} dk
+Elite: {rec.get('elite_score')}/100 | Guven: {rec.get('elite_confidence_score')}/100
+""".strip()
+
+
+def pie_update_open_signals(chat_id=None):
+    if not PIE_ENABLED:
+        return
+    records = pie_load_records()
+    if not records:
+        return
+    changed = False
+    now_ts = time.time()
+    for rec in records:
+        if rec.get("status") not in ("OPEN", "TP1", "TP2"):
+            continue
+        if now_ts - float(rec.get("last_update_ts", 0) or 0) < PIE_UPDATE_COOLDOWN_SECONDS:
+            continue
+        symbol = rec.get("symbol")
+        entry = pie_float(rec.get("entry"))
+        if not symbol or entry <= 0:
+            continue
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            price = pie_float(ticker.get("last") or ticker.get("close") or ticker.get("bid") or ticker.get("ask"))
+            if price <= 0:
+                continue
+            rec["last_price"] = price
+            rec["last_update_ts"] = now_ts
+            rec["max_price"] = max(pie_float(rec.get("max_price"), entry), price)
+            rec["min_price"] = min(pie_float(rec.get("min_price"), entry), price)
+            rec["max_gain_pct"] = ((rec["max_price"] - entry) / entry * 100) if entry else 0
+            rec["max_dd_pct"] = ((rec["min_price"] - entry) / entry * 100) if entry else 0
+            event = None
+            if price <= pie_float(rec.get("stop")) and not rec.get("tp1_hit"):
+                rec["stop_hit"] = True; rec["status"] = "STOP"; event = "STOP"
+            elif price >= pie_float(rec.get("tp3")):
+                rec["tp1_hit"] = rec["tp2_hit"] = rec["tp3_hit"] = True; rec["status"] = "TP3"; event = "TP3"
+            elif price >= pie_float(rec.get("tp2")) and not rec.get("tp2_hit"):
+                rec["tp1_hit"] = rec["tp2_hit"] = True; rec["status"] = "TP2"; event = "TP2"
+            elif price >= pie_float(rec.get("tp1")) and not rec.get("tp1_hit"):
+                rec["tp1_hit"] = True; rec["status"] = "TP1"; event = "TP1"
+            elif (now_ts - float(rec.get("created_ts", now_ts))) > PIE_MAX_TRACK_HOURS * 3600:
+                rec["status"] = "EXPIRED"; event = "SURE DOLDU"
+            if event:
+                send_telegram(pie_format_update(rec, event, price), chat_id)
+            changed = True
+        except Exception as e:
+            print("PIE update hata:", symbol, e, flush=True)
+    if changed:
+        pie_save_records(records)
 
 
 def can_send(cache, key, cooldown):
@@ -4209,6 +4418,94 @@ def elite_combo_allowed(best, support=None):
 
     return False
 
+def mexc_elite_confidence_package(d, support_modules=None):
+    """V46: Elite Guven Skoru. Radar agirligi, radar sirasi ve canli kaliteyi birlikte olcer."""
+    support_modules = support_modules or []
+    if not d:
+        return {"score": 0, "label": "YOK", "reasons": "VERI YOK"}
+
+    module = d.get("module", "UNKNOWN")
+    history_modules = list(d.get("history_modules", []) or [])
+    modules = []
+    for m in history_modules + [module] + list(support_modules):
+        if m and m not in modules:
+            modules.append(m)
+    s = set(modules)
+
+    weights = {
+        "V_DIP_RECOVERY": 16, "DIP_SWEEP": 15, "DIP_REACTION": 14, "ELITE_WHALE": 14,
+        "EARLY_REVERSAL": 13, "ROCKET": 13, "SQUEEZE_EXPLOSION": 12, "PRE_ROCKET_WATCH": 10,
+        "EARLY_CONFIRM": 10, "SAFE": 10, "MONEY": 9, "SQUEEZE": 9, "TREND_BUILDUP": 7,
+        "HISTORY_BUILDUP": 6, "REVERSAL": 6, "EARLY": 5, "WATCH": 3, "WAKEUP": 2,
+        "MOMENTUM": 1, "DIP": 7,
+    }
+    score = 25 + min(35, sum(weights.get(x, 0) for x in modules))
+    reasons = []
+
+    # Sira onemli: dogru evrim bonus, gec/tek radar ceza.
+    if {"EARLY", "MONEY"}.issubset(s) and ("SQUEEZE_EXPLOSION" in s or "SQUEEZE" in s or "ROCKET" in s):
+        score += 12; reasons.append("erken+para+squeeze")
+    elif {"EARLY", "MONEY"}.issubset(s):
+        score += 7; reasons.append("erken+para")
+    if ("V_DIP_RECOVERY" in s or "DIP_SWEEP" in s or "DIP_REACTION" in s) and ("MONEY" in s or "REVERSAL" in s or "EARLY_REVERSAL" in s):
+        score += 12; reasons.append("dip tepki olgun")
+    if {"TREND_BUILDUP", "MONEY"}.issubset(s) and len(s) >= 3:
+        score += 7; reasons.append("trend+para destekli")
+    if module in ("MOMENTUM", "HISTORY_BUILDUP", "TREND_BUILDUP") and len(s) <= 2:
+        score -= 12; reasons.append("gec/tek radar")
+
+    # Canli kalite.
+    of_score = int(d.get("order_flow_score", 50) or 50)
+    ob_score = int(d.get("orderbook_score", 50) or 50)
+    htf_score = int(d.get("htf_trend_score", 50) or 50)
+    gtu_penalty = int(d.get("gtu_penalty", 0) or 0)
+    live_penalty = int(d.get("live_penalty", 0) or 0)
+    fomo = float(fomo_gain_pct(d) or 0)
+    resistance = float(d.get("sr_resistance_distance_pct", 999) or 999)
+
+    if of_score >= 78:
+        score += 8; reasons.append("order flow guclu")
+    elif of_score <= 42:
+        score -= 10; reasons.append("order flow zayif")
+    if ob_score >= 72:
+        score += 5
+    elif ob_score <= 42:
+        score -= 7; reasons.append("order book zayif")
+    if htf_score >= 70:
+        score += 5
+    elif htf_score < MEXC_HTF_TREND_MIN_FOR_ELITE and module not in ("DIP", "DIP_REACTION", "DIP_SWEEP", "V_DIP_RECOVERY", "ELITE_WHALE"):
+        score -= 8; reasons.append("HTF zayif")
+    if gtu_penalty >= GTU_WEAK_PENALTY:
+        score -= 10; reasons.append("grafik uyum zayif")
+    if live_penalty >= 20:
+        score -= 8; reasons.append("canli momentum zayif")
+    if fomo > 12 and module not in ("V_DIP_RECOVERY", "DIP_REACTION", "DIP_SWEEP", "ELITE_WHALE"):
+        score -= 10; reasons.append("fomo riski")
+    if 0 <= resistance <= SR_RESISTANCE_VERY_NEAR_PCT and not d.get("sr_breakout") and not d.get("short_squeeze_candidate"):
+        score -= 10; reasons.append("direnc cok yakin")
+
+    score = int(max(0, min(100, round(score))))
+    if score >= 82:
+        label = "COK GUCLU"
+    elif score >= MEXC_ELITE_CONFIDENCE_BONUS_SCORE:
+        label = "GUCLU"
+    elif score >= MEXC_ELITE_CONFIDENCE_WARN_SCORE:
+        label = "ORTA"
+    elif score >= MEXC_ELITE_CONFIDENCE_BLOCK_SCORE:
+        label = "ZAYIF"
+    else:
+        label = "BLOCK"
+    return {"score": score, "label": label, "reasons": ", ".join(reasons[:4]) if reasons else "DENGELI"}
+
+
+def attach_mexc_elite_confidence(best, support_modules=None):
+    pkg = mexc_elite_confidence_package(best, support_modules)
+    best["elite_confidence_score"] = pkg["score"]
+    best["elite_confidence_label"] = pkg["label"]
+    best["elite_confidence_reason"] = pkg["reasons"]
+    return best
+
+
 def mexc_elite_score_signal(d, support_modules=None, btc_status=""):
     """
     Elite artik: guclu coin degil, guclu giris.
@@ -5176,6 +5473,7 @@ Devam Potansiyeli: VAR
 Mod: {module}
 Karar: AL
 Elite Skoru: {elite_score}/100
+🧠 Elite Guven: {int(d.get('elite_confidence_score', 50) or 50)}/100 - {d.get('elite_confidence_label', 'YOK')}
 Radar: {radar_count} | Kombinasyon: {radar_points}
 
 🎯 Giris: {entry:.8f}
@@ -5222,6 +5520,9 @@ BTC: {d.get('btc_status', 'YOK') if d.get('btc_status') else 'Mesaj disi'}
 Risk Sebebi:
 {risk_reason_text}
 
+Guven Sebebi:
+{d.get('elite_confidence_reason', 'YOK')}
+
 Sonuc:
 {result}
 """.strip()
@@ -5248,6 +5549,9 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
     attach_mexc_orderbook_context(symbol, best)
     attach_mexc_order_flow_package(symbol, best)
 
+    # V46: AI karar katmani - radar agirligi + sira + canli kalite guveni.
+    attach_mexc_elite_confidence(best, support)
+
     elite_score = mexc_elite_score_signal(best, support, btc_status)
 
     if best.get("live_guard_ok") is False:
@@ -5260,6 +5564,10 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
 
     if best.get("orderbook_block"):
         print("MEXC ORDERBOOK BLOCK:", symbol, best.get("module"), best.get("orderbook_status"), best.get("orderbook_reason"), flush=True)
+        return False
+
+    if int(best.get("elite_confidence_score", 50) or 50) < MEXC_ELITE_CONFIDENCE_BLOCK_SCORE and best.get("module") not in ("DIP", "DIP_REACTION", "DIP_SWEEP", "V_DIP_RECOVERY", "ELITE_WHALE"):
+        print("MEXC ELITE CONFIDENCE BLOCK:", symbol, best.get("module"), best.get("elite_confidence_score"), best.get("elite_confidence_reason"), flush=True)
         return False
 
     # V44: Order flow / HTF / cok yakin direnc sert bloklari.
@@ -5291,8 +5599,15 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
     if not can_send(sent_mexc_elite, key, MEXC_ELITE_COOLDOWN):
         return False
 
-    send_telegram(format_mexc_elite_signal(symbol, best, elite_score, support), MEXC_ELITE_CHAT_ID)
-    print("MEXC ELITE SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
+    pie_record_elite_signal(symbol, best, support, elite_score, pie_build_mexc_levels(best), market="MEXC")
+
+    # V48: Gold ve Elite AL artik ayri kanallara gider.
+    # Gold kosulu dogruysa yeni MEXC_ELITE_GOLD_CHAT_ID kullanilir;
+    # degilse klasik MEXC_ELITE_CHAT_ID yani Elite AL kanalina gider.
+    elite_gold = mexc_elite_gold_signal(best, support)
+    target_chat_id = MEXC_ELITE_GOLD_CHAT_ID if elite_gold else MEXC_ELITE_CHAT_ID
+    send_telegram(format_mexc_elite_signal(symbol, best, elite_score, support), target_chat_id)
+    print("MEXC ELITE SEND:", symbol, best.get("module"), "Gold:" if elite_gold else "Elite:", target_chat_id, "EliteScore:", elite_score, flush=True)
     return True
 
 
@@ -5818,6 +6133,17 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     # V41: Grafik-teknik uyumsuzluk cezasi. Teknik guclu ama grafik zayifsa puan dusur.
     score -= int(d.get("gtu_penalty", 0) or 0)
 
+    # V46: Elite Guven Skoru son karar puanina kontrollu etki eder.
+    conf = int(d.get("elite_confidence_score", 50) or 50)
+    if conf >= 82:
+        score += 10
+    elif conf >= MEXC_ELITE_CONFIDENCE_BONUS_SCORE:
+        score += 6
+    elif conf < MEXC_ELITE_CONFIDENCE_BLOCK_SCORE:
+        score -= 18
+    elif conf < MEXC_ELITE_CONFIDENCE_WARN_SCORE:
+        score -= 8
+
     return max(0, min(100, int(score)))
 
 
@@ -6234,7 +6560,7 @@ def analyze(item, btc_ok, btc_status):
 
 
 def run_bot():
-    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif. Elite Hazirlik kanali aktif: {MEXC_ELITE_PREP_CHAT_ID}")
+    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif. Hazirlik: {MEXC_ELITE_PREP_CHAT_ID} | Gold: {MEXC_ELITE_GOLD_CHAT_ID} | Elite: {MEXC_ELITE_CHAT_ID}")
     print(BOT_NAME, "BASLADI", flush=True)
     while True:
         try:
@@ -6246,6 +6572,7 @@ def run_bot():
             cleanup_radar_history()
             cleanup_money_memory()
             cleanup_main_signal_memory()
+            pie_update_open_signals(MEXC_ELITE_CHAT_ID)
             universe = build_universe()
             print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), "MainSignalMemory:", len(main_signal_memory), flush=True)
             for item in universe:
@@ -6261,7 +6588,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V34 Bot Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V47 + PIE Aktif", 200
 
 
 if __name__ == "__main__":
