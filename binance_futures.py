@@ -1,6 +1,6 @@
 # Binance Futures SAFE ENTRY DECISION BOT V15
 # Binance MEXC kopyasi degil: Money Acceleration + Safe Entry + Elite AL + FOMO Block mantigi.
-# Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, ELITE_CHAT_ID
+# Ortam degiskenleri: TELEGRAM_TOKEN, CHAT_ID, BINANCE_ELITE_PREP_CHAT_ID, BINANCE_ELITE_GOLD_CHAT_ID
 
 from flask import Flask
 import threading
@@ -22,15 +22,18 @@ CHAT_ID = "7553607277"
 # CHAT_ID                  -> Ana kanal / normal radarlar
 # BINANCE_ELITE_PREP_CHAT_ID -> Hazirlik / izleme sinyalleri
 # BINANCE_ELITE_GOLD_CHAT_ID -> Elite Gold sinyalleri
-# ELITE_CHAT_ID             -> Elite AL sinyalleri
+# Eski BINANCE_ELITE_GOLD_CHAT_ID kaldirildi; AL/Gold sinyalleri BINANCE_ELITE_GOLD_CHAT_ID kanalina gider.
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
-BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1003842699066"
+BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V38"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V41"
 
 MAX_SYMBOLS = 120
 SLEEP_SECONDS = 120
 
+# V40 PROFESYONEL GOLD + PIE RADAR IQ:
+# Gold mesajinda para akisi, orderflow, CVD, OI ve gecmis performans ozeti birlikte gosterilir.
+#
 # V38 KANAL NETLESTIRME:
 # Elite Gold artik Elite AL kanalina degil, ayri BINANCE_ELITE_GOLD_CHAT_ID kanalina gider.
 #
@@ -40,6 +43,215 @@ PIE_ENABLED = os.getenv("PIE_ENABLED", "1") == "1"
 PIE_DATA_FILE = os.getenv("PIE_DATA_FILE", "/tmp/binance_pie_signals.json")
 PIE_MAX_TRACK_HOURS = float(os.getenv("PIE_MAX_TRACK_HOURS", "48"))
 PIE_UPDATE_COOLDOWN_SECONDS = 10 * 60
+
+# V49/V39 PIE RAPOR + RED ACIKLAMA KATMANI:
+# Günlük performans raporu ve "neden sinyal gelmedi?" sorusuna log cevabı verir.
+PIE_DAILY_REPORT_ENABLED = os.getenv("PIE_DAILY_REPORT_ENABLED", "1") == "1"
+PIE_DAILY_REPORT_HOUR_UTC = int(os.getenv("PIE_DAILY_REPORT_HOUR_UTC", "6"))  # Turkiye sabah 09:00
+PIE_DAILY_REPORT_STATE_FILE = os.getenv("PIE_DAILY_REPORT_STATE_FILE", PIE_DATA_FILE + ".daily_state")
+EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
+EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
+EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
+
+
+def pie_combo_key(rec):
+    mods = [str(rec.get("module", "UNKNOWN"))]
+    mods += [str(x) for x in rec.get("support_modules", []) if x]
+    mods = sorted(set(mods))
+    return " + ".join(mods) if mods else "UNKNOWN"
+
+
+def pie_is_success(rec):
+    return bool(rec.get("tp1_hit") or rec.get("status") in ("TP1", "TP2", "TP3"))
+
+
+def pie_is_stop(rec):
+    return bool(rec.get("stop_hit") or rec.get("status") == "STOP")
+
+
+def pie_daily_report_text(records, market_name="BOT"):
+    now_ts = time.time()
+    day_ago = now_ts - 24 * 60 * 60
+    recent = [r for r in records if float(r.get("created_ts", 0) or 0) >= day_ago]
+    if not recent:
+        return f"📊 {market_name} GUNLUK PERFORMANS\n\nSon 24 saatte kayitli Elite sinyali yok."
+
+    total = len(recent)
+    tp1 = sum(1 for r in recent if r.get("tp1_hit") or r.get("status") in ("TP1", "TP2", "TP3"))
+    tp2 = sum(1 for r in recent if r.get("tp2_hit") or r.get("status") in ("TP2", "TP3"))
+    tp3 = sum(1 for r in recent if r.get("tp3_hit") or r.get("status") == "TP3")
+    stop = sum(1 for r in recent if pie_is_stop(r))
+    open_count = sum(1 for r in recent if r.get("status") in ("OPEN", "TP1", "TP2"))
+    success = (tp1 / total * 100) if total else 0
+
+    by_module = {}
+    by_combo = {}
+    for r in recent:
+        module = r.get("module", "UNKNOWN")
+        by_module.setdefault(module, {"n": 0, "tp1": 0, "stop": 0})
+        by_module[module]["n"] += 1
+        by_module[module]["tp1"] += 1 if pie_is_success(r) else 0
+        by_module[module]["stop"] += 1 if pie_is_stop(r) else 0
+
+        combo = pie_combo_key(r)
+        by_combo.setdefault(combo, {"n": 0, "tp1": 0, "stop": 0})
+        by_combo[combo]["n"] += 1
+        by_combo[combo]["tp1"] += 1 if pie_is_success(r) else 0
+        by_combo[combo]["stop"] += 1 if pie_is_stop(r) else 0
+
+    def best_item(d):
+        if not d:
+            return "YOK"
+        items = sorted(
+            d.items(),
+            key=lambda kv: ((kv[1]["tp1"] / kv[1]["n"]) if kv[1]["n"] else 0, kv[1]["n"]),
+            reverse=True
+        )
+        name, st = items[0]
+        rate = st["tp1"] / st["n"] * 100 if st["n"] else 0
+        return f"{name} ({st['tp1']}/{st['n']} TP1, %{rate:.0f})"
+
+    def weak_item(d):
+        if not d:
+            return "YOK"
+        items = sorted(
+            d.items(),
+            key=lambda kv: ((kv[1]["tp1"] / kv[1]["n"]) if kv[1]["n"] else 0, -kv[1]["stop"])
+        )
+        name, st = items[0]
+        rate = st["tp1"] / st["n"] * 100 if st["n"] else 0
+        return f"{name} ({st['tp1']}/{st['n']} TP1, Stop {st['stop']}, %{rate:.0f})"
+
+    avg_max = sum(float(r.get("max_gain_pct", 0) or 0) for r in recent) / total
+    avg_dd = sum(float(r.get("max_dd_pct", 0) or 0) for r in recent) / total
+
+    return f"""
+📊 {market_name} GUNLUK PERFORMANS RAPORU
+
+Son 24s Elite: {total}
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}
+Stop: {stop}
+Acik: {open_count}
+
+Basari: %{success:.1f}
+Ort. Max: %{avg_max:.2f}
+Ort. DD: %{avg_dd:.2f}
+
+En iyi mod:
+{best_item(by_module)}
+
+En zayif mod:
+{weak_item(by_module)}
+
+En iyi kombinasyon:
+{best_item(by_combo)}
+
+Not:
+Bu rapor PIE kayitlarina gore uretilir. Veri arttikca Radar IQ daha guvenilir olur.
+""".strip()
+
+
+def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
+    if not PIE_ENABLED or not PIE_DAILY_REPORT_ENABLED:
+        return
+    now = datetime.utcnow()
+    if now.hour < PIE_DAILY_REPORT_HOUR_UTC:
+        return
+    today_key = now.strftime("%Y-%m-%d")
+    try:
+        if os.path.exists(PIE_DAILY_REPORT_STATE_FILE):
+            with open(PIE_DAILY_REPORT_STATE_FILE, "r", encoding="utf-8") as f:
+                if f.read().strip() == today_key:
+                    return
+    except Exception:
+        pass
+
+    records = pie_load_records()
+    send_telegram(pie_daily_report_text(records, market_name), chat_id)
+    try:
+        with open(PIE_DAILY_REPORT_STATE_FILE, "w", encoding="utf-8") as f:
+            f.write(today_key)
+    except Exception as e:
+        print("PIE daily state hata:", e, flush=True)
+
+
+
+def pie_signal_history_text(d, support_modules=None, market_name="BOT"):
+    """
+    V50/V40 RADAR IQ:
+    Mevcut Gold/Elite sinyaline benzeyen gecmis PIE kayitlarini ozetler.
+    Veri azsa net karar vermez; sadece veri birikiyor mesajı verir.
+    """
+    if not PIE_ENABLED:
+        return "📚 PIE ANALIZI\nPIE kapali."
+
+    support_modules = support_modules or []
+    current_mods = set([str(d.get("module", "UNKNOWN"))] + [str(x) for x in support_modules if x])
+    records = pie_load_records()
+    closed = [r for r in records if r.get("status") not in ("OPEN", "TP1", "TP2")]
+    if not closed:
+        return "📚 PIE ANALIZI\nHenuz kapanmis yeterli sinyal yok. Veri toplanıyor."
+
+    # Once ayni mod + en az 1 ortak radar, yoksa sadece ayni mod uzerinden bak.
+    similar = []
+    module_only = []
+    for r in closed:
+        r_mods = set([str(r.get("module", "UNKNOWN"))] + [str(x) for x in r.get("support_modules", []) if x])
+        if r.get("module") == d.get("module"):
+            module_only.append(r)
+        if r_mods & current_mods and r.get("module") == d.get("module"):
+            similar.append(r)
+
+    sample = similar if len(similar) >= 5 else module_only
+    if len(sample) < 5:
+        return f"📚 PIE ANALIZI\nBenzer veri az: {len(sample)} kayit. Istatistik icin veri birikiyor."
+
+    n = len(sample)
+    tp1 = sum(1 for r in sample if r.get("tp1_hit") or r.get("status") in ("TP1", "TP2", "TP3"))
+    tp2 = sum(1 for r in sample if r.get("tp2_hit") or r.get("status") in ("TP2", "TP3"))
+    tp3 = sum(1 for r in sample if r.get("tp3_hit") or r.get("status") == "TP3")
+    stop = sum(1 for r in sample if pie_is_stop(r))
+    avg_max = sum(float(r.get("max_gain_pct", 0) or 0) for r in sample) / n
+    avg_dd = sum(float(r.get("max_dd_pct", 0) or 0) for r in sample) / n
+    combo = " + ".join(sorted(current_mods))
+    return f"""📚 PIE ANALIZI / RADAR IQ
+Radar: {combo}
+Benzer Kayit: {n}
+TP1: %{(tp1/n*100):.1f} | TP2: %{(tp2/n*100):.1f} | TP3: %{(tp3/n*100):.1f}
+Stop: %{(stop/n*100):.1f}
+Ort. Max: %{avg_max:.2f} | Ort. DD: %{avg_dd:.2f}""".strip()
+
+def explain_reject_summary(symbol, rs, funding_status, flags, money_state_present=False, extra=None):
+    if not EXPLAIN_REJECTS:
+        return
+    try:
+        if float(rs or 0) < EXPLAIN_REJECT_MIN_RS and not money_state_present:
+            return
+    except Exception:
+        pass
+
+    true_flags = [k for k, v in flags.items() if bool(v)]
+    false_flags = [k for k, v in flags.items() if not bool(v)]
+    main_reason = "Radar kosullari henuz olusmadi"
+    if float(rs or 0) < EXPLAIN_REJECT_MIN_RS:
+        main_reason = f"RS dusuk ({float(rs or 0):.1f} < {EXPLAIN_REJECT_MIN_RS:.0f})"
+    elif money_state_present and not true_flags:
+        main_reason = "Para hafizasi var ama onay radarlari eksik"
+    elif true_flags:
+        main_reason = "Aday izleri var ama Elite/Hazirlik kapisi tamamlanmadi"
+
+    shown_false = ", ".join(false_flags[:EXPLAIN_REJECT_MAX_LINES])
+    shown_true = ", ".join(true_flags[:EXPLAIN_REJECT_MAX_LINES]) if true_flags else "YOK"
+    msg = (
+        f"RED OZET: {symbol} | RS {float(rs or 0):.1f} | Funding {funding_status} | "
+        f"Aktif: {shown_true} | Eksik: {shown_false} | Sebep: {main_reason}"
+    )
+    if extra:
+        msg += " | " + str(extra)
+    print(msg, flush=True)
+
 
 COOLDOWN_EARLY = 180 * 60
 EARLY_MAX_PER_SYMBOL_PER_DAY = 1
@@ -5519,6 +5731,7 @@ def format_elite_signal(symbol, d, elite_score, support_modules=None):
     positives_text = "\n".join([f"✔ {x}" for x in positives[:4]])
     negatives_text = "\n".join([f"❌ {x}" for x in negatives[:4]])
     risk_reason_text = ", ".join(risk_reasons[:3]) if risk_reasons else "Belirgin ana risk yok"
+    pie_history_text = pie_signal_history_text(d, support_modules, "BINANCE")
 
     return f"""
 {title}
@@ -5538,6 +5751,8 @@ Karar: AL
 Elite Skoru: {elite_score}/100
 🧠 Elite Guven: {int(d.get('elite_confidence_score', 50) or 50)}/100 - {d.get('elite_confidence_label', 'YOK')}
 Radar: {radar_count} | Kombinasyon: {combo_score}
+
+{pie_history_text}
 
 🎯 Giris: {levels['entry']:.8f}
 🛑 Stop: {levels['stop']:.8f}
@@ -5616,7 +5831,7 @@ def mark_elite_sent_today(symbol):
     elite_daily_counter[key] = elite_daily_counter.get(key, 0) + 1
 
 def send_elite_signal(symbol, best, support):
-    if not ELITE_CHAT_ID:
+    if not BINANCE_ELITE_GOLD_CHAT_ID:
         return False
 
     # V19: Elite karari verilmeden once destek/direnc baglamini ekle.
@@ -5686,7 +5901,7 @@ def send_elite_signal(symbol, best, support):
 
     # V38: Gold ve Elite AL kanallari ayrildi.
     # Gold sinyali ayri kanala gider; normal Elite AL eski Elite kanalinda kalir.
-    target_chat_id = BINANCE_ELITE_GOLD_CHAT_ID if elite_gold else ELITE_CHAT_ID
+    target_chat_id = BINANCE_ELITE_GOLD_CHAT_ID if elite_gold else BINANCE_ELITE_GOLD_CHAT_ID
     send_telegram(format_elite_signal(symbol, best, elite_score, support), target_chat_id)
     mark_elite_sent_today(symbol)
     print("ELITE GOLD SEND:" if elite_gold else "ELITE AL SEND:", symbol, best.get("module"), "EliteScore:", elite_score, "Chat:", target_chat_id, flush=True)
@@ -5854,24 +6069,30 @@ def analyze(item, btc_ok, btc_status):
             sent = send_selected_signal(symbol, signals, funding, btc_status)
             if sent:
                 return
+            explain_reject_summary(
+                symbol, rs, funding["status"],
+                {"SelectedSignal": True, "EliteOrGoldGate": False},
+                money_state_present=(symbol in money_state),
+                extra="Sinyal olustu ama kanal/Elite kapisi gecilmedi"
+            )
 
         else:
-            print(
-                symbol,
-                "RS:", round(rs, 1),
-                "Funding:", funding["status"],
-                "Early:", early_ok,
-                "Money:", money_ok,
-                "Momentum:", momentum_ok,
-                "Safe:", safe_ok,
-                "Dip:", dip_ok,
-                "Sweep:", sweep_ok,
-                "PreRocket:", pre_rocket_ok,
-                "Trend:", trend_ok,
-                "History:", history_ok,
-                "MoneyState:", "VAR" if symbol in money_state else "YOK",
-                "IC FILTRE",
-                flush=True
+            explain_reject_summary(
+                symbol, rs, funding["status"],
+                {
+                    "Early": early_ok,
+                    "Money": money_ok,
+                    "Momentum": momentum_ok,
+                    "Safe": safe_ok,
+                    "Dip": dip_ok,
+                    "Sweep": sweep_ok,
+                    "FastSweep": fast_sweep_ok,
+                    "PreRocket": pre_rocket_ok,
+                    "Trend": trend_ok,
+                    "History": history_ok,
+                },
+                money_state_present=(symbol in money_state),
+                extra="IC FILTRE"
             )
 
     except Exception as e:
@@ -5892,7 +6113,8 @@ def run_bot():
             cleanup_radar_history()
             cleanup_money_memory()
             cleanup_main_signal_memory()
-            pie_update_open_signals(ELITE_CHAT_ID)
+            pie_update_open_signals(BINANCE_ELITE_GOLD_CHAT_ID)
+            pie_daily_report_if_due(BINANCE_ELITE_GOLD_CHAT_ID, "BINANCE")
 
             universe = build_universe()
             print("Taranacak coin:", len(universe), "MoneyState:", len(money_state), flush=True)
@@ -5912,7 +6134,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES V37 + PIE Aktif", 200
+    return "BINANCE FUTURES V39 + PIE RAPOR Aktif", 200
 
 
 if __name__ == "__main__":
