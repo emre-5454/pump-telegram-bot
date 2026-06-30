@@ -20,7 +20,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
 MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V49"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V50"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -34,6 +34,10 @@ PIE_DATA_FILE = os.getenv("PIE_DATA_FILE", "/tmp/mexc_pie_signals.json")
 PIE_MAX_TRACK_HOURS = float(os.getenv("PIE_MAX_TRACK_HOURS", "48"))
 PIE_UPDATE_COOLDOWN_SECONDS = 10 * 60
 
+# V50 IKI KANAL + PROFESYONEL GOLD + PIE RADAR IQ:
+# Eski MEXC_ELITE_CHAT_ID tamamen kaldirildi.
+# Hazirlik MEXC_ELITE_PREP_CHAT_ID, final AL/Gold MEXC_ELITE_GOLD_CHAT_ID kanalina gider.
+#
 # V49/V39 PIE RAPOR + RED ACIKLAMA KATMANI:
 # Günlük performans raporu ve "neden sinyal gelmedi?" sorusuna log cevabı verir.
 PIE_DAILY_REPORT_ENABLED = os.getenv("PIE_DAILY_REPORT_ENABLED", "1") == "1"
@@ -166,6 +170,52 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
     except Exception as e:
         print("PIE daily state hata:", e, flush=True)
 
+
+
+def pie_signal_history_text(d, support_modules=None, market_name="BOT"):
+    """
+    V50/V40 RADAR IQ:
+    Mevcut Gold/Elite sinyaline benzeyen gecmis PIE kayitlarini ozetler.
+    Veri azsa net karar vermez; sadece veri birikiyor mesajı verir.
+    """
+    if not PIE_ENABLED:
+        return "📚 PIE ANALIZI\nPIE kapali."
+
+    support_modules = support_modules or []
+    current_mods = set([str(d.get("module", "UNKNOWN"))] + [str(x) for x in support_modules if x])
+    records = pie_load_records()
+    closed = [r for r in records if r.get("status") not in ("OPEN", "TP1", "TP2")]
+    if not closed:
+        return "📚 PIE ANALIZI\nHenuz kapanmis yeterli sinyal yok. Veri toplanıyor."
+
+    # Once ayni mod + en az 1 ortak radar, yoksa sadece ayni mod uzerinden bak.
+    similar = []
+    module_only = []
+    for r in closed:
+        r_mods = set([str(r.get("module", "UNKNOWN"))] + [str(x) for x in r.get("support_modules", []) if x])
+        if r.get("module") == d.get("module"):
+            module_only.append(r)
+        if r_mods & current_mods and r.get("module") == d.get("module"):
+            similar.append(r)
+
+    sample = similar if len(similar) >= 5 else module_only
+    if len(sample) < 5:
+        return f"📚 PIE ANALIZI\nBenzer veri az: {len(sample)} kayit. Istatistik icin veri birikiyor."
+
+    n = len(sample)
+    tp1 = sum(1 for r in sample if r.get("tp1_hit") or r.get("status") in ("TP1", "TP2", "TP3"))
+    tp2 = sum(1 for r in sample if r.get("tp2_hit") or r.get("status") in ("TP2", "TP3"))
+    tp3 = sum(1 for r in sample if r.get("tp3_hit") or r.get("status") == "TP3")
+    stop = sum(1 for r in sample if pie_is_stop(r))
+    avg_max = sum(float(r.get("max_gain_pct", 0) or 0) for r in sample) / n
+    avg_dd = sum(float(r.get("max_dd_pct", 0) or 0) for r in sample) / n
+    combo = " + ".join(sorted(current_mods))
+    return f"""📚 PIE ANALIZI / RADAR IQ
+Radar: {combo}
+Benzer Kayit: {n}
+TP1: %{(tp1/n*100):.1f} | TP2: %{(tp2/n*100):.1f} | TP3: %{(tp3/n*100):.1f}
+Stop: %{(stop/n*100):.1f}
+Ort. Max: %{avg_max:.2f} | Ort. DD: %{avg_dd:.2f}""".strip()
 
 def explain_reject_summary(symbol, rs, funding_status, flags, money_state_present=False, extra=None):
     if not EXPLAIN_REJECTS:
@@ -5612,12 +5662,13 @@ Devam Potansiyeli: VAR
         risk_status = "ORTA"
         result = "NORMAL AL"
 
-    title = "🔥 MEXC ELITE GOLD AL ONAY" if elite_gold else "🚀 MEXC ELITE AL ONAY"
+    title = "🥇 MEXC ELITE GOLD AL ONAY" if elite_gold else "🥇 MEXC ELITE GOLD - DIKKATLI AL"
     coin_line = f"🔥 {bold_text(symbol.replace(':USDT',''))} 🔥"
 
     positives_text = "\n".join([f"✔ {x}" for x in positives[:4]])
     negatives_text = "\n".join([f"❌ {x}" for x in negatives[:4]])
     risk_reason_text = ", ".join(risk_reasons[:3]) if risk_reasons else "Belirgin ana risk yok"
+    pie_history_text = pie_signal_history_text(d, support_modules, "MEXC")
 
     return f"""
 {title}
@@ -5637,6 +5688,8 @@ Karar: AL
 Elite Skoru: {elite_score}/100
 🧠 Elite Guven: {int(d.get('elite_confidence_score', 50) or 50)}/100 - {d.get('elite_confidence_label', 'YOK')}
 Radar: {radar_count} | Kombinasyon: {radar_points}
+
+{pie_history_text}
 
 🎯 Giris: {entry:.8f}
 🛑 Stop: {stop:.8f}
@@ -5691,7 +5744,7 @@ Sonuc:
 
 
 def send_mexc_elite_signal(symbol, best, support, btc_status=""):
-    if not MEXC_ELITE_CHAT_ID:
+    if not MEXC_ELITE_GOLD_CHAT_ID:
         return False
 
     # V26: Elite kapısından hemen önce canlı momentum/red flag kontrolü.
@@ -5763,13 +5816,12 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
 
     pie_record_elite_signal(symbol, best, support, elite_score, pie_build_mexc_levels(best), market="MEXC")
 
-    # V48: Gold ve Elite AL artik ayri kanallara gider.
-    # Gold kosulu dogruysa yeni MEXC_ELITE_GOLD_CHAT_ID kullanilir;
-    # degilse klasik MEXC_ELITE_CHAT_ID yani Elite AL kanalina gider.
+    # V50: MEXC iki kanalli yapi. Eski Elite AL kanali kaldirildi.
+    # Elite kapisini gecen tum final AL/Gold mesajlari MEXC_ELITE_GOLD_CHAT_ID kanalina gider.
     elite_gold = mexc_elite_gold_signal(best, support)
-    target_chat_id = MEXC_ELITE_GOLD_CHAT_ID if elite_gold else MEXC_ELITE_CHAT_ID
+    target_chat_id = MEXC_ELITE_GOLD_CHAT_ID
     send_telegram(format_mexc_elite_signal(symbol, best, elite_score, support), target_chat_id)
-    print("MEXC ELITE SEND:", symbol, best.get("module"), "Gold:" if elite_gold else "Elite:", target_chat_id, "EliteScore:", elite_score, flush=True)
+    print("MEXC GOLD SEND:", symbol, best.get("module"), "Gold:" if elite_gold else "DikkatliGold:", target_chat_id, "EliteScore:", elite_score, flush=True)
     return True
 
 
@@ -6748,7 +6800,7 @@ def analyze(item, btc_ok, btc_status):
 
 
 def run_bot():
-    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif. Hazirlik: {MEXC_ELITE_PREP_CHAT_ID} | Gold: {MEXC_ELITE_GOLD_CHAT_ID} | Elite: {MEXC_ELITE_CHAT_ID}")
+    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif. Hazirlik: {MEXC_ELITE_PREP_CHAT_ID} | Gold: {MEXC_ELITE_GOLD_CHAT_ID}")
     print(BOT_NAME, "BASLADI", flush=True)
     while True:
         try:
@@ -6760,8 +6812,8 @@ def run_bot():
             cleanup_radar_history()
             cleanup_money_memory()
             cleanup_main_signal_memory()
-            pie_update_open_signals(MEXC_ELITE_CHAT_ID)
-            pie_daily_report_if_due(MEXC_ELITE_CHAT_ID, "MEXC")
+            pie_update_open_signals(MEXC_ELITE_GOLD_CHAT_ID)
+            pie_daily_report_if_due(MEXC_ELITE_GOLD_CHAT_ID, "MEXC")
             universe = build_universe()
             print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), "MainSignalMemory:", len(main_signal_memory), flush=True)
             for item in universe:
@@ -6777,7 +6829,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V49 + PIE RAPOR Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V50 + IKI KANAL + PROFESYONEL GOLD Aktif", 200
 
 
 if __name__ == "__main__":
