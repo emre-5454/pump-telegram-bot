@@ -26,7 +26,7 @@ CHAT_ID = "7553607277"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V46"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V47"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -60,12 +60,112 @@ EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
 EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
 EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
 
+
+# V47 RADAR SAGLIK RAPORU:
+# Sadece gelen sinyalleri degil, her turda hangi radar denendi/gecmedi onu da kaydeder.
+# Boylece 0 sinyal veren radarlarin cok siki mi yoksa piyasa kosuluna uygun degil mi oldugu gorulur.
+RADAR_HEALTH_ENABLED = os.getenv("RADAR_HEALTH_ENABLED", "1") == "1"
+RADAR_HEALTH_FILE = os.getenv("RADAR_HEALTH_FILE", PIE_DATA_FILE + ".radar_health")
+RADAR_HEALTH_WARN_ZERO_ATTEMPTS = int(os.getenv("RADAR_HEALTH_WARN_ZERO_ATTEMPTS", "80"))
+RADAR_HEALTH_WARN_LOW_PASS_PCT = float(os.getenv("RADAR_HEALTH_WARN_LOW_PASS_PCT", "0.20"))
+
+
 # V46 FULL TRACKING / ANA KANAL + HAZIRLIK + GOLD KAYIT SISTEMI
 FULL_TRACKING_ENABLED = os.getenv("FULL_TRACKING_ENABLED", "1") == "1"
 FULL_TRACKING_DATA_FILE = os.getenv("FULL_TRACKING_DATA_FILE", "/tmp/binance_full_tracking.json")
 FULL_TRACKING_MAX_RECORDS = int(os.getenv("FULL_TRACKING_MAX_RECORDS", "1500"))
 FULL_TRACKING_UPDATE_COOLDOWN_SECONDS = int(os.getenv("FULL_TRACKING_UPDATE_COOLDOWN_SECONDS", "600"))
 FULL_TRACKING_MISSED_GAIN_PCT = float(os.getenv("FULL_TRACKING_MISSED_GAIN_PCT", "10"))
+
+
+
+def radar_health_today_key():
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def radar_health_empty(today=None):
+    return {"date": today or radar_health_today_key(), "radars": {}, "updated_ts": time.time()}
+
+
+def radar_health_load():
+    if not RADAR_HEALTH_ENABLED:
+        return radar_health_empty()
+    today = radar_health_today_key()
+    try:
+        if os.path.exists(RADAR_HEALTH_FILE):
+            with open(RADAR_HEALTH_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data.get("date") == today:
+                data.setdefault("radars", {})
+                return data
+    except Exception as e:
+        print("Radar health load hata:", e, flush=True)
+    return radar_health_empty(today)
+
+
+def radar_health_save(data):
+    if not RADAR_HEALTH_ENABLED:
+        return
+    try:
+        data["updated_ts"] = time.time()
+        tmp = RADAR_HEALTH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, RADAR_HEALTH_FILE)
+    except Exception as e:
+        print("Radar health save hata:", e, flush=True)
+
+
+def radar_health_record(flags):
+    """
+    flags = {"RadarName": True/False}
+    Her analyze cagrisi bir denemedir. True ise radar o coinde gecti demektir.
+    """
+    if not RADAR_HEALTH_ENABLED or not flags:
+        return
+    data = radar_health_load()
+    radars = data.setdefault("radars", {})
+    for name, ok in flags.items():
+        if not name:
+            continue
+        st = radars.setdefault(str(name), {"attempts": 0, "passed": 0})
+        st["attempts"] = int(st.get("attempts", 0)) + 1
+        if bool(ok):
+            st["passed"] = int(st.get("passed", 0)) + 1
+    radar_health_save(data)
+
+
+def radar_health_report_text(market_name="BOT"):
+    if not RADAR_HEALTH_ENABLED:
+        return ""
+    data = radar_health_load()
+    radars = data.get("radars", {}) or {}
+    if not radars:
+        return "\n\n📡 RADAR SAGLIK RAPORU\nBugun radar deneme kaydi yok."
+
+    lines = ["", "📡 RADAR SAGLIK RAPORU"]
+    items = sorted(radars.items(), key=lambda kv: (kv[1].get("passed", 0), kv[0]))
+    zero_list = []
+    for name, st in items:
+        attempts = int(st.get("attempts", 0) or 0)
+        passed = int(st.get("passed", 0) or 0)
+        pct = (passed / attempts * 100) if attempts else 0
+        if attempts >= RADAR_HEALTH_WARN_ZERO_ATTEMPTS and passed == 0:
+            durum = "0 sinyal / cok siki olabilir"
+            zero_list.append(name)
+        elif attempts >= RADAR_HEALTH_WARN_ZERO_ATTEMPTS and pct <= RADAR_HEALTH_WARN_LOW_PASS_PCT:
+            durum = "cok az geciyor"
+        elif passed > 0:
+            durum = "aktif"
+        else:
+            durum = "veri birikiyor"
+        lines.append(f"{name}: Deneme {attempts} | Gecen {passed} | %{pct:.2f} | {durum}")
+
+    if zero_list:
+        lines.append("")
+        lines.append("0 sinyal veren radarlar: " + ", ".join(zero_list[:8]))
+        lines.append("Not: Bu her zaman hata degildir; piyasa o radara uygun olmayabilir veya esik fazla siki olabilir.")
+    return "\n" + "\n".join(lines)
 
 
 def pie_combo_key(rec):
@@ -88,7 +188,7 @@ def pie_daily_report_text(records, market_name="BOT"):
     day_ago = now_ts - 24 * 60 * 60
     recent = [r for r in records if float(r.get("created_ts", 0) or 0) >= day_ago]
     if not recent:
-        return f"📊 {market_name} GUNLUK PERFORMANS\n\nSon 24 saatte kayitli Elite sinyali yok."
+        return f"📊 {market_name} GUNLUK PERFORMANS\n\nSon 24 saatte kayitli Elite sinyali yok." + radar_health_report_text(market_name)
 
     total = len(recent)
     tp1 = sum(1 for r in recent if r.get("tp1_hit") or r.get("status") in ("TP1", "TP2", "TP3"))
@@ -164,7 +264,7 @@ En iyi kombinasyon:
 
 Not:
 Bu rapor PIE kayitlarina gore uretilir. Veri arttikca Radar IQ daha guvenilir olur.
-""".strip()
+""".strip() + radar_health_report_text(market_name)
 
 
 def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
@@ -6492,6 +6592,20 @@ def analyze(item, btc_ok, btc_status):
             signals.append(trend_data)
         if history_ok:
             signals.append(history_data)
+
+        radar_health_record({
+            "Early": early_ok,
+            "Money": money_ok,
+            "Momentum": momentum_ok,
+            "Safe": safe_ok,
+            "Dip": dip_ok,
+            "Sweep": sweep_ok,
+            "FastSweep": fast_sweep_ok,
+            "PreRocket": pre_rocket_ok,
+            "PreBreakout": pre_breakout_ok,
+            "Trend": trend_ok,
+            "History": history_ok,
+        })
 
         if signals:
             sent = send_selected_signal(symbol, signals, funding, btc_status)
