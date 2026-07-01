@@ -32,7 +32,7 @@ BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-100437
 BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
 BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V53"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V54"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -440,6 +440,29 @@ def ft_load_records():
     except Exception as e:
         print("FULL TRACK load hata:", e, flush=True)
         return []
+
+
+
+def ft_has_recent_records(hours=24):
+    """Full Tracking kayitlarinda son X saat icinde veri var mi?
+    Bos rapor spamini engellemek icin kullanilir.
+    """
+    if not FULL_TRACKING_ENABLED:
+        return False
+    try:
+        records = ft_load_records()
+        if not records:
+            return False
+        now_ts = time.time()
+        limit_ts = now_ts - float(hours) * 3600
+        for r in records:
+            ts = float(r.get("created_ts", 0) or r.get("last_update_ts", 0) or 0)
+            if ts >= limit_ts:
+                return True
+        return False
+    except Exception as e:
+        print("FULL TRACK recent kontrol hata:", e, flush=True)
+        return False
 
 def ft_save_records(records):
     if not FULL_TRACKING_ENABLED:
