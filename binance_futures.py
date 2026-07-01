@@ -32,7 +32,7 @@ BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-100437
 BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
 BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V54"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V55"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -128,6 +128,22 @@ def radar_health_load():
     except Exception as e:
         print("Radar health load hata:", e, flush=True)
     return radar_health_empty(today)
+
+
+def radar_health_has_today_data():
+    if not RADAR_HEALTH_ENABLED:
+        return False
+    try:
+        data = radar_health_load()
+        radars = data.get("radars", {}) if isinstance(data, dict) else {}
+        if not radars:
+            return False
+        for st in radars.values():
+            if int(st.get("checked", 0) or 0) > 0 or int(st.get("passed", 0) or 0) > 0:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def radar_health_save(data):
