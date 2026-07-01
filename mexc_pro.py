@@ -20,7 +20,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
 MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V50"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V52"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -34,7 +34,7 @@ PIE_DATA_FILE = os.getenv("PIE_DATA_FILE", "/tmp/mexc_pie_signals.json")
 PIE_MAX_TRACK_HOURS = float(os.getenv("PIE_MAX_TRACK_HOURS", "48"))
 PIE_UPDATE_COOLDOWN_SECONDS = 10 * 60
 
-# V50 IKI KANAL + PROFESYONEL GOLD + PIE RADAR IQ:
+# V51 IKI KANAL + PROFESYONEL GOLD + PIE RADAR IQ:
 # Eski MEXC_ELITE_CHAT_ID tamamen kaldirildi.
 # Hazirlik MEXC_ELITE_PREP_CHAT_ID, final AL/Gold MEXC_ELITE_GOLD_CHAT_ID kanalina gider.
 #
@@ -174,7 +174,7 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
 
 def pie_signal_history_text(d, support_modules=None, market_name="BOT"):
     """
-    V50/V40 RADAR IQ:
+    V51/V40 RADAR IQ:
     Mevcut Gold/Elite sinyaline benzeyen gecmis PIE kayitlarini ozetler.
     Veri azsa net karar vermez; sadece veri birikiyor mesajı verir.
     """
@@ -275,6 +275,7 @@ COOLDOWN_ROCKET_RADAR = 90 * 60
 COOLDOWN_EARLY_REVERSAL = 90 * 60
 COOLDOWN_ELITE_HAZIRLIK = 45 * 60
 COOLDOWN_PRE_ROCKET_WATCH = 45 * 60
+COOLDOWN_PRE_BREAKOUT_WATCH = 75 * 60
 
 WATCH_EXPIRE_SECONDS = 45 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
@@ -353,6 +354,16 @@ MAIN_SIGNAL_DEDUP_SECONDS = 10 * 60
 MAIN_SIGNAL_BONUS_60M_3 = 8
 MAIN_SIGNAL_BONUS_120M_5 = 12
 MAIN_SIGNAL_BONUS_120M_8 = 18
+
+# V51 TREND DEVAM GUVENI:
+# BEAT/DYDX gibi TREND_BUILDUP ana kanala tekrar tekrar dusup yurumeye devam ederse
+# bu tekrarlar Elite Hazirlik/Gold puanina kontrollu bonus olarak yansir.
+TREND_CONT_MIN_REPEAT_60M = int(os.getenv("TREND_CONT_MIN_REPEAT_60M", "2"))
+TREND_CONT_MIN_REPEAT_120M = int(os.getenv("TREND_CONT_MIN_REPEAT_120M", "3"))
+TREND_CONT_MAX_GAIN = float(os.getenv("TREND_CONT_MAX_GAIN", "22"))
+TREND_CONT_MIN_SCORE = int(os.getenv("TREND_CONT_MIN_SCORE", "45"))
+TREND_CONT_BONUS_MID = int(os.getenv("TREND_CONT_BONUS_MID", "10"))
+TREND_CONT_BONUS_STRONG = int(os.getenv("TREND_CONT_BONUS_STRONG", "18"))
 
 # V31 MEMORY RE-ENTRY / SECOND WAVE FIX:
 # BLESS / LUMIA / BTW tipi: coin once ana kanalda gorunur, hafizada para birikir,
@@ -511,6 +522,7 @@ sent_rocket_radar = {}
 sent_early_reversal = {}
 sent_elite_hazirlik = {}
 sent_pre_rocket_watch = {}
+sent_pre_breakout_watch = {}
 watchlist = {}
 money_state = {}
 radar_history = {}
@@ -1957,6 +1969,110 @@ def soft_wakeup_signal(symbol, rs):
 
 
 
+
+
+def pre_breakout_watch_signal(symbol, rs):
+    """
+    V52 PRE BREAKOUT WATCH / ERKEN KIRILIM:
+    NFP tipi dipten sonra BB orta bant/EMA geri alinirken, hacim patlamadan once uyarir.
+    AL degildir; ana kanal erken takip mesajidir.
+    """
+    df15 = fetch_df(symbol, "15m", 140)
+    df1h = fetch_df(symbol, "1h", 100)
+    if df15 is None or df1h is None or len(df15) < 60:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    p15 = df15.iloc[-2]
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+    price = float(m15.close)
+
+    low_24h = df15["low"].tail(96).min()
+    high_24h = df15["high"].tail(96).max()
+    dist_from_low = ((price - low_24h) / low_24h * 100) if low_24h > 0 else 999
+    pullback_from_high = ((high_24h - price) / high_24h * 100) if high_24h > 0 else 999
+    gains = recent_price_gains(df15, price)
+    price_gain_15m = gains.get("price_gain_15m", 0)
+    price_gain_30m = gains.get("price_gain_30m", 0)
+
+    vol_ratio_15m = (m15.volume / m15.vol_avg) if m15.vol_avg > 0 else 0
+    last4_vol = df15["volume"].tail(4).mean()
+    prev12_vol = df15["volume"].iloc[-16:-4].mean()
+    vol_ratio = (last4_vol / prev12_vol) if prev12_vol > 0 else vol_ratio_15m
+    usdt_vol = df15["volume"].tail(4).sum() * price
+    avg_usdt = df15["vol_avg"].tail(4).sum() * price if df15["vol_avg"].tail(4).sum() > 0 else 0
+    money_impact = (usdt_vol / avg_usdt) if avg_usdt > 0 else 0
+    volume_power = money_impact * max(vol_ratio, vol_ratio_15m)
+
+    ema_reclaim = (m15.close > m15.ema21 and p15.close <= p15.ema21) or (m15.close > m15.ema9 and m15.ema9 >= m15.ema21 * 0.985)
+    bb_mid_reclaim = m15.close > m15.bb_middle and p15.close <= p15.bb_middle
+    macd_improving = m15.macd > df15["macd"].iloc[-4] or h1.macd > h1_prev.macd
+    macd_cross_near = m15.macd > m15.macd_signal or abs(m15.macd - m15.macd_signal) <= max(abs(m15.macd), 1e-12) * 0.60
+    obv_turn = df15["obv"].iloc[-1] > df15["obv"].iloc[-8]
+    bb_ready = m15.bb_width <= df15["bb_width"].tail(40).quantile(0.70) or m15.bb_width < 0.11
+    green_body = m15.close > m15.open and m15.body_ratio >= 0.38
+
+    if not (42 <= m15.rsi <= 70):
+        return False, None
+    if price_gain_15m > 6.0 or price_gain_30m > 10.5:
+        return False, None
+    if dist_from_low > 24 or pullback_from_high < 1.0:
+        return False, None
+
+    score = 0
+    reasons = []
+    if rs >= 70:
+        score += 2; reasons.append("RS guclu")
+    if ema_reclaim:
+        score += 3; reasons.append("EMA geri aliniyor")
+    if bb_mid_reclaim:
+        score += 3; reasons.append("BB orta bant geri alindi")
+    if macd_improving:
+        score += 2; reasons.append("MACD erken toparlaniyor")
+    if macd_cross_near:
+        score += 1; reasons.append("MACD kesisime yakin")
+    if obv_turn:
+        score += 2; reasons.append("OBV donus basladi")
+    if vol_ratio >= 1.15 or vol_ratio_15m >= 1.20:
+        score += 2; reasons.append("Hacim uyanmaya basladi")
+    if money_impact >= 1.10:
+        score += 2; reasons.append("Para etkisi erken pozitif")
+    if bb_ready:
+        score += 1; reasons.append("Bollinger henuz cok genislememis")
+    if green_body:
+        score += 1; reasons.append("Yesil kirilim mumu")
+    if 2 <= dist_from_low <= 18:
+        score += 1; reasons.append("Dipten kopus erken bolge")
+
+    valid = score >= 10 and (ema_reclaim or bb_mid_reclaim) and macd_improving and (obv_turn or money_impact >= 1.20 or vol_ratio >= 1.35)
+    if not valid:
+        return False, None
+
+    return True, {
+        "module": "PRE_BREAKOUT_WATCH",
+        "priority": 29,
+        "score": score,
+        "rs": rs,
+        "price": price,
+        "vol_ratio": max(vol_ratio, vol_ratio_15m),
+        "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
+        "rsi": m15.rsi,
+        "dist_from_low": dist_from_low,
+        "pullback_from_high": pullback_from_high,
+        "price_gain_15m": price_gain_15m,
+        "price_gain_30m": price_gain_30m,
+        "ema_reclaim": ema_reclaim,
+        "bb_mid_reclaim": bb_mid_reclaim,
+        "macd_turn": macd_improving,
+        "macd_cross_near": macd_cross_near,
+        "obv_up": obv_turn,
+        "bb_width": m15.bb_width,
+        "bb_ready": bb_ready,
+        "reasons": reasons,
+    }
 
 def early_reversal_signal(symbol, rs):
     """
@@ -3409,7 +3525,7 @@ def watch_confirm(symbol, d):
 def format_signal(symbol, d, funding, btc_status, support_modules=None):
     support_modules = support_modules or []
     module = d.get("module", "UNKNOWN")
-    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "DIP_SWEEP":"DIP SWEEP", "ELITE_WHALE":"ELITE BALINA IGNESI", "STRONG_WICK":"DIP SWEEP", "REVERSAL":"REVERSAL WATCH", "SQUEEZE":"SQUEEZE BREAKOUT", "EARLY":"EARLY RADAR", "EARLY_CONFIRM":"ERKEN AL ONAY", "TREND_BUILDUP":"SESSIZ TREND BUILDUP", "ROCKET":"ROCKET RADAR", "ELITE_HAZIRLIK":"ELITE HAZIRLIK", "PRE_ROCKET_WATCH":"PRE ROCKET WATCH"}
+    title_map = {"SAFE":"SAFE LONG", "MOMENTUM":"MOMENTUM CONTINUE", "MONEY":"MONEY CONTINUE", "WATCH":"WATCH CONFIRM", "DIP":"BIG DIP RADAR", "DIP_REACTION":"15M DIP REACTION", "DIP_SWEEP":"DIP SWEEP", "ELITE_WHALE":"ELITE BALINA IGNESI", "STRONG_WICK":"DIP SWEEP", "REVERSAL":"REVERSAL WATCH", "SQUEEZE":"SQUEEZE BREAKOUT", "EARLY":"EARLY RADAR", "EARLY_CONFIRM":"ERKEN AL ONAY", "TREND_BUILDUP":"SESSIZ TREND BUILDUP", "ROCKET":"ROCKET RADAR", "ELITE_HAZIRLIK":"ELITE HAZIRLIK", "PRE_ROCKET_WATCH":"PRE ROCKET WATCH", "PRE_BREAKOUT_WATCH":"PRE BREAKOUT WATCH"}
     title = title_map.get(module, module)
     reasons = d.get("reasons") or d.get("continue_reasons") or d.get("momentum_reasons") or d.get("confirm_reasons") or d.get("watch_reasons") or []
     support_text = ", ".join(support_modules) if support_modules else "YOK"
@@ -3490,6 +3606,18 @@ Market Etki Skoru: {d.get('market_impact_score',0)}/100
 OBV Giris: {'VAR' if d.get('obv_up') else 'YOK'}
 MACD Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
 """
+    elif module == "PRE_BREAKOUT_WATCH":
+        extra = f"""
+15m Degisim: %{d.get('price_gain_15m',0):.2f}
+30m Degisim: %{d.get('price_gain_30m',0):.2f}
+24s Dip Mesafesi: %{d.get('dist_from_low',0):.2f}
+Tepeden Uzaklik: %{d.get('pullback_from_high',0):.2f}
+EMA Reclaim: {'VAR' if d.get('ema_reclaim') else 'YOK'}
+BB Orta Bant Reclaim: {'VAR' if d.get('bb_mid_reclaim') else 'YOK'}
+MACD Erken Donus: {'VAR' if d.get('macd_turn') else 'YOK'}
+OBV Donus: {'VAR' if d.get('obv_up') else 'YOK'}
+BB Width: {d.get('bb_width',0):.4f}
+"""
     elif module == "HISTORY_BUILDUP":
         extra = f"""
 Radar Hafiza Puani: {d.get('history_points',0)}
@@ -3544,6 +3672,9 @@ Higher High: {d.get('higher_high_count',0)}
 EMA21 Ustu Mum: {d.get('close_above_ema21_count',0)}/12
 OBV Birikim: {'VAR' if d.get('obv_up') else 'YOK'}
 MACD Toparlanma: {'VAR' if d.get('macd_turn') else 'YOK'}
+Trend Devam Guveni: {d.get('trend_continuation_score', 0)}/100
+Ana Trend Tekrar: {d.get('trend_signal_count_60m', 0)}x/60dk | {d.get('trend_signal_count_120m', 0)}x/120dk
+Trend Bonus: {d.get('trend_continuation_bonus', 0)}
 """
     elif module in ("ELITE_HAZIRLIK", "PRE_ROCKET_WATCH"):
         extra = f"""
@@ -3930,6 +4061,10 @@ def record_main_signal_memory(symbol, signals):
                     "volume_power": max(e.get("volume_power", 0), d.get("volume_power", 0)),
                     "market_impact_pct": max(e.get("market_impact_pct", 0), d.get("market_impact_pct", 0)),
                     "rsi": d.get("rsi", e.get("rsi", 0)),
+                    "higher_low_count": max(e.get("higher_low_count", 0), d.get("higher_low_count", 0)),
+                    "higher_high_count": max(e.get("higher_high_count", 0), d.get("higher_high_count", 0)),
+                    "obv_up": bool(e.get("obv_up") or d.get("obv_up")),
+                    "macd_turn": bool(e.get("macd_turn") or d.get("macd_turn")),
                 })
                 duplicate = True
                 break
@@ -3945,6 +4080,10 @@ def record_main_signal_memory(symbol, signals):
             "volume_power": d.get("volume_power", 0),
             "market_impact_pct": d.get("market_impact_pct", 0),
             "rsi": d.get("rsi", d.get("rsi15", 0)),
+            "higher_low_count": d.get("higher_low_count", 0),
+            "higher_high_count": d.get("higher_high_count", 0),
+            "obv_up": bool(d.get("obv_up")),
+            "macd_turn": bool(d.get("macd_turn")),
         })
 
     cleanup_main_signal_memory()
@@ -3966,6 +4105,13 @@ def main_signal_summary(symbol):
             "main_signal_money_max": 0,
             "main_signal_power_max": 0,
             "main_signal_market_max": 0,
+            "trend_signal_count_60m": 0,
+            "trend_signal_count_120m": 0,
+            "trend_signal_gain": 0,
+            "trend_continuation_score": 0,
+            "trend_continuation_bonus": 0,
+            "trend_continuation_ok": False,
+            "trend_continuation_text": "YOK",
         }
 
     now = time.time()
@@ -3993,6 +4139,31 @@ def main_signal_summary(symbol):
     last_price = next((e.get("price", 0) for e in reversed(events_120) if e.get("price", 0) > 0), 0)
     price_gain = ((last_price - first_price) / first_price * 100) if first_price and last_price else 0
 
+    trend60 = [e for e in events_60 if e.get("module") == "TREND_BUILDUP"]
+    trend120 = [e for e in events_120 if e.get("module") == "TREND_BUILDUP"]
+    trend_first = next((e.get("price", 0) for e in trend120 if e.get("price", 0) > 0), 0)
+    trend_last = next((e.get("price", 0) for e in reversed(trend120) if e.get("price", 0) > 0), trend_first)
+    trend_gain = ((trend_last - trend_first) / trend_first * 100) if trend_first > 0 else 0
+    trend_score = 0
+    if len(trend60) >= TREND_CONT_MIN_REPEAT_60M:
+        trend_score += 24
+    if len(trend120) >= TREND_CONT_MIN_REPEAT_120M:
+        trend_score += 24
+    if 1.0 <= trend_gain <= TREND_CONT_MAX_GAIN:
+        trend_score += 12
+    elif trend_gain > TREND_CONT_MAX_GAIN:
+        trend_score -= 12
+    trend_score += min(max((max([e.get("higher_low_count", 0) for e in trend120] or [0]) - 2) * 4, 0), 12)
+    trend_score += min(max((max([e.get("higher_high_count", 0) for e in trend120] or [0]) - 1) * 4, 0), 12)
+    if any(e.get("obv_up") for e in trend120):
+        trend_score += 6
+    if any(e.get("macd_turn") for e in trend120):
+        trend_score += 6
+    trend_score = int(max(0, min(100, trend_score)))
+    trend_bonus = TREND_CONT_BONUS_STRONG if trend_score >= 70 else (TREND_CONT_BONUS_MID if trend_score >= TREND_CONT_MIN_SCORE else 0)
+    trend_ok = bool(len(trend60) >= TREND_CONT_MIN_REPEAT_60M and trend_score >= TREND_CONT_MIN_SCORE)
+    trend_text = f"Trend tekrar {len(trend60)}/60dk {len(trend120)}/120dk | Guven {trend_score}/100 | Gain %{trend_gain:.2f}"
+
     return {
         "main_signal_count_60m": count_60,
         "main_signal_count_120m": count_120,
@@ -4005,6 +4176,13 @@ def main_signal_summary(symbol):
         "main_signal_money_max": max([e.get("money_impact", 0) for e in events_120] or [0]),
         "main_signal_power_max": max([e.get("volume_power", 0) for e in events_120] or [0]),
         "main_signal_market_max": max([e.get("market_impact_pct", 0) for e in events_120] or [0]),
+        "trend_signal_count_60m": len(trend60),
+        "trend_signal_count_120m": len(trend120),
+        "trend_signal_gain": trend_gain,
+        "trend_continuation_score": trend_score,
+        "trend_continuation_bonus": trend_bonus,
+        "trend_continuation_ok": trend_ok,
+        "trend_continuation_text": trend_text,
     }
 
 
@@ -4050,6 +4228,10 @@ def record_radar_history(symbol, signals):
                     "volume_power": max(e.get("volume_power", 0), d.get("volume_power", 0)),
                     "market_impact_pct": max(e.get("market_impact_pct", 0), d.get("market_impact_pct", 0)),
                     "rsi": d.get("rsi", e.get("rsi", 0)),
+                    "higher_low_count": max(e.get("higher_low_count", 0), d.get("higher_low_count", 0)),
+                    "higher_high_count": max(e.get("higher_high_count", 0), d.get("higher_high_count", 0)),
+                    "obv_up": bool(e.get("obv_up") or d.get("obv_up")),
+                    "macd_turn": bool(e.get("macd_turn") or d.get("macd_turn")),
                 })
                 duplicate = True
                 break
@@ -5816,7 +5998,7 @@ def send_mexc_elite_signal(symbol, best, support, btc_status=""):
 
     pie_record_elite_signal(symbol, best, support, elite_score, pie_build_mexc_levels(best), market="MEXC")
 
-    # V50: MEXC iki kanalli yapi. Eski Elite AL kanali kaldirildi.
+    # V51: MEXC iki kanalli yapi. Eski Elite AL kanali kaldirildi.
     # Elite kapisini gecen tum final AL/Gold mesajlari MEXC_ELITE_GOLD_CHAT_ID kanalina gider.
     elite_gold = mexc_elite_gold_signal(best, support)
     target_chat_id = MEXC_ELITE_GOLD_CHAT_ID
@@ -6015,9 +6197,14 @@ def entry_quality_score(d, support_modules=None, btc_status=""):
     dist = d.get("dist_from_low", 999)
     price_gain = d.get("price_gain_from_first", 0)
     fomo = fomo_gain_pct(d)
-    fomo_exempt = module == "V_DIP_RECOVERY" or d.get("fomo_exempt", False)
+    fomo_exempt = module == "V_DIP_RECOVERY" or d.get("fomo_exempt", False) or bool(d.get("trend_continuation_ok"))
 
     score += radar_support_score(module, support_modules)
+
+    if d.get("trend_continuation_ok"):
+        score += int(d.get("trend_continuation_bonus", 0) or 0)
+        if module == "TREND_BUILDUP":
+            score += 6
 
     if base_score >= 14:
         score += 10
@@ -6612,6 +6799,10 @@ def select_best_signal(signals):
 def send_selected_signal(symbol, signals, funding, btc_status):
     if not signals:
         return False
+    # V51: Ana kanal tekrar hafizasi secimden once sinyallere islenir.
+    record_main_signal_memory(symbol, signals)
+    for _sig in signals:
+        attach_main_signal_summary(symbol, _sig)
     best = select_best_signal(signals)
     support = [s["module"] for s in signals if s["module"] != best["module"]]
     cooldown_map = {"ELITE_HAZIRLIK":(sent_elite_hazirlik, COOLDOWN_ELITE_HAZIRLIK), "PRE_ROCKET_WATCH":(sent_pre_rocket_watch, COOLDOWN_PRE_ROCKET_WATCH), "EARLY_CONFIRM":(sent_early_confirm, COOLDOWN_EARLY_CONFIRM), "TREND_BUILDUP":(sent_trend_buildup, COOLDOWN_TREND_BUILDUP), "V_DIP_RECOVERY":(sent_v_dip_recovery, COOLDOWN_V_DIP_RECOVERY), "HISTORY_BUILDUP":(sent_radar_history, COOLDOWN_RADAR_HISTORY), "SQUEEZE_EXPLOSION":(sent_squeeze_explosion, COOLDOWN_SQUEEZE_EXPLOSION), "ROCKET":(sent_rocket_radar, COOLDOWN_ROCKET_RADAR), "SAFE":(sent_safe, COOLDOWN_SAFE), "MOMENTUM":(sent_momentum_continue, COOLDOWN_MOMENTUM_CONTINUE), "MONEY":(sent_money_continue, COOLDOWN_MONEY_CONTINUE), "WATCH":(sent_watch_confirm, COOLDOWN_WATCH_CONFIRM), "DIP":(sent_dip, COOLDOWN_DIP), "DIP_REACTION":(sent_dip_reaction, COOLDOWN_DIP_REACTION), "DIP_SWEEP":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "ELITE_WHALE":(sent_elite_whale, MEXC_ELITE_COOLDOWN), "STRONG_WICK":(sent_strong_wick_watch, COOLDOWN_STRONG_WICK_WATCH), "REVERSAL":(sent_reversal_watch, COOLDOWN_REVERSAL_WATCH), "SQUEEZE":(sent_squeeze_breakout, COOLDOWN_SQUEEZE_BREAKOUT), "EARLY":(sent_early, COOLDOWN_EARLY)}
@@ -6662,6 +6853,7 @@ def analyze(item, btc_ok, btc_status):
         wakeup_ok, wakeup_data = soft_wakeup_signal(symbol, rs)
         elite_prep_ok, elite_prep_data = elite_hazirlik_signal(symbol, rs)
         pre_rocket_watch_ok, pre_rocket_watch_data = pre_rocket_watch_signal(symbol, rs)
+        pre_breakout_ok, pre_breakout_data = pre_breakout_watch_signal(symbol, rs)
         early_ok, early_data = early_radar(symbol, rs)
         early_confirm_ok, early_confirm_data = early_entry_confirm_signal(symbol, early_data)
         money_ok, money_data = money_continue_signal(symbol, early_data)
@@ -6680,7 +6872,7 @@ def analyze(item, btc_ok, btc_status):
         trend_ok, trend_data = trend_buildup_signal(symbol, rs)
         vdip_ok, vdip_data = v_dip_recovery_signal(symbol, rs)
         # Coinin kendi 24s hacmine gore para etkisini tum radar verilerine ekle.
-        for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, squeeze_explosion_data, early_reversal_data, rocket_data, trend_data, vdip_data, wakeup_data, elite_prep_data, pre_rocket_watch_data]:
+        for _d in [early_data, early_confirm_data, money_data, momentum_data, watch_data, safe_data, dip_data, reaction_data, strong_wick_data, elite_whale_data, reversal_data, squeeze_data, squeeze_explosion_data, early_reversal_data, rocket_data, trend_data, vdip_data, wakeup_data, elite_prep_data, pre_rocket_watch_data, pre_breakout_data]:
             enrich_market_impact(_d, daily_qv)
 
         # ROCKET icin coin hacmine gore etki zorunlu. Hacim patlasa bile coin hacmine gore zayifsa alma.
@@ -6693,6 +6885,7 @@ def analyze(item, btc_ok, btc_status):
             (wakeup_ok, wakeup_data),
             (elite_prep_ok, elite_prep_data),
             (pre_rocket_watch_ok, pre_rocket_watch_data),
+            (pre_breakout_ok, pre_breakout_data),
             (early_ok, early_data),
             (early_confirm_ok, early_confirm_data),
             (money_ok, money_data),
@@ -6717,6 +6910,7 @@ def analyze(item, btc_ok, btc_status):
 
         if elite_prep_ok: signals.append(elite_prep_data)
         if pre_rocket_watch_ok: signals.append(pre_rocket_watch_data)
+        if pre_breakout_ok: signals.append(pre_breakout_data)
         if early_ok: signals.append(early_data)
         if early_confirm_ok: signals.append(early_confirm_data)
         if money_ok: signals.append(money_data)
@@ -6829,7 +7023,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V50 + IKI KANAL + PROFESYONEL GOLD Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V51 + IKI KANAL + PROFESYONEL GOLD Aktif", 200
 
 
 if __name__ == "__main__":
