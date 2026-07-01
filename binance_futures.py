@@ -26,12 +26,12 @@ CHAT_ID = "7553607277"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V42"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V44"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
 
-# V42 BINANCE ANA KANAL GEVSETME:
+# V43 BINANCE ANA KANAL GEVSETME:
 # Binance tarafinda ana radara az sinyal dustugu icin sadece ana radar/adayi gevsetildi.
 # Elite Hazirlik ve Gold kapilari yine kendi sert kalite filtrelerinden gecmeye devam eder.
 BINANCE_MAIN_RELAX_ENABLED = os.getenv("BINANCE_MAIN_RELAX_ENABLED", "1") == "1"
@@ -271,6 +271,7 @@ COOLDOWN_MOMENTUM_CONTINUE = 150 * 60
 COOLDOWN_TREND_BUILDUP = 150 * 60
 COOLDOWN_HISTORY_BUILDUP = 150 * 60
 COOLDOWN_PRE_ROCKET_SQUEEZE = 90 * 60
+COOLDOWN_PRE_BREAKOUT_WATCH = 75 * 60
 MONEY_STATE_EXPIRE_SECONDS = 120 * 60
 
 # MEXC V18'den tasinan hafiza katmani
@@ -307,6 +308,17 @@ MAIN_SIGNAL_DEDUP_SECONDS = 10 * 60
 MAIN_SIGNAL_BONUS_60M_3 = 8
 MAIN_SIGNAL_BONUS_120M_5 = 12
 MAIN_SIGNAL_BONUS_120M_8 = 18
+
+# V43 TREND DEVAM GUVENI:
+# BEAT/DYDX gibi sessiz trend sinyalleri ana kanala 2-3 kez dusup yurumeye devam ederse
+# bu tekrarlar sadece spam sayilmaz; Elite Hazirlik/Gold puanina kontrollu bonus olarak yansir.
+TREND_CONT_MIN_REPEAT_60M = int(os.getenv("TREND_CONT_MIN_REPEAT_60M", "2"))
+TREND_CONT_MIN_REPEAT_120M = int(os.getenv("TREND_CONT_MIN_REPEAT_120M", "3"))
+TREND_CONT_MAX_GAIN = float(os.getenv("TREND_CONT_MAX_GAIN", "22"))
+TREND_CONT_MIN_SCORE = int(os.getenv("TREND_CONT_MIN_SCORE", "45"))
+TREND_CONT_BONUS_MID = int(os.getenv("TREND_CONT_BONUS_MID", "10"))
+TREND_CONT_BONUS_STRONG = int(os.getenv("TREND_CONT_BONUS_STRONG", "18"))
+
 MEMORY_REENTRY_MIN_HISTORY = 24
 MEMORY_REENTRY_MIN_MONEY = 1.80
 MEMORY_REENTRY_MIN_POWER = 3.00
@@ -486,6 +498,7 @@ sent_momentum_continue = {}
 sent_trend_buildup = {}
 sent_history_buildup = {}
 sent_pre_rocket_squeeze = {}
+sent_pre_breakout_watch = {}
 money_state = {}
 radar_history = {}
 money_memory = {}
@@ -2184,6 +2197,10 @@ def record_main_signal_memory(symbol, signals):
                     "money_impact": max(e.get("money_impact", 0), d.get("money_impact", 0)),
                     "volume_power": max(e.get("volume_power", 0), d.get("volume_power", 0)),
                     "market_impact_pct": max(e.get("market_impact_pct", 0), d.get("market_impact_pct", 0)),
+                    "higher_low_count": max(e.get("higher_low_count", 0), d.get("higher_low_count", 0)),
+                    "higher_high_count": max(e.get("higher_high_count", 0), d.get("higher_high_count", 0)),
+                    "obv_up": bool(e.get("obv_up") or d.get("obv_up")),
+                    "macd_turn": bool(e.get("macd_turn") or d.get("macd_turn")),
                 })
                 duplicate = True
                 break
@@ -2197,6 +2214,10 @@ def record_main_signal_memory(symbol, signals):
             "money_impact": d.get("money_impact", 0),
             "volume_power": d.get("volume_power", 0),
             "market_impact_pct": d.get("market_impact_pct", 0),
+            "higher_low_count": d.get("higher_low_count", 0),
+            "higher_high_count": d.get("higher_high_count", 0),
+            "obv_up": bool(d.get("obv_up")),
+            "macd_turn": bool(d.get("macd_turn")),
         })
     cleanup_main_signal_memory()
 
@@ -2214,6 +2235,13 @@ def main_signal_memory_summary(symbol):
             "main_signal_first_price": 0,
             "main_signal_gain": 0,
             "main_signal_bonus": 0,
+            "trend_signal_count_60m": 0,
+            "trend_signal_count_120m": 0,
+            "trend_signal_gain": 0,
+            "trend_continuation_score": 0,
+            "trend_continuation_bonus": 0,
+            "trend_continuation_ok": False,
+            "trend_continuation_text": "YOK",
         }
     e60 = [e for e in events if now - e.get("time", 0) <= 60 * 60]
     e120 = [e for e in events if now - e.get("time", 0) <= 120 * 60]
@@ -2232,6 +2260,32 @@ def main_signal_memory_summary(symbol):
         bonus += MAIN_SIGNAL_BONUS_120M_5
     if len(e120) >= 8:
         bonus += MAIN_SIGNAL_BONUS_120M_8
+
+    trend60 = [e for e in e60 if e.get("module") == "TREND_BUILDUP"]
+    trend120 = [e for e in e120 if e.get("module") == "TREND_BUILDUP"]
+    trend_first = next((e.get("price", 0) for e in trend120 if e.get("price", 0) > 0), 0)
+    trend_last = next((e.get("price", 0) for e in reversed(trend120) if e.get("price", 0) > 0), trend_first)
+    trend_gain = ((trend_last - trend_first) / trend_first * 100) if trend_first > 0 else 0
+    trend_score = 0
+    if len(trend60) >= TREND_CONT_MIN_REPEAT_60M:
+        trend_score += 24
+    if len(trend120) >= TREND_CONT_MIN_REPEAT_120M:
+        trend_score += 24
+    if 1.0 <= trend_gain <= TREND_CONT_MAX_GAIN:
+        trend_score += 12
+    elif trend_gain > TREND_CONT_MAX_GAIN:
+        trend_score -= 12
+    trend_score += min(max((max([e.get("higher_low_count", 0) for e in trend120] or [0]) - 2) * 4, 0), 12)
+    trend_score += min(max((max([e.get("higher_high_count", 0) for e in trend120] or [0]) - 1) * 4, 0), 12)
+    if any(e.get("obv_up") for e in trend120):
+        trend_score += 6
+    if any(e.get("macd_turn") for e in trend120):
+        trend_score += 6
+    trend_score = int(max(0, min(100, trend_score)))
+    trend_bonus = TREND_CONT_BONUS_STRONG if trend_score >= 70 else (TREND_CONT_BONUS_MID if trend_score >= TREND_CONT_MIN_SCORE else 0)
+    trend_ok = bool(len(trend60) >= TREND_CONT_MIN_REPEAT_60M and trend_score >= TREND_CONT_MIN_SCORE)
+    trend_text = f"Trend tekrar {len(trend60)}/60dk {len(trend120)}/120dk | Guven {trend_score}/100 | Gain %{trend_gain:.2f}"
+
     return {
         "main_signal_count_60m": len(e60),
         "main_signal_count_120m": len(e120),
@@ -2240,6 +2294,13 @@ def main_signal_memory_summary(symbol):
         "main_signal_first_price": first_price,
         "main_signal_gain": gain,
         "main_signal_bonus": bonus,
+        "trend_signal_count_60m": len(trend60),
+        "trend_signal_count_120m": len(trend120),
+        "trend_signal_gain": trend_gain,
+        "trend_continuation_score": trend_score,
+        "trend_continuation_bonus": trend_bonus,
+        "trend_continuation_ok": trend_ok,
+        "trend_continuation_text": trend_text,
     }
 
 
@@ -2415,6 +2476,112 @@ def trend_buildup_signal(symbol, rs):
         "reasons": reasons,
     }
 
+
+
+def pre_breakout_watch_signal(symbol, rs):
+    """
+    V44 PRE BREAKOUT WATCH / ERKEN KIRILIM:
+    NFP tipi dipten toparlanip henuz dikey mum gelmeden, BB orta bant/EMA geri alinirken
+    OBV-MACD-hacim uyanisini yakalar. AL degildir; ana kanal erken takip mesajidir.
+    """
+    df15 = fetch_df(symbol, "15m", 140)
+    df1h = fetch_df(symbol, "1h", 100)
+    if df15 is None or df1h is None or len(df15) < 60:
+        return False, None
+
+    m15 = df15.iloc[-1]
+    p15 = df15.iloc[-2]
+    h1 = df1h.iloc[-1]
+    h1_prev = df1h.iloc[-2]
+    price = float(m15.close)
+
+    low_24h = df15["low"].tail(96).min()
+    high_24h = df15["high"].tail(96).max()
+    dist_from_low = ((price - low_24h) / low_24h * 100) if low_24h > 0 else 999
+    pullback_from_high = ((high_24h - price) / high_24h * 100) if high_24h > 0 else 999
+
+    gains = recent_price_gains(df15, price)
+    price_gain_15m = gains.get("price_gain_15m", 0)
+    price_gain_30m = gains.get("price_gain_30m", 0)
+
+    vol_ratio_15m = (m15.volume / m15.vol_avg) if m15.vol_avg > 0 else 0
+    last4_vol = df15["volume"].tail(4).mean()
+    prev12_vol = df15["volume"].iloc[-16:-4].mean()
+    vol_ratio = (last4_vol / prev12_vol) if prev12_vol > 0 else vol_ratio_15m
+    usdt_vol = df15["volume"].tail(4).sum() * price
+    avg_usdt = df15["vol_avg"].tail(4).sum() * price if df15["vol_avg"].tail(4).sum() > 0 else 0
+    money_impact = (usdt_vol / avg_usdt) if avg_usdt > 0 else 0
+    volume_power = money_impact * max(vol_ratio, vol_ratio_15m)
+
+    ema_reclaim = (m15.close > m15.ema21 and p15.close <= p15.ema21) or (m15.close > m15.ema9 and m15.ema9 >= m15.ema21 * 0.985)
+    bb_mid_reclaim = m15.close > m15.bb_middle and p15.close <= p15.bb_middle
+    macd_improving = m15.macd > df15["macd"].iloc[-4] or h1.macd > h1_prev.macd
+    macd_cross_near = m15.macd > m15.macd_signal or abs(m15.macd - m15.macd_signal) <= max(abs(m15.macd), 1e-12) * 0.60
+    obv_turn = df15["obv"].iloc[-1] > df15["obv"].iloc[-8]
+    bb_ready = m15.bb_width <= df15["bb_width"].tail(40).quantile(0.70) or m15.bb_width < 0.11
+    green_body = m15.close > m15.open and m15.body_ratio >= 0.38
+
+    # Geç kalmış pump'u değil, erken kırılımı yakala.
+    if not (42 <= m15.rsi <= 70):
+        return False, None
+    if price_gain_15m > 6.0 or price_gain_30m > 10.5:
+        return False, None
+    if dist_from_low > 24 or pullback_from_high < 1.0:
+        return False, None
+
+    score = 0
+    reasons = []
+    if rs >= 70:
+        score += 2; reasons.append("RS guclu")
+    if ema_reclaim:
+        score += 3; reasons.append("EMA geri aliniyor")
+    if bb_mid_reclaim:
+        score += 3; reasons.append("BB orta bant geri alindi")
+    if macd_improving:
+        score += 2; reasons.append("MACD erken toparlaniyor")
+    if macd_cross_near:
+        score += 1; reasons.append("MACD kesisime yakin")
+    if obv_turn:
+        score += 2; reasons.append("OBV donus basladi")
+    if vol_ratio >= 1.15 or vol_ratio_15m >= 1.20:
+        score += 2; reasons.append("Hacim uyanmaya basladi")
+    if money_impact >= 1.10:
+        score += 2; reasons.append("Para etkisi erken pozitif")
+    if bb_ready:
+        score += 1; reasons.append("Bollinger henuz cok genislememis")
+    if green_body:
+        score += 1; reasons.append("Yesil kirilim mumu")
+    if 2 <= dist_from_low <= 18:
+        score += 1; reasons.append("Dipten kopus erken bolge")
+
+    valid = score >= 10 and (ema_reclaim or bb_mid_reclaim) and macd_improving and (obv_turn or money_impact >= 1.20 or vol_ratio >= 1.35)
+    if not valid:
+        return False, None
+
+    return True, {
+        "module": "PRE_BREAKOUT_WATCH",
+        "priority": 27,
+        "score": score,
+        "rs": rs,
+        "price": price,
+        "vol_ratio": max(vol_ratio, vol_ratio_15m),
+        "usdt_vol": usdt_vol,
+        "money_impact": money_impact,
+        "volume_power": volume_power,
+        "rsi": m15.rsi,
+        "dist_from_low": dist_from_low,
+        "pullback_from_high": pullback_from_high,
+        "price_gain_15m": price_gain_15m,
+        "price_gain_30m": price_gain_30m,
+        "ema_reclaim": ema_reclaim,
+        "bb_mid_reclaim": bb_mid_reclaim,
+        "macd_turn": macd_improving,
+        "macd_cross_near": macd_cross_near,
+        "obv_up": obv_turn,
+        "bb_width": m15.bb_width,
+        "bb_ready": bb_ready,
+        "reasons": reasons,
+    }
 
 def build_history_signal(symbol, rs, latest_signals=None):
     latest_signals = latest_signals or []
@@ -3780,8 +3947,26 @@ Alt Fitil: %{d.get('lower_wick', 0) * 100:.1f}
 Mum Toparlanma: %{d.get('recovery_ratio', 0) * 100:.1f}
 OBV Donus: {"VAR" if d.get("obv_up") else "YOK"}
 MACD Toparlanma: {"VAR" if d.get("macd_turn") else "YOK"}
+Trend Devam Guveni: {d.get('trend_continuation_score', 0)}/100
+Ana Trend Tekrar: {d.get('trend_signal_count_60m', 0)}x/60dk | {d.get('trend_signal_count_120m', 0)}x/120dk
+Trend Bonus: {d.get('trend_continuation_bonus', 0)}
 """
         decision = "15m alt Bollinger igne + bant icine donus. Direkt long degil; 5m/15m retest takip."
+
+    elif module == "PRE_BREAKOUT_WATCH":
+        title = "PRE BREAKOUT WATCH"
+        body = f"""
+15m Degisim: %{d.get('price_gain_15m', 0):.2f}
+30m Degisim: %{d.get('price_gain_30m', 0):.2f}
+24s Dip Mesafesi: %{d.get('dist_from_low', 0):.2f}
+Tepeden Uzaklik: %{d.get('pullback_from_high', 0):.2f}
+EMA Reclaim: {"VAR" if d.get("ema_reclaim") else "YOK"}
+BB Orta Bant Reclaim: {"VAR" if d.get("bb_mid_reclaim") else "YOK"}
+MACD Erken Donus: {"VAR" if d.get("macd_turn") else "YOK"}
+OBV Donus: {"VAR" if d.get("obv_up") else "YOK"}
+BB Width: {d.get('bb_width', 0):.4f}
+"""
+        decision = "Erken kirilim radari. AL degildir; momentum patlamadan once takip icin atilir."
 
     elif module == "TREND_BUILDUP":
         title = "SESSIZ TREND BUILDUP"
@@ -4432,8 +4617,9 @@ def elite_score_signal(d, support_modules=None):
     repeat_force_ok = bool(d.get("repeat_force"))
     history_force_ok = bool(d.get("history_force"))
     main_repeat_ok = bool(d.get("main_repeat_buildup"))
+    trend_continuation_ok = bool(d.get("trend_continuation_ok"))
     money_memory_ok = bool(d.get("money_memory_bonus"))
-    fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok or main_repeat_ok or money_memory_ok) and d.get("money_gain_from_first", 0) <= 12
+    fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok or main_repeat_ok or trend_continuation_ok or money_memory_ok) and d.get("money_gain_from_first", 0) <= 12
     momentum_reload_ok = (
         module == "MOMENTUM"
         and ("MONEY_ACCEL" in support_modules or "MONEY" in support_modules or second_wave_ok or memory_reentry_ok or repeat_force_ok)
@@ -4442,6 +4628,11 @@ def elite_score_signal(d, support_modules=None):
         and market_impact_pct >= RELOAD_MIN_MARKET
         and rsi_value <= 72
     )
+
+    if trend_continuation_ok:
+        score += int(d.get("trend_continuation_bonus", 0) or 0)
+        if module == "TREND_BUILDUP":
+            score += 6
 
     # OI destegi: para/hacim long tarafindan mi geliyor ayirmaya calisir.
     if d.get("oi_strong_long_supported"):
@@ -4804,13 +4995,14 @@ def is_elite_al_candidate(best, support_modules=None):
     memory_reentry_ok = bool(best.get("memory_reentry"))
     second_wave_ok = bool(best.get("second_wave_bonus"))
     main_repeat_ok = bool(best.get("main_repeat_buildup"))
+    trend_continuation_ok = bool(best.get("trend_continuation_ok"))
     repeat_force_ok = bool(best.get("repeat_force"))
     history_force_ok = bool(best.get("history_force"))
     effective_money = max(best.get("money_impact", 0), best.get("effective_money_impact", 0))
     effective_power = max(best.get("volume_power", 0), best.get("effective_volume_power", 0))
     effective_market = max(best.get("market_impact_pct", 0), best.get("effective_market_impact_pct", 0))
 
-    fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok) and best.get("money_gain_from_first", 0) <= 12
+    fomo_exception = (memory_reentry_ok or second_wave_ok or repeat_force_ok or history_force_ok or trend_continuation_ok) and best.get("money_gain_from_first", 0) <= 12
     if is_fomo_block(best) and not fomo_exception:
         return False, "FOMO_BLOCK"
 
@@ -4894,18 +5086,18 @@ def is_elite_al_candidate(best, support_modules=None):
             return False, "MOMENTUM_AL_DEGIL"
 
     if effective_money < 1.45 or effective_power < 2.8:
-        if not (money_memory_ok or history_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or repeat_force_ok or history_force_ok or module == "TREND_BUILDUP"):
+        if not (money_memory_ok or history_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or trend_continuation_ok or repeat_force_ok or history_force_ok or module == "TREND_BUILDUP"):
             return False, "PARA_ZAYIF"
 
     if not market_impact_ok(best):
         market_memory_exception = (
-            money_memory_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or repeat_force_ok or history_force_ok
+            money_memory_ok or memory_reentry_ok or second_wave_ok or main_repeat_ok or trend_continuation_ok or repeat_force_ok or history_force_ok
         ) and (best.get("money_market_60m", 0) >= 0.25 or effective_market >= 0.25 or best.get("money_mem_60m", 0) >= 250_000)
         if not market_memory_exception:
             return False, "MARKET_ETKI_ZAYIF"
 
     rsi_value = best.get("rsi", best.get("rsi15", 0))
-    if rsi_value > 72 and not (module == "PRE_ROCKET_SQUEEZE" and rsi_value <= PRE_ROCKET_MAX_RSI):
+    if rsi_value > 72 and not (module == "PRE_ROCKET_SQUEEZE" and rsi_value <= PRE_ROCKET_MAX_RSI) and not (trend_continuation_ok and rsi_value <= 76):
         return False, "RSI_YUKSEK"
 
     # OI kontrolu: Veri varsa ve hareket short kapama gibi duruyorsa,
@@ -4993,6 +5185,7 @@ def is_elite_al_candidate(best, support_modules=None):
     if module == "TREND_BUILDUP" and (
         radar_count >= 2
         or money_memory_ok
+        or trend_continuation_ok
         or (best.get("higher_low_count", 0) >= 3 and best.get("obv_up") and best.get("macd_turn"))
     ):
         return True, "SESSIZ_TREND_ONAY"
@@ -5940,6 +6133,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         "TREND_BUILDUP": (sent_trend_buildup, COOLDOWN_TREND_BUILDUP),
         "HISTORY_BUILDUP": (sent_history_buildup, COOLDOWN_HISTORY_BUILDUP),
         "PRE_ROCKET_SQUEEZE": (sent_pre_rocket_squeeze, COOLDOWN_PRE_ROCKET_SQUEEZE),
+        "PRE_BREAKOUT_WATCH": (sent_pre_breakout_watch, COOLDOWN_PRE_BREAKOUT_WATCH),
     }
 
     cache, cooldown = cooldown_map.get(best["module"], (sent_early, COOLDOWN_EARLY))
@@ -6013,6 +6207,11 @@ def analyze(item, btc_ok, btc_status):
             pre_rocket_data = attach_market_impact(pre_rocket_data, item)
             update_money_memory(symbol, pre_rocket_data)
 
+        pre_breakout_ok, pre_breakout_data = pre_breakout_watch_signal(symbol, rs)
+        if pre_breakout_data:
+            pre_breakout_data = attach_market_impact(pre_breakout_data, item)
+            update_money_memory(symbol, pre_breakout_data)
+
         trend_ok, trend_data = trend_buildup_signal(symbol, rs)
         if trend_data:
             trend_data = attach_market_impact(trend_data, item)
@@ -6028,6 +6227,7 @@ def analyze(item, btc_ok, btc_status):
             (sweep_ok, sweep_data),
             (fast_sweep_ok, fast_sweep_data),
             (pre_rocket_ok, pre_rocket_data),
+            (pre_breakout_ok, pre_breakout_data),
             (trend_ok, trend_data),
         ]:
             if ok_flag and data:
@@ -6046,7 +6246,7 @@ def analyze(item, btc_ok, btc_status):
             oi_price_gain = oi_ref.get("price_gain_from_first", oi_ref.get("price_gain_15m", 0.0))
         oi_context = get_oi_context(symbol, oi_price_gain)
         taker_context = get_taker_flow_context(symbol)
-        for _sig in [early_data, money_data, momentum_data, safe_data, dip_data, sweep_data, fast_sweep_data, pre_rocket_data, trend_data, history_data]:
+        for _sig in [early_data, money_data, momentum_data, safe_data, dip_data, sweep_data, fast_sweep_data, pre_rocket_data, pre_breakout_data, trend_data, history_data]:
             attach_oi_context(_sig, oi_context)
             attach_taker_flow_context(_sig, taker_context)
             attach_cvd_context(symbol, _sig)
@@ -6067,6 +6267,8 @@ def analyze(item, btc_ok, btc_status):
             signals.append(fast_sweep_data)
         if pre_rocket_ok:
             signals.append(pre_rocket_data)
+        if pre_breakout_ok:
+            signals.append(pre_breakout_data)
         if trend_ok:
             signals.append(trend_data)
         if history_ok:
@@ -6095,6 +6297,7 @@ def analyze(item, btc_ok, btc_status):
                     "Sweep": sweep_ok,
                     "FastSweep": fast_sweep_ok,
                     "PreRocket": pre_rocket_ok,
+                    "PreBreakout": pre_breakout_ok,
                     "Trend": trend_ok,
                     "History": history_ok,
                 },
