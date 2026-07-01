@@ -26,7 +26,13 @@ CHAT_ID = "7553607277"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V51"
+# V52 AYRI RAPOR / LOG KANALLARI:
+# Performance Center: Gunluk/haftalik/aylik rapor, radar saglik, full tracking, kacan firsatlar.
+# Log Kanali: Bot basladi, restart, genel hata, kritik exception.
+BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
+BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
+
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V52"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -60,9 +66,12 @@ EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
 EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
 EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
 
-# V58 PERFORMANS MERKEZI:
+# V58/V52 PERFORMANS MERKEZI:
 # Tek full tracking dosyasindan 24s / 7g / 30g rapor uretir.
+# Varsayilan saat: Turkiye 09:00 = UTC 06:00. Haftalik: Pazartesi. Aylik: Ayin 1'i.
 PERFORMANCE_CENTER_ENABLED = os.getenv("PERFORMANCE_CENTER_ENABLED", "1") == "1"
+# Kanal temiz kalsin: kayit yoksa bos rapor Telegram'a gitmesin.
+PERFORMANCE_SEND_EMPTY_REPORTS = os.getenv("PERFORMANCE_SEND_EMPTY_REPORTS", "0") == "1"
 PERFORMANCE_WEEKLY_REPORT_ENABLED = os.getenv("PERFORMANCE_WEEKLY_REPORT_ENABLED", "1") == "1"
 PERFORMANCE_MONTHLY_REPORT_ENABLED = os.getenv("PERFORMANCE_MONTHLY_REPORT_ENABLED", "1") == "1"
 PERFORMANCE_REPORT_HOUR_UTC = int(os.getenv("PERFORMANCE_REPORT_HOUR_UTC", str(PIE_DAILY_REPORT_HOUR_UTC)))
@@ -302,6 +311,25 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
 
     records = pie_load_records()
     ft_update_open_records()
+
+    has_pie = any(float(r.get("created_ts", 0) or 0) >= time.time() - 24 * 60 * 60 for r in records)
+    has_full = ft_has_recent_records(1)
+    has_radar = radar_health_has_today_data()
+
+    # Kanal temiz kalsin: hic veri yoksa Telegram'a bos rapor atma, sadece state isaretle.
+    if not PERFORMANCE_SEND_EMPTY_REPORTS and not (has_pie or has_full or has_radar):
+        print(f"{market_name} daily report atlandi: kayit yok", flush=True)
+        try:
+            performance_center_reports_if_due(chat_id, market_name)
+        except Exception as e:
+            print("Performance center report hata:", e, flush=True)
+        try:
+            with open(PIE_DAILY_REPORT_STATE_FILE, "w", encoding="utf-8") as f:
+                f.write(today_key)
+        except Exception as e:
+            print("PIE daily state hata:", e, flush=True)
+        return
+
     report_text = pie_daily_report_text(records, market_name)
     try:
         report_text += "\n\n" + ft_daily_report_text(market_name)
@@ -791,13 +819,19 @@ def performance_center_reports_if_due(chat_id=None, market_name="BOT"):
     if PERFORMANCE_WEEKLY_REPORT_ENABLED and now.weekday() == PERFORMANCE_WEEKLY_DAY_UTC:
         week_key = now.strftime("%Y-W%W")
         if not already_sent(PERFORMANCE_WEEKLY_STATE_FILE, week_key):
-            send_telegram(ft_period_report_text(7, "HAFTALIK", market_name), chat_id)
+            if PERFORMANCE_SEND_EMPTY_REPORTS or ft_has_recent_records(7):
+                send_telegram(ft_period_report_text(7, "HAFTALIK", market_name), chat_id)
+            else:
+                print(f"{market_name} weekly report atlandi: kayit yok", flush=True)
             mark_sent(PERFORMANCE_WEEKLY_STATE_FILE, week_key)
 
     if PERFORMANCE_MONTHLY_REPORT_ENABLED and now.day == PERFORMANCE_MONTHLY_DAY_UTC:
         month_key = now.strftime("%Y-%m")
         if not already_sent(PERFORMANCE_MONTHLY_STATE_FILE, month_key):
-            send_telegram(ft_period_report_text(30, "AYLIK", market_name), chat_id)
+            if PERFORMANCE_SEND_EMPTY_REPORTS or ft_has_recent_records(30):
+                send_telegram(ft_period_report_text(30, "AYLIK", market_name), chat_id)
+            else:
+                print(f"{market_name} monthly report atlandi: kayit yok", flush=True)
             mark_sent(PERFORMANCE_MONTHLY_STATE_FILE, month_key)
 
 COOLDOWN_EARLY = 180 * 60
@@ -1082,6 +1116,14 @@ def send_telegram(msg, chat_id=None):
         )
     except Exception as e:
         print("Telegram hata:", e, flush=True)
+
+
+def send_log(msg):
+    """Teknik log/hata mesajlarini ayri kanala yollar."""
+    try:
+        send_telegram(msg, BINANCE_LOG_CHAT_ID)
+    except Exception as e:
+        print("Log kanal hata:", e, flush=True)
 
 
 def pie_now_iso():
@@ -6875,7 +6917,18 @@ def analyze(item, btc_ok, btc_status):
         print("Analiz hata:", symbol, e, flush=True)
 
 def run_bot():
-    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif.")
+    send_log(
+        f"🟢 {BOT_NAME} BASLADI\n"
+        f"Radar Manager aktif.\n"
+        f"Ana Kanal: {CHAT_ID}\n"
+        f"Hazirlik: {BINANCE_ELITE_PREP_CHAT_ID}\n"
+        f"Gold: {BINANCE_ELITE_GOLD_CHAT_ID}\n"
+        f"Performance: {BINANCE_PERFORMANCE_CHAT_ID}\n"
+        f"Log: {BINANCE_LOG_CHAT_ID}\n"
+        f"PIE: {PIE_DATA_FILE}\n"
+        f"FullTracking: {FULL_TRACKING_DATA_FILE}\n"
+        f"RadarHealth: {RADAR_HEALTH_FILE}"
+    )
     print(BOT_NAME, "BASLADI", flush=True)
 
     while True:
@@ -6889,9 +6942,10 @@ def run_bot():
             cleanup_radar_history()
             cleanup_money_memory()
             cleanup_main_signal_memory()
-            pie_update_open_signals(BINANCE_ELITE_GOLD_CHAT_ID)
+            pie_update_open_signals(BINANCE_PERFORMANCE_CHAT_ID)
             ft_update_open_records()
-            pie_daily_report_if_due(BINANCE_ELITE_GOLD_CHAT_ID, "BINANCE")
+            pie_daily_report_if_due(BINANCE_PERFORMANCE_CHAT_ID, "BINANCE")
+            performance_center_reports_if_due(BINANCE_PERFORMANCE_CHAT_ID, "BINANCE")
 
             universe = build_universe()
             print("Taranacak coin:", len(universe), "MoneyState:", len(money_state), flush=True)
@@ -6905,13 +6959,13 @@ def run_bot():
 
         except Exception as e:
             print("Genel hata:", e, flush=True)
-            send_telegram(f"Binance bot genel hata:\n{e}")
+            send_log(f"🔴 Binance bot genel hata:\n{e}")
             time.sleep(30)
 
 
 @app.route("/")
 def home():
-    return "BINANCE FUTURES V50 + FULL LIFE TRACKING Aktif", 200
+    return "BINANCE FUTURES V52 + AYRI PERFORMANCE/LOG KANALLARI Aktif", 200
 
 
 if __name__ == "__main__":
