@@ -20,7 +20,13 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
 MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V59"
+# V60 AYRI RAPOR / LOG KANALLARI:
+# Performance Center: Gunluk/haftalik/aylik rapor, radar saglik, full tracking, kacan firsatlar.
+# Log Kanali: Bot basladi, restart, genel hata, kritik exception.
+MEXC_PERFORMANCE_CHAT_ID = os.getenv("MEXC_PERFORMANCE_CHAT_ID") or MEXC_ELITE_GOLD_CHAT_ID
+MEXC_LOG_CHAT_ID = os.getenv("MEXC_LOG_CHAT_ID") or CHAT_ID
+
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V60"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -54,6 +60,7 @@ EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
 # V58 PERFORMANS MERKEZI:
 # Tek full tracking dosyasindan 24s / 7g / 30g rapor uretir.
 PERFORMANCE_CENTER_ENABLED = os.getenv("PERFORMANCE_CENTER_ENABLED", "1") == "1"
+PERFORMANCE_SEND_EMPTY_REPORTS = os.getenv("PERFORMANCE_SEND_EMPTY_REPORTS", "0") == "1"
 PERFORMANCE_WEEKLY_REPORT_ENABLED = os.getenv("PERFORMANCE_WEEKLY_REPORT_ENABLED", "1") == "1"
 PERFORMANCE_MONTHLY_REPORT_ENABLED = os.getenv("PERFORMANCE_MONTHLY_REPORT_ENABLED", "1") == "1"
 PERFORMANCE_REPORT_HOUR_UTC = int(os.getenv("PERFORMANCE_REPORT_HOUR_UTC", str(PIE_DAILY_REPORT_HOUR_UTC)))
@@ -293,6 +300,25 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
 
     records = pie_load_records()
     ft_update_open_records()
+
+    has_pie = any(float(r.get("created_ts", 0) or 0) >= time.time() - 24 * 60 * 60 for r in records)
+    has_full = ft_has_recent_records(1)
+    has_radar = radar_health_has_today_data()
+
+    # Kanal temiz kalsin: hic veri yoksa Telegram'a bos rapor atma, sadece state isaretle.
+    if not PERFORMANCE_SEND_EMPTY_REPORTS and not (has_pie or has_full or has_radar):
+        print(f"{market_name} daily report atlandi: kayit yok", flush=True)
+        try:
+            performance_center_reports_if_due(chat_id, market_name)
+        except Exception as e:
+            print("Performance center report hata:", e, flush=True)
+        try:
+            with open(PIE_DAILY_REPORT_STATE_FILE, "w", encoding="utf-8") as f:
+                f.write(today_key)
+        except Exception as e:
+            print("PIE daily state hata:", e, flush=True)
+        return
+
     report_text = pie_daily_report_text(records, market_name)
     try:
         report_text += "\n\n" + ft_daily_report_text(market_name)
@@ -309,85 +335,6 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
     except Exception as e:
         print("PIE daily state hata:", e, flush=True)
 
-
-
-def pie_signal_history_text(d, support_modules=None, market_name="BOT"):
-    """
-    V51/V40 RADAR IQ:
-    Mevcut Gold/Elite sinyaline benzeyen gecmis PIE kayitlarini ozetler.
-    Veri azsa net karar vermez; sadece veri birikiyor mesajı verir.
-    """
-    if not PIE_ENABLED:
-        return "📚 PIE ANALIZI\nPIE kapali."
-
-    support_modules = support_modules or []
-    current_mods = set([str(d.get("module", "UNKNOWN"))] + [str(x) for x in support_modules if x])
-    records = pie_load_records()
-    closed = [r for r in records if r.get("status") not in ("OPEN", "TP1", "TP2")]
-    if not closed:
-        return "📚 PIE ANALIZI\nHenuz kapanmis yeterli sinyal yok. Veri toplanıyor."
-
-    # Once ayni mod + en az 1 ortak radar, yoksa sadece ayni mod uzerinden bak.
-    similar = []
-    module_only = []
-    for r in closed:
-        r_mods = set([str(r.get("module", "UNKNOWN"))] + [str(x) for x in r.get("support_modules", []) if x])
-        if r.get("module") == d.get("module"):
-            module_only.append(r)
-        if r_mods & current_mods and r.get("module") == d.get("module"):
-            similar.append(r)
-
-    sample = similar if len(similar) >= 5 else module_only
-    if len(sample) < 5:
-        return f"📚 PIE ANALIZI\nBenzer veri az: {len(sample)} kayit. Istatistik icin veri birikiyor."
-
-    n = len(sample)
-    tp1 = sum(1 for r in sample if r.get("tp1_hit") or r.get("status") in ("TP1", "TP2", "TP3"))
-    tp2 = sum(1 for r in sample if r.get("tp2_hit") or r.get("status") in ("TP2", "TP3"))
-    tp3 = sum(1 for r in sample if r.get("tp3_hit") or r.get("status") == "TP3")
-    stop = sum(1 for r in sample if pie_is_stop(r))
-    avg_max = sum(float(r.get("max_gain_pct", 0) or 0) for r in sample) / n
-    avg_dd = sum(float(r.get("max_dd_pct", 0) or 0) for r in sample) / n
-    combo = " + ".join(sorted(current_mods))
-    return f"""📚 PIE ANALIZI / RADAR IQ
-Radar: {combo}
-Benzer Kayit: {n}
-TP1: %{(tp1/n*100):.1f} | TP2: %{(tp2/n*100):.1f} | TP3: %{(tp3/n*100):.1f}
-Stop: %{(stop/n*100):.1f}
-Ort. Max: %{avg_max:.2f} | Ort. DD: %{avg_dd:.2f}""".strip()
-
-def explain_reject_summary(symbol, rs, funding_status, flags, money_state_present=False, extra=None):
-    if not EXPLAIN_REJECTS:
-        return
-    try:
-        if float(rs or 0) < EXPLAIN_REJECT_MIN_RS and not money_state_present:
-            return
-    except Exception:
-        pass
-
-    true_flags = [k for k, v in flags.items() if bool(v)]
-    false_flags = [k for k, v in flags.items() if not bool(v)]
-    main_reason = "Radar kosullari henuz olusmadi"
-    if float(rs or 0) < EXPLAIN_REJECT_MIN_RS:
-        main_reason = f"RS dusuk ({float(rs or 0):.1f} < {EXPLAIN_REJECT_MIN_RS:.0f})"
-    elif money_state_present and not true_flags:
-        main_reason = "Para hafizasi var ama onay radarlari eksik"
-    elif true_flags:
-        main_reason = "Aday izleri var ama Elite/Hazirlik kapisi tamamlanmadi"
-
-    shown_false = ", ".join(false_flags[:EXPLAIN_REJECT_MAX_LINES])
-    shown_true = ", ".join(true_flags[:EXPLAIN_REJECT_MAX_LINES]) if true_flags else "YOK"
-    msg = (
-        f"RED OZET: {symbol} | RS {float(rs or 0):.1f} | Funding {funding_status} | "
-        f"Aktif: {shown_true} | Eksik: {shown_false} | Sebep: {main_reason}"
-    )
-    if extra:
-        msg += " | " + str(extra)
-    print(msg, flush=True)
-
-
-
-
 def ft_now_iso():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -403,6 +350,26 @@ def ft_load_records():
     except Exception as e:
         print("FULL TRACK load hata:", e, flush=True)
         return []
+
+
+def ft_has_recent_records(days=1):
+    """Rapor spamini engellemek icin ilgili zaman araliginda kayit var mi?"""
+    try:
+        now_ts = time.time()
+        limit = float(days) * 24 * 60 * 60
+        return any((now_ts - ft_float(r.get("created_ts"), 0)) <= limit for r in ft_load_records())
+    except Exception:
+        return False
+
+
+def radar_health_has_today_data():
+    """Bugun en az bir radar denemesi kaydi var mi?"""
+    try:
+        data = radar_health_load()
+        radars = data.get("radars", {}) or {}
+        return any(int(st.get("attempts", 0) or 0) > 0 for st in radars.values())
+    except Exception:
+        return False
 
 def ft_save_records(records):
     if not FULL_TRACKING_ENABLED:
@@ -790,13 +757,19 @@ def performance_center_reports_if_due(chat_id=None, market_name="BOT"):
     if PERFORMANCE_WEEKLY_REPORT_ENABLED and now.weekday() == PERFORMANCE_WEEKLY_DAY_UTC:
         week_key = now.strftime("%Y-W%W")
         if not already_sent(PERFORMANCE_WEEKLY_STATE_FILE, week_key):
-            send_telegram(ft_period_report_text(7, "HAFTALIK", market_name), chat_id)
+            if PERFORMANCE_SEND_EMPTY_REPORTS or ft_has_recent_records(7):
+                send_telegram(ft_period_report_text(7, "HAFTALIK", market_name), chat_id)
+            else:
+                print(f"{market_name} weekly report atlandi: kayit yok", flush=True)
             mark_sent(PERFORMANCE_WEEKLY_STATE_FILE, week_key)
 
     if PERFORMANCE_MONTHLY_REPORT_ENABLED and now.day == PERFORMANCE_MONTHLY_DAY_UTC:
         month_key = now.strftime("%Y-%m")
         if not already_sent(PERFORMANCE_MONTHLY_STATE_FILE, month_key):
-            send_telegram(ft_period_report_text(30, "AYLIK", market_name), chat_id)
+            if PERFORMANCE_SEND_EMPTY_REPORTS or ft_has_recent_records(30):
+                send_telegram(ft_period_report_text(30, "AYLIK", market_name), chat_id)
+            else:
+                print(f"{market_name} monthly report atlandi: kayit yok", flush=True)
             mark_sent(PERFORMANCE_MONTHLY_STATE_FILE, month_key)
 
 COOLDOWN_EARLY = 6 * 60 * 60
@@ -1095,6 +1068,14 @@ def send_telegram(msg, chat_id=None):
         )
     except Exception as e:
         print("Telegram hata:", e, flush=True)
+
+
+def send_log(msg):
+    """Teknik log/hata mesajlarini ayri kanala yollar."""
+    try:
+        send_telegram(msg, MEXC_LOG_CHAT_ID)
+    except Exception as e:
+        print("Log kanal hata:", e, flush=True)
 
 
 
@@ -7565,7 +7546,18 @@ def analyze(item, btc_ok, btc_status):
 
 
 def run_bot():
-    send_telegram(f"{BOT_NAME} BASLADI. Radar Manager aktif. Hazirlik: {MEXC_ELITE_PREP_CHAT_ID} | Gold: {MEXC_ELITE_GOLD_CHAT_ID} | PIE: {PIE_DATA_FILE} | RadarHealth: {RADAR_HEALTH_FILE}")
+    send_log(
+        f"🟢 {BOT_NAME} BASLADI\n"
+        f"Radar Manager aktif.\n"
+        f"Ana Kanal: {CHAT_ID}\n"
+        f"Hazirlik: {MEXC_ELITE_PREP_CHAT_ID}\n"
+        f"Gold: {MEXC_ELITE_GOLD_CHAT_ID}\n"
+        f"Performance: {MEXC_PERFORMANCE_CHAT_ID}\n"
+        f"Log: {MEXC_LOG_CHAT_ID}\n"
+        f"PIE: {PIE_DATA_FILE}\n"
+        f"FullTracking: {FULL_TRACKING_DATA_FILE}\n"
+        f"RadarHealth: {RADAR_HEALTH_FILE}"
+    )
     print(BOT_NAME, "BASLADI", flush=True)
     while True:
         try:
@@ -7577,9 +7569,9 @@ def run_bot():
             cleanup_radar_history()
             cleanup_money_memory()
             cleanup_main_signal_memory()
-            pie_update_open_signals(MEXC_ELITE_GOLD_CHAT_ID)
+            pie_update_open_signals(MEXC_PERFORMANCE_CHAT_ID)
             ft_update_open_records()
-            pie_daily_report_if_due(MEXC_ELITE_GOLD_CHAT_ID, "MEXC")
+            pie_daily_report_if_due(MEXC_PERFORMANCE_CHAT_ID, "MEXC")
             universe = build_universe()
             print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), "MainSignalMemory:", len(main_signal_memory), flush=True)
             for item in universe:
@@ -7589,13 +7581,13 @@ def run_bot():
             time.sleep(SLEEP_SECONDS)
         except Exception as e:
             print("Genel hata:", e, flush=True)
-            send_telegram(f"MEXC bot genel hata:\n{e}")
+            send_log(f"🔴 MEXC bot genel hata:\n{e}")
             time.sleep(30)
 
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V59 + PERFORMANCE CENTER Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V60 + AYRI PERFORMANCE/LOG KANALLARI Aktif", 200
 
 
 if __name__ == "__main__":
