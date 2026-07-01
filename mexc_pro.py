@@ -26,7 +26,7 @@ MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-100437671369
 MEXC_PERFORMANCE_CHAT_ID = os.getenv("MEXC_PERFORMANCE_CHAT_ID") or MEXC_ELITE_GOLD_CHAT_ID
 MEXC_LOG_CHAT_ID = os.getenv("MEXC_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V61"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V62"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -94,6 +94,45 @@ FULL_TRACKING_VTP3_PCT = float(os.getenv("FULL_TRACKING_VTP3_PCT", "10"))
 FULL_TRACKING_VSTOP_PCT = float(os.getenv("FULL_TRACKING_VSTOP_PCT", "3"))
 
 
+
+
+# V62 UYUMLULUK DÜZELTMESİ:
+# Bazı analiz blokları RED açıklama katmanını çağırıyor.
+# Fonksiyon eksik olduğunda her coinde "name explain_reject_summary is not defined" hatası oluşuyordu.
+def explain_reject_summary(symbol, rs, funding_status, flags=None, money_state_present=False, extra=None):
+    if not EXPLAIN_REJECTS:
+        return None
+    try:
+        rs_val = float(rs or 0)
+    except Exception:
+        rs_val = 0.0
+
+    flags = flags or {}
+    true_flags = [str(k) for k, v in flags.items() if bool(v)]
+    false_flags = [str(k) for k, v in flags.items() if not bool(v)]
+
+    if rs_val < EXPLAIN_REJECT_MIN_RS and not money_state_present:
+        return None
+
+    if rs_val < EXPLAIN_REJECT_MIN_RS:
+        main_reason = f"RS düşük ({rs_val:.1f} < {EXPLAIN_REJECT_MIN_RS:.0f})"
+    elif money_state_present and not true_flags:
+        main_reason = "Para hafızası var ama onay radarları eksik"
+    elif true_flags:
+        main_reason = "Aday izleri var ama Hazırlık/Gold kapısı tamamlanmadı"
+    else:
+        main_reason = "Radar koşulları henüz oluşmadı"
+
+    active = ", ".join(true_flags[:EXPLAIN_REJECT_MAX_LINES]) if true_flags else "YOK"
+    missing = ", ".join(false_flags[:EXPLAIN_REJECT_MAX_LINES]) if false_flags else "YOK"
+    msg = (
+        f"RED OZET: {symbol} | RS {rs_val:.1f} | Funding {funding_status} | "
+        f"Aktif: {active} | Eksik: {missing} | Sebep: {main_reason}"
+    )
+    if extra:
+        msg += " | " + str(extra)
+    print(msg, flush=True)
+    return msg
 
 
 def radar_health_today_key():
@@ -7589,7 +7628,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V61 + ZAMANLI PERFORMANCE/LOG KANALLARI Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V62 + EXPLAIN REJECT FIX + PERFORMANCE/LOG KANALLARI Aktif", 200
 
 
 if __name__ == "__main__":
