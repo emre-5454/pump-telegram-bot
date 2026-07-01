@@ -26,7 +26,7 @@ MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-100437671369
 MEXC_PERFORMANCE_CHAT_ID = os.getenv("MEXC_PERFORMANCE_CHAT_ID") or MEXC_ELITE_GOLD_CHAT_ID
 MEXC_LOG_CHAT_ID = os.getenv("MEXC_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V60"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V61"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -57,8 +57,9 @@ EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
 EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
 EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
 
-# V58 PERFORMANS MERKEZI:
+# V58/V61 PERFORMANS MERKEZI:
 # Tek full tracking dosyasindan 24s / 7g / 30g rapor uretir.
+# Varsayilan saat: Turkiye 09:00 = UTC 06:00. Haftalik: Pazartesi. Aylik: Ayin 1'i.
 PERFORMANCE_CENTER_ENABLED = os.getenv("PERFORMANCE_CENTER_ENABLED", "1") == "1"
 PERFORMANCE_SEND_EMPTY_REPORTS = os.getenv("PERFORMANCE_SEND_EMPTY_REPORTS", "0") == "1"
 PERFORMANCE_WEEKLY_REPORT_ENABLED = os.getenv("PERFORMANCE_WEEKLY_REPORT_ENABLED", "1") == "1"
@@ -7572,6 +7573,7 @@ def run_bot():
             pie_update_open_signals(MEXC_PERFORMANCE_CHAT_ID)
             ft_update_open_records()
             pie_daily_report_if_due(MEXC_PERFORMANCE_CHAT_ID, "MEXC")
+            performance_center_reports_if_due(MEXC_PERFORMANCE_CHAT_ID, "MEXC")
             universe = build_universe()
             print("Taranacak coin:", len(universe), "Watchlist:", len(watchlist), "MoneyState:", len(money_state), "RadarHistory:", len(radar_history), "MainSignalMemory:", len(main_signal_memory), flush=True)
             for item in universe:
@@ -7587,7 +7589,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V60 + AYRI PERFORMANCE/LOG KANALLARI Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V61 + ZAMANLI PERFORMANCE/LOG KANALLARI Aktif", 200
 
 
 if __name__ == "__main__":
