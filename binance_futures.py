@@ -26,7 +26,7 @@ CHAT_ID = "7553607277"
 BINANCE_ELITE_PREP_CHAT_ID = os.getenv("BINANCE_ELITE_PREP_CHAT_ID") or "-1004422691643"
 BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V44"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V46"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -59,6 +59,13 @@ PIE_DAILY_REPORT_STATE_FILE = os.getenv("PIE_DAILY_REPORT_STATE_FILE", PIE_DATA_
 EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
 EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
 EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
+
+# V46 FULL TRACKING / ANA KANAL + HAZIRLIK + GOLD KAYIT SISTEMI
+FULL_TRACKING_ENABLED = os.getenv("FULL_TRACKING_ENABLED", "1") == "1"
+FULL_TRACKING_DATA_FILE = os.getenv("FULL_TRACKING_DATA_FILE", "/tmp/binance_full_tracking.json")
+FULL_TRACKING_MAX_RECORDS = int(os.getenv("FULL_TRACKING_MAX_RECORDS", "1500"))
+FULL_TRACKING_UPDATE_COOLDOWN_SECONDS = int(os.getenv("FULL_TRACKING_UPDATE_COOLDOWN_SECONDS", "600"))
+FULL_TRACKING_MISSED_GAIN_PCT = float(os.getenv("FULL_TRACKING_MISSED_GAIN_PCT", "10"))
 
 
 def pie_combo_key(rec):
@@ -176,7 +183,13 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
         pass
 
     records = pie_load_records()
-    send_telegram(pie_daily_report_text(records, market_name), chat_id)
+    ft_update_open_records()
+    report_text = pie_daily_report_text(records, market_name)
+    try:
+        report_text += "\n\n" + ft_daily_report_text(market_name)
+    except Exception as e:
+        print("FULL TRACK daily report hata:", e, flush=True)
+    send_telegram(report_text, chat_id)
     try:
         with open(PIE_DAILY_REPORT_STATE_FILE, "w", encoding="utf-8") as f:
             f.write(today_key)
@@ -259,6 +272,200 @@ def explain_reject_summary(symbol, rs, funding_status, flags, money_state_presen
         msg += " | " + str(extra)
     print(msg, flush=True)
 
+
+
+
+def ft_now_iso():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+def ft_load_records():
+    if not FULL_TRACKING_ENABLED:
+        return []
+    try:
+        if not os.path.exists(FULL_TRACKING_DATA_FILE):
+            return []
+        with open(FULL_TRACKING_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print("FULL TRACK load hata:", e, flush=True)
+        return []
+
+def ft_save_records(records):
+    if not FULL_TRACKING_ENABLED:
+        return
+    try:
+        tmp = FULL_TRACKING_DATA_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(records[-FULL_TRACKING_MAX_RECORDS:], f, ensure_ascii=False, indent=2)
+        os.replace(tmp, FULL_TRACKING_DATA_FILE)
+    except Exception as e:
+        print("FULL TRACK save hata:", e, flush=True)
+
+def ft_float(x, default=0.0):
+    try:
+        return float(x if x is not None else default)
+    except Exception:
+        return float(default)
+
+def ft_record_stage(symbol, d, stage, support_modules=None, extra=None):
+    if not FULL_TRACKING_ENABLED or not d:
+        return
+    support_modules = support_modules or []
+    extra = extra or {}
+    records = ft_load_records()
+    now_ts = time.time()
+    price = ft_float(d.get("entry", d.get("price", 0)))
+    module = str(d.get("module", "UNKNOWN"))
+    rec = None
+    for r in reversed(records):
+        if r.get("symbol") == symbol and now_ts - ft_float(r.get("created_ts"), 0) <= 24*60*60:
+            rec = r
+            break
+    if rec is None:
+        rec = {
+            "id": "BINANCE_FULL_{}_{}".format(symbol, int(now_ts)),
+            "market": "BINANCE",
+            "symbol": symbol,
+            "created_at": ft_now_iso(),
+            "created_ts": now_ts,
+            "first_stage": stage,
+            "first_price": price,
+            "last_stage": stage,
+            "last_price": price,
+            "max_price": price,
+            "min_price": price,
+            "max_gain_pct": 0.0,
+            "max_dd_pct": 0.0,
+            "main_count": 0,
+            "prep_count": 0,
+            "gold_count": 0,
+            "stages": [],
+            "modules": [],
+            "support_modules": [],
+            "gold_sent": False,
+            "missed_after_main": False,
+            "last_update_ts": 0,
+        }
+        records.append(rec)
+    rec["last_stage"] = stage
+    rec["last_price"] = price or rec.get("last_price", 0)
+    if price > 0:
+        rec["max_price"] = max(ft_float(rec.get("max_price"), price), price)
+        rec["min_price"] = min(ft_float(rec.get("min_price"), price), price)
+        first = ft_float(rec.get("first_price"), price)
+        rec["max_gain_pct"] = ((ft_float(rec.get("max_price"), price) - first) / first * 100) if first else 0
+        rec["max_dd_pct"] = ((ft_float(rec.get("min_price"), price) - first) / first * 100) if first else 0
+    if stage == "MAIN":
+        rec["main_count"] = int(rec.get("main_count", 0) or 0) + 1
+    elif stage == "PREP":
+        rec["prep_count"] = int(rec.get("prep_count", 0) or 0) + 1
+    elif stage == "GOLD":
+        rec["gold_count"] = int(rec.get("gold_count", 0) or 0) + 1
+        rec["gold_sent"] = True
+    if module and module not in rec.get("modules", []):
+        rec.setdefault("modules", []).append(module)
+    for s in support_modules:
+        if s and s not in rec.get("support_modules", []):
+            rec.setdefault("support_modules", []).append(str(s))
+    stage_row = {
+        "stage": stage,
+        "time": ft_now_iso(),
+        "ts": now_ts,
+        "module": module,
+        "price": price,
+        "score": int(d.get("score", d.get("elite_score", 0)) or 0),
+        "rs": ft_float(d.get("rs", d.get("rs_score", 0))),
+        "money_impact": ft_float(d.get("money_impact", d.get("effective_money_impact", 0))),
+        "volume_power": ft_float(d.get("volume_power", d.get("effective_volume_power", 0))),
+        "support_modules": list(support_modules),
+    }
+    stage_row.update(extra)
+    rec.setdefault("stages", []).append(stage_row)
+    if rec.get("main_count", 0) > 0 and not rec.get("gold_sent") and ft_float(rec.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT:
+        rec["missed_after_main"] = True
+    ft_save_records(records)
+    print("FULL TRACK RECORD:", symbol, stage, module, "Main:", rec.get("main_count"), "Prep:", rec.get("prep_count"), "Gold:", rec.get("gold_count"), flush=True)
+
+def ft_update_open_records():
+    if not FULL_TRACKING_ENABLED:
+        return
+    records = ft_load_records()
+    if not records:
+        return
+    changed = False
+    now_ts = time.time()
+    for rec in records:
+        if now_ts - ft_float(rec.get("created_ts"), 0) > 48*60*60:
+            continue
+        if now_ts - ft_float(rec.get("last_update_ts"), 0) < FULL_TRACKING_UPDATE_COOLDOWN_SECONDS:
+            continue
+        symbol = rec.get("symbol")
+        first = ft_float(rec.get("first_price"), 0)
+        if not symbol or first <= 0:
+            continue
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            price = ft_float(ticker.get("last") or ticker.get("close") or ticker.get("bid") or ticker.get("ask"))
+            if price <= 0:
+                continue
+            rec["last_price"] = price
+            rec["last_update_ts"] = now_ts
+            rec["max_price"] = max(ft_float(rec.get("max_price"), first), price)
+            rec["min_price"] = min(ft_float(rec.get("min_price"), first), price)
+            rec["max_gain_pct"] = ((ft_float(rec.get("max_price"), first) - first) / first * 100) if first else 0
+            rec["max_dd_pct"] = ((ft_float(rec.get("min_price"), first) - first) / first * 100) if first else 0
+            if rec.get("main_count", 0) > 0 and not rec.get("gold_sent") and ft_float(rec.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT:
+                rec["missed_after_main"] = True
+            changed = True
+        except Exception as e:
+            print("FULL TRACK update hata:", symbol, e, flush=True)
+    if changed:
+        ft_save_records(records)
+
+def ft_daily_report_text(market_name="BINANCE"):
+    if not FULL_TRACKING_ENABLED:
+        return "📊 FULL TRACKING kapali."
+    records = ft_load_records()
+    now_ts = time.time()
+    recent = [r for r in records if now_ts - ft_float(r.get("created_ts"), 0) <= 24*60*60]
+    if not recent:
+        return "📊 {} FULL TRACKING\n\nSon 24 saatte ana/hazirlik/gold kaydi yok.".format(market_name)
+    main = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0)
+    prep = sum(1 for r in recent if int(r.get("prep_count", 0) or 0) > 0)
+    gold = sum(1 for r in recent if int(r.get("gold_count", 0) or 0) > 0)
+    main_10 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and ft_float(r.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT)
+    missed = sum(1 for r in recent if r.get("missed_after_main") and not r.get("gold_sent"))
+    avg_max = sum(ft_float(r.get("max_gain_pct"), 0) for r in recent) / len(recent)
+    by_module = {}
+    for r in recent:
+        mod = (r.get("modules") or ["UNKNOWN"])[0]
+        by_module.setdefault(mod, {"n": 0, "m10": 0})
+        by_module[mod]["n"] += 1
+        if ft_float(r.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT:
+            by_module[mod]["m10"] += 1
+    best_mod = "YOK"
+    if by_module:
+        name, st = sorted(by_module.items(), key=lambda kv: ((kv[1]["m10"] / kv[1]["n"]) if kv[1]["n"] else 0, kv[1]["n"]), reverse=True)[0]
+        best_mod = "{} ({}/{} %{:.0f})".format(name, st["m10"], st["n"], (st["m10"] / st["n"] * 100 if st["n"] else 0))
+    missed_names = [r.get("symbol", "?") for r in recent if r.get("missed_after_main") and not r.get("gold_sent")][:8]
+    missed_text = ", ".join(missed_names) if missed_names else "YOK"
+    return """
+📊 {} FULL TRACKING RAPORU
+
+Ana Kanal Kaydi: {}
+Elite Hazirlik: {}
+Elite Gold: {}
+Ana Kanal %{:.0f}+ Giden: {}
+Gold Olmadan Kacan: {}
+
+Ort. Max Hareket: %{:.2f}
+En iyi erken mod: {}
+Kacanlar: {}
+
+Not:
+Bu rapor ana kanal + hazirlik + gold yasam dongusunu olcer.
+""".format(market_name, main, prep, gold, FULL_TRACKING_MISSED_GAIN_PCT, main_10, missed, avg_max, best_mod, missed_text).strip()
 
 COOLDOWN_EARLY = 180 * 60
 EARLY_MAX_PER_SYMBOL_PER_DAY = 1
@@ -5729,6 +5936,7 @@ def send_elite_prep_signal(symbol, best, support, elite_score):
         return False
 
     send_telegram(format_elite_prep_signal(symbol, best, elite_score, support), BINANCE_ELITE_PREP_CHAT_ID)
+    ft_record_stage(symbol, best, "PREP", support, {"elite_score": elite_score})
     print("ELITE PREP SEND:", symbol, best.get("module"), "EliteScore:", elite_score, flush=True)
     return True
 
@@ -6099,9 +6307,19 @@ def send_elite_signal(symbol, best, support):
 
     elite_gold = is_elite_gold_signal(best, elite_score, support, symbol)
 
-    # V38: Gold ve Elite AL kanallari ayrildi.
-    # Gold sinyali ayri kanala gider; normal Elite AL eski Elite kanalinda kalir.
-    target_chat_id = BINANCE_ELITE_GOLD_CHAT_ID if elite_gold else BINANCE_ELITE_GOLD_CHAT_ID
+    # V45 PIE KAYIT FIX:
+    # Elite/Gold mesaji Telegram'a gitmeden once mutlaka PIE kaydina yazilir.
+    # Boylece gunluk performans raporu gercek Elite sinyallerini sayar.
+    try:
+        levels = pie_build_binance_levels(best)
+        pie_record_elite_signal(symbol, best, support, elite_score, levels, market="BINANCE")
+    except Exception as e:
+        print("PIE RECORD FIX HATA:", symbol, e, flush=True)
+
+    ft_record_stage(symbol, best, "GOLD", support, {"elite_score": elite_score, "elite_gold": elite_gold})
+
+    # V46: Binance iki kanalli yapi. Final AL/Gold mesajlari Gold kanalina gider.
+    target_chat_id = BINANCE_ELITE_GOLD_CHAT_ID
     send_telegram(format_elite_signal(symbol, best, elite_score, support), target_chat_id)
     mark_elite_sent_today(symbol)
     print("ELITE GOLD SEND:" if elite_gold else "ELITE AL SEND:", symbol, best.get("module"), "EliteScore:", elite_score, "Chat:", target_chat_id, flush=True)
@@ -6144,6 +6362,7 @@ def send_selected_signal(symbol, signals, funding, btc_status):
         return False
 
     if can_send(cache, key, cooldown):
+        ft_record_stage(symbol, best, "MAIN", support, {"btc_status": btc_status, "funding_status": funding.get("status", "") if isinstance(funding, dict) else ""})
         send_telegram(format_signal(symbol, best, funding, btc_status, support))
 
         if best["module"] == "EARLY":
@@ -6324,6 +6543,7 @@ def run_bot():
             cleanup_money_memory()
             cleanup_main_signal_memory()
             pie_update_open_signals(BINANCE_ELITE_GOLD_CHAT_ID)
+            ft_update_open_records()
             pie_daily_report_if_due(BINANCE_ELITE_GOLD_CHAT_ID, "BINANCE")
 
             universe = build_universe()
