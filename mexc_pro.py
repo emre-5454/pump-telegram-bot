@@ -20,7 +20,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
 MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V57"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V58"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -50,6 +50,17 @@ PIE_DAILY_REPORT_STATE_FILE = os.getenv("PIE_DAILY_REPORT_STATE_FILE", PIE_DATA_
 EXPLAIN_REJECTS = os.getenv("EXPLAIN_REJECTS", "1") == "1"
 EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
 EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
+
+# V58 PERFORMANS MERKEZI:
+# Tek full tracking dosyasindan 24s / 7g / 30g rapor uretir.
+PERFORMANCE_CENTER_ENABLED = os.getenv("PERFORMANCE_CENTER_ENABLED", "1") == "1"
+PERFORMANCE_WEEKLY_REPORT_ENABLED = os.getenv("PERFORMANCE_WEEKLY_REPORT_ENABLED", "1") == "1"
+PERFORMANCE_MONTHLY_REPORT_ENABLED = os.getenv("PERFORMANCE_MONTHLY_REPORT_ENABLED", "1") == "1"
+PERFORMANCE_REPORT_HOUR_UTC = int(os.getenv("PERFORMANCE_REPORT_HOUR_UTC", str(PIE_DAILY_REPORT_HOUR_UTC)))
+PERFORMANCE_WEEKLY_DAY_UTC = int(os.getenv("PERFORMANCE_WEEKLY_DAY_UTC", "0"))  # 0=Pazartesi
+PERFORMANCE_MONTHLY_DAY_UTC = int(os.getenv("PERFORMANCE_MONTHLY_DAY_UTC", "1"))
+PERFORMANCE_WEEKLY_STATE_FILE = os.getenv("PERFORMANCE_WEEKLY_STATE_FILE", FULL_TRACKING_DATA_FILE + ".weekly_state")
+PERFORMANCE_MONTHLY_STATE_FILE = os.getenv("PERFORMANCE_MONTHLY_STATE_FILE", FULL_TRACKING_DATA_FILE + ".monthly_state")
 
 
 # V56 SANAL TP TAKIP + V55 RADAR SAGLIK RAPORU:
@@ -287,6 +298,10 @@ def pie_daily_report_if_due(chat_id=None, market_name="BOT"):
     except Exception as e:
         print("FULL TRACK daily report hata:", e, flush=True)
     send_telegram(report_text, chat_id)
+    try:
+        performance_center_reports_if_due(chat_id, market_name)
+    except Exception as e:
+        print("Performance center report hata:", e, flush=True)
     try:
         with open(PIE_DAILY_REPORT_STATE_FILE, "w", encoding="utf-8") as f:
             f.write(today_key)
@@ -663,6 +678,125 @@ EXCLUDED_SYMBOL_KEYWORDS = ["STOCK"]
 def is_excluded_symbol(symbol):
     s = str(symbol).upper()
     return any(k in s for k in EXCLUDED_SYMBOL_KEYWORDS)
+
+
+def ft_period_report_text(days=7, label="HAFTALIK", market_name="BOT"):
+    """V58: Gunluk/haftalik/aylik performans merkezi raporu."""
+    if not FULL_TRACKING_ENABLED:
+        return "📊 FULL TRACKING kapali."
+    records = ft_load_records()
+    now_ts = time.time()
+    window = float(days) * 24 * 60 * 60
+    recent = [r for r in records if now_ts - ft_float(r.get("created_ts"), 0) <= window]
+    if not recent:
+        return "📊 {} {} RAPORU\n\nSon {} gunde kayit yok.".format(market_name, label, days)
+
+    main = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0)
+    prep = sum(1 for r in recent if int(r.get("prep_count", 0) or 0) > 0)
+    gold = sum(1 for r in recent if int(r.get("gold_count", 0) or 0) > 0)
+    missed = sum(1 for r in recent if r.get("missed_after_main") and not r.get("gold_sent"))
+    vtp1 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp1_hit"))
+    vtp2 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp2_hit"))
+    vtp3 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp3_hit"))
+    vstop = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_stop_hit"))
+    vtp3_no_gold = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp3_hit") and not r.get("gold_sent"))
+
+    def top_modules(records, limit=5):
+        stats = {}
+        for r in records:
+            mods = r.get("modules") or ["UNKNOWN"]
+            for m in mods:
+                st = stats.setdefault(str(m), {"n": 0, "tp3": 0, "missed": 0, "max": 0.0})
+                st["n"] += 1
+                st["tp3"] += 1 if r.get("virtual_tp3_hit") else 0
+                st["missed"] += 1 if r.get("missed_after_main") and not r.get("gold_sent") else 0
+                st["max"] += ft_float(r.get("max_gain_pct"), 0)
+        rows = []
+        for name, st in stats.items():
+            rate = st["tp3"] / st["n"] * 100 if st["n"] else 0
+            avg = st["max"] / st["n"] if st["n"] else 0
+            rows.append((rate, st["n"], name, avg, st["missed"]))
+        rows.sort(reverse=True)
+        return "\n".join(["{} | {} kayit | TP3 %{:.0f} | Ort Max %{:.2f} | Kacan {}".format(name, n, rate, avg, missed) for rate, n, name, avg, missed in rows[:limit]]) or "YOK"
+
+    top_missed_rows = sorted(
+        [r for r in recent if r.get("missed_after_main") and not r.get("gold_sent")],
+        key=lambda r: ft_float(r.get("max_gain_pct"), 0),
+        reverse=True
+    )[:8]
+    missed_text = "\n".join([
+        "{} +{:.2f}% | Ana:{} | Mod:{}".format(
+            r.get("symbol", "?"), ft_float(r.get("max_gain_pct"), 0), int(r.get("main_count", 0) or 0), (r.get("modules") or ["UNKNOWN"])[0]
+        ) for r in top_missed_rows
+    ]) if top_missed_rows else "YOK"
+
+    avg_max = sum(ft_float(r.get("max_gain_pct"), 0) for r in recent) / len(recent)
+    gold_rate = gold / main * 100 if main else 0
+    prep_rate = prep / main * 100 if main else 0
+    tp3_rate = vtp3 / main * 100 if main else 0
+
+    return """
+📊 {} {} PERFORMANS MERKEZI
+
+Kapsam: Son {} gun
+Ana Kanal: {}
+Elite Hazirlik: {} (%{:.1f})
+Elite Gold: {} (%{:.1f})
+
+🎯 Ana Kanal Sanal TP
+TP1: {}
+TP2: {}
+TP3: {} (%{:.1f})
+Stop: {}
+Gold olmadan TP3: {}
+Gold olmadan kacan: {}
+
+🏆 En iyi erken modlar
+{}
+
+🚨 En cok kacan firsatlar
+{}
+
+Ort. Max Hareket: %{:.2f}
+""".format(market_name, label, days, main, prep, prep_rate, gold, gold_rate, vtp1, vtp2, vtp3, tp3_rate, vstop, vtp3_no_gold, missed, top_modules(recent), missed_text, avg_max).strip()
+
+
+def performance_center_reports_if_due(chat_id=None, market_name="BOT"):
+    """V58: Haftalik ve aylik raporlari zamaninda gonderir."""
+    if not PERFORMANCE_CENTER_ENABLED:
+        return
+    now = datetime.utcnow()
+    if now.hour < PERFORMANCE_REPORT_HOUR_UTC:
+        return
+    ft_update_open_records()
+
+    def already_sent(path, key):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read().strip() == key
+        except Exception:
+            pass
+        return False
+
+    def mark_sent(path, key):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(key)
+        except Exception as e:
+            print("Performance state hata:", e, flush=True)
+
+    if PERFORMANCE_WEEKLY_REPORT_ENABLED and now.weekday() == PERFORMANCE_WEEKLY_DAY_UTC:
+        week_key = now.strftime("%Y-W%W")
+        if not already_sent(PERFORMANCE_WEEKLY_STATE_FILE, week_key):
+            send_telegram(ft_period_report_text(7, "HAFTALIK", market_name), chat_id)
+            mark_sent(PERFORMANCE_WEEKLY_STATE_FILE, week_key)
+
+    if PERFORMANCE_MONTHLY_REPORT_ENABLED and now.day == PERFORMANCE_MONTHLY_DAY_UTC:
+        month_key = now.strftime("%Y-%m")
+        if not already_sent(PERFORMANCE_MONTHLY_STATE_FILE, month_key):
+            send_telegram(ft_period_report_text(30, "AYLIK", market_name), chat_id)
+            mark_sent(PERFORMANCE_MONTHLY_STATE_FILE, month_key)
 
 COOLDOWN_EARLY = 6 * 60 * 60
 EARLY_MAX_PER_SYMBOL_PER_DAY = 1
@@ -7460,7 +7594,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V57 + FULL LIFE TRACKING Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V58 + PERFORMANCE CENTER Aktif", 200
 
 
 if __name__ == "__main__":
