@@ -20,7 +20,7 @@ CHAT_ID = "6977265844"
 MEXC_ELITE_PREP_CHAT_ID = os.getenv("MEXC_ELITE_PREP_CHAT_ID") or "-1003937253891"
 MEXC_ELITE_GOLD_CHAT_ID = os.getenv("MEXC_ELITE_GOLD_CHAT_ID") or "-1004376713697"
 
-BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V55"
+BOT_NAME = "MEXC EARLY ENTRY DECISION BOT V57"
 
 MAX_SYMBOLS = 120
 MIN_UNIVERSE_QV = 150_000
@@ -52,7 +52,7 @@ EXPLAIN_REJECT_MIN_RS = float(os.getenv("EXPLAIN_REJECT_MIN_RS", "50"))
 EXPLAIN_REJECT_MAX_LINES = int(os.getenv("EXPLAIN_REJECT_MAX_LINES", "6"))
 
 
-# V55 RADAR SAGLIK RAPORU:
+# V56 SANAL TP TAKIP + V55 RADAR SAGLIK RAPORU:
 # Sadece gelen sinyalleri degil, her turda hangi radar denendi/gecmedi onu da kaydeder.
 # Boylece 0 sinyal veren radarlarin cok siki mi yoksa piyasa kosuluna uygun degil mi oldugu gorulur.
 RADAR_HEALTH_ENABLED = os.getenv("RADAR_HEALTH_ENABLED", "1") == "1"
@@ -67,6 +67,12 @@ FULL_TRACKING_DATA_FILE = os.getenv("FULL_TRACKING_DATA_FILE", "/tmp/mexc_full_t
 FULL_TRACKING_MAX_RECORDS = int(os.getenv("FULL_TRACKING_MAX_RECORDS", "1500"))
 FULL_TRACKING_UPDATE_COOLDOWN_SECONDS = int(os.getenv("FULL_TRACKING_UPDATE_COOLDOWN_SECONDS", "600"))
 FULL_TRACKING_MISSED_GAIN_PCT = float(os.getenv("FULL_TRACKING_MISSED_GAIN_PCT", "10"))
+FULL_TRACKING_VIRTUAL_TP_ENABLED = os.getenv("FULL_TRACKING_VIRTUAL_TP_ENABLED", "1") == "1"
+FULL_TRACKING_VTP1_PCT = float(os.getenv("FULL_TRACKING_VTP1_PCT", "3"))
+FULL_TRACKING_VTP2_PCT = float(os.getenv("FULL_TRACKING_VTP2_PCT", "6"))
+FULL_TRACKING_VTP3_PCT = float(os.getenv("FULL_TRACKING_VTP3_PCT", "10"))
+FULL_TRACKING_VSTOP_PCT = float(os.getenv("FULL_TRACKING_VSTOP_PCT", "3"))
+
 
 
 
@@ -399,6 +405,30 @@ def ft_float(x, default=0.0):
     except Exception:
         return float(default)
 
+def ft_apply_virtual_tp(rec):
+    """Ana kanal / hazirlik / gold olmayan erken sinyaller icin sanal TP takibi."""
+    if not FULL_TRACKING_ENABLED or not FULL_TRACKING_VIRTUAL_TP_ENABLED or not rec:
+        return rec
+    first = ft_float(rec.get("first_price"), 0)
+    max_price = ft_float(rec.get("max_price"), first)
+    min_price = ft_float(rec.get("min_price"), first)
+    if first <= 0:
+        return rec
+
+    rec.setdefault("virtual_tp_system", "PCT_BASED")
+    rec.setdefault("virtual_tp1_pct", FULL_TRACKING_VTP1_PCT)
+    rec.setdefault("virtual_tp2_pct", FULL_TRACKING_VTP2_PCT)
+    rec.setdefault("virtual_tp3_pct", FULL_TRACKING_VTP3_PCT)
+    rec.setdefault("virtual_stop_pct", FULL_TRACKING_VSTOP_PCT)
+
+    gain = ((max_price - first) / first * 100) if first else 0
+    dd = ((min_price - first) / first * 100) if first else 0
+    rec["virtual_tp1_hit"] = bool(rec.get("virtual_tp1_hit") or gain >= FULL_TRACKING_VTP1_PCT)
+    rec["virtual_tp2_hit"] = bool(rec.get("virtual_tp2_hit") or gain >= FULL_TRACKING_VTP2_PCT)
+    rec["virtual_tp3_hit"] = bool(rec.get("virtual_tp3_hit") or gain >= FULL_TRACKING_VTP3_PCT)
+    rec["virtual_stop_hit"] = bool(rec.get("virtual_stop_hit") or dd <= -FULL_TRACKING_VSTOP_PCT)
+    return rec
+
 def ft_record_stage(symbol, d, stage, support_modules=None, extra=None):
     if not FULL_TRACKING_ENABLED or not d:
         return
@@ -436,6 +466,10 @@ def ft_record_stage(symbol, d, stage, support_modules=None, extra=None):
             "support_modules": [],
             "gold_sent": False,
             "missed_after_main": False,
+            "virtual_tp1_hit": False,
+            "virtual_tp2_hit": False,
+            "virtual_tp3_hit": False,
+            "virtual_stop_hit": False,
             "last_update_ts": 0,
         }
         records.append(rec)
@@ -475,6 +509,7 @@ def ft_record_stage(symbol, d, stage, support_modules=None, extra=None):
     rec.setdefault("stages", []).append(stage_row)
     if rec.get("main_count", 0) > 0 and not rec.get("gold_sent") and ft_float(rec.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT:
         rec["missed_after_main"] = True
+    ft_apply_virtual_tp(rec)
     ft_save_records(records)
     print("FULL TRACK RECORD:", symbol, stage, module, "Main:", rec.get("main_count"), "Prep:", rec.get("prep_count"), "Gold:", rec.get("gold_count"), flush=True)
 
@@ -508,6 +543,7 @@ def ft_update_open_records():
             rec["max_dd_pct"] = ((ft_float(rec.get("min_price"), first) - first) / first * 100) if first else 0
             if rec.get("main_count", 0) > 0 and not rec.get("gold_sent") and ft_float(rec.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT:
                 rec["missed_after_main"] = True
+            ft_apply_virtual_tp(rec)
             changed = True
         except Exception as e:
             print("FULL TRACK update hata:", symbol, e, flush=True)
@@ -527,6 +563,11 @@ def ft_daily_report_text(market_name="MEXC"):
     gold = sum(1 for r in recent if int(r.get("gold_count", 0) or 0) > 0)
     main_10 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and ft_float(r.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT)
     missed = sum(1 for r in recent if r.get("missed_after_main") and not r.get("gold_sent"))
+    vtp1 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp1_hit"))
+    vtp2 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp2_hit"))
+    vtp3 = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp3_hit"))
+    vstop = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_stop_hit"))
+    vtp3_no_gold = sum(1 for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp3_hit") and not r.get("gold_sent"))
     avg_max = sum(ft_float(r.get("max_gain_pct"), 0) for r in recent) / len(recent)
     by_module = {}
     for r in recent:
@@ -539,10 +580,52 @@ def ft_daily_report_text(market_name="MEXC"):
     if by_module:
         name, st = sorted(by_module.items(), key=lambda kv: ((kv[1]["m10"] / kv[1]["n"]) if kv[1]["n"] else 0, kv[1]["n"]), reverse=True)[0]
         best_mod = "{} ({}/{} %{:.0f})".format(name, st["m10"], st["n"], (st["m10"] / st["n"] * 100 if st["n"] else 0))
-    missed_names = [r.get("symbol", "?") for r in recent if r.get("missed_after_main") and not r.get("gold_sent")][:8]
-    missed_text = ", ".join(missed_names) if missed_names else "YOK"
+    missed_rows = sorted(
+        [r for r in recent if r.get("missed_after_main") and not r.get("gold_sent")],
+        key=lambda r: ft_float(r.get("max_gain_pct"), 0),
+        reverse=True
+    )[:8]
+    missed_text = "\n".join(
+        "{} +{:.2f}% | Ana:{} | Mod:{}".format(
+            r.get("symbol", "?"),
+            ft_float(r.get("max_gain_pct"), 0),
+            int(r.get("main_count", 0) or 0),
+            (r.get("modules") or ["UNKNOWN"])[0]
+        )
+        for r in missed_rows
+    ) if missed_rows else "YOK"
+
+    vtp3_rows = sorted(
+        [r for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_tp3_hit") and not r.get("gold_sent")],
+        key=lambda r: ft_float(r.get("max_gain_pct"), 0),
+        reverse=True
+    )[:8]
+    vtp3_text = "\n".join(
+        "{} +{:.2f}% | Ana:{} | Mod:{}".format(
+            r.get("symbol", "?"),
+            ft_float(r.get("max_gain_pct"), 0),
+            int(r.get("main_count", 0) or 0),
+            (r.get("modules") or ["UNKNOWN"])[0]
+        )
+        for r in vtp3_rows
+    ) if vtp3_rows else "YOK"
+
+    stopped_rows = sorted(
+        [r for r in recent if int(r.get("main_count", 0) or 0) > 0 and r.get("virtual_stop_hit") and not r.get("virtual_tp1_hit")],
+        key=lambda r: ft_float(r.get("max_dd_pct"), 0)
+    )[:6]
+    stopped_text = "\n".join(
+        "{} {:.2f}% | Ana:{} | Mod:{}".format(
+            r.get("symbol", "?"),
+            ft_float(r.get("max_dd_pct"), 0),
+            int(r.get("main_count", 0) or 0),
+            (r.get("modules") or ["UNKNOWN"])[0]
+        )
+        for r in stopped_rows
+    ) if stopped_rows else "YOK"
+
     return """
-📊 {} FULL TRACKING RAPORU
+📊 {} FULL LIFE TRACKING RAPORU
 
 Ana Kanal Kaydi: {}
 Elite Hazirlik: {}
@@ -550,13 +633,28 @@ Elite Gold: {}
 Ana Kanal %{:.0f}+ Giden: {}
 Gold Olmadan Kacan: {}
 
+🎯 Sanal TP Takibi
+Sanal TP1 (+{:.0f}%): {}
+Sanal TP2 (+{:.0f}%): {}
+Sanal TP3 (+{:.0f}%): {}
+Sanal Stop (-{:.0f}%): {}
+Gold Olmadan Sanal TP3: {}
+
+📈 Gold Olmadan Ana Kanal TP3 Yapanlar
+{}
+
+⚠️ Gold Olmadan Kacan Firsatlar
+{}
+
+🔻 Ana Kanaldan Stop Olanlar
+{}
+
 Ort. Max Hareket: %{:.2f}
 En iyi erken mod: {}
-Kacanlar: {}
 
 Not:
-Bu rapor ana kanal + hazirlik + gold yasam dongusunu olcer.
-""".format(market_name, main, prep, gold, FULL_TRACKING_MISSED_GAIN_PCT, main_10, missed, avg_max, best_mod, missed_text).strip()
+Bu rapor gideni, gitmeyeni ve Gold'a donusmeyen erken firsatlari coin bazli gosterir.
+""".format(market_name, main, prep, gold, FULL_TRACKING_MISSED_GAIN_PCT, main_10, missed, FULL_TRACKING_VTP1_PCT, vtp1, FULL_TRACKING_VTP2_PCT, vtp2, FULL_TRACKING_VTP3_PCT, vtp3, FULL_TRACKING_VSTOP_PCT, vstop, vtp3_no_gold, vtp3_text, missed_text, stopped_text, avg_max, best_mod).strip()
 
 # STOCK / tokenized stock ürünlerini tarama dışı bırak.
 # Örnek: ASTSSTOCK/USDT:USDT, TSLAStock benzeri semboller.
@@ -7362,7 +7460,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "MEXC EARLY ENTRY DECISION V51 + IKI KANAL + PROFESYONEL GOLD Aktif", 200
+    return "MEXC EARLY ENTRY DECISION V57 + FULL LIFE TRACKING Aktif", 200
 
 
 if __name__ == "__main__":
