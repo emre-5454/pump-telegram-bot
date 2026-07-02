@@ -32,11 +32,13 @@ BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-100437
 BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
 BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.2"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.3"
 
-MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "120"))
-SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "180"))
+MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
 
+# V56.3 BINANCE API RATE LIMIT GUARD STABLE
+# Recursion hatasi duzeltildi: safe_fetch_ohlcv artik kendi kendini degil exchange.fetch_ohlcv cagırır.
 # V56.2 BINANCE API RATE LIMIT GUARD
 # Binance 418 / too many requests durumunda bot ayni coini zorlamaz, kisa sure cache kullanir.
 BINANCE_API_GUARD_ENABLED = os.getenv("BINANCE_API_GUARD_ENABLED", "1") == "1"
@@ -190,7 +192,7 @@ def safe_fetch_ohlcv(symbol, timeframe, limit=120):
     if binance_api_guard_active():
         return cached[1] if cached else None
     try:
-        data = safe_fetch_ohlcv(symbol, timeframe, limit=limit)
+        data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         BINANCE_OHLCV_CACHE[key] = (now_ts, data)
         return data
     except Exception as e:
