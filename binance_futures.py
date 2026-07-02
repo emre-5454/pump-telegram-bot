@@ -32,7 +32,7 @@ BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-100437
 BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
 BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.1"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -4521,7 +4521,7 @@ Fiyat:
 {d['price']:.8f}
 
 1H Hacim Artisi:
-{d['vol_ratio_1h']:.2f}x
+{float(d.get('vol_ratio_1h', 0) or 0):.2f}x
 
 15m Hacim Artisi:
 {d['vol_ratio_15m']:.2f}x
@@ -4594,7 +4594,7 @@ Radar Skoru:
 {d['score']}/17
 
 1H Hacim Artisi:
-{d['vol_ratio_1h']:.2f}x
+{float(d.get('vol_ratio_1h', 0) or 0):.2f}x
 
 15m Hacim Artisi:
 {d['vol_ratio_15m']:.2f}x
@@ -4883,7 +4883,7 @@ Second Wave: {"VAR" if d.get("second_wave_bonus") else "YOK"}
         title = "EARLY RADAR"
         body = f"""
 Radar Skoru: {d['score']}/18
-1H Hacim Artisi: {d['vol_ratio_1h']:.2f}x
+1H Hacim Artisi: {float(d.get('vol_ratio_1h', 0) or 0):.2f}x
 15m Hacim Artisi: {d['vol_ratio_15m']:.2f}x
 1H USDT Hacim: {int(d['usdt_vol_1h'])} USDT
 15m USDT Hacim: {int(d['usdt_vol_15m'])} USDT
