@@ -37,8 +37,8 @@ BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
 BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.4"
 
-MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
-SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
+MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "80"))
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "180"))
 
 # V43 BINANCE ANA KANAL GEVSETME:
 # Binance tarafinda ana radara az sinyal dustugu icin sadece ana radar/adayi gevsetildi.
