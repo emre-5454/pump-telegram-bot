@@ -34,8 +34,8 @@ BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
 BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.2"
 
-MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
-SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
+MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "120"))
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "180"))
 
 # V56.2 BINANCE API RATE LIMIT GUARD
 # Binance 418 / too many requests durumunda bot ayni coini zorlamaz, kisa sure cache kullanir.
