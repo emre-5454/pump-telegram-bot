@@ -32,7 +32,7 @@ BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-100437
 BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
 BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V55"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
@@ -521,6 +521,242 @@ def ft_apply_virtual_tp(rec):
     rec["virtual_stop_hit"] = bool(rec.get("virtual_stop_hit") or dd <= -FULL_TRACKING_VSTOP_PCT)
     return rec
 
+
+
+# ==========================================================
+# GOLD RED ANALYZER (VGR)
+# Gold olamayan ama ana kanalda/hazirlikta yakalanan coinlerin
+# neden Gold kapisindan gecemedigini kaydeder ve rapora yazar.
+# ==========================================================
+GOLD_RED_ANALYZER_ENABLED = os.getenv("GOLD_RED_ANALYZER_ENABLED", "1") == "1"
+GOLD_RED_REQUIRED_SCORE = int(os.getenv("GOLD_RED_REQUIRED_SCORE", "90"))
+GOLD_RED_NEAR_SCORE_GAP = int(os.getenv("GOLD_RED_NEAR_SCORE_GAP", "8"))
+
+
+def gra_float(x, default=0.0):
+    try:
+        return float(x if x is not None else default)
+    except Exception:
+        return float(default)
+
+
+def gold_red_analyze(d, support_modules=None, extra=None, required_score=None):
+    """Gold olmayan adaylar icin eksik filtreleri okunabilir hale getirir."""
+    if not GOLD_RED_ANALYZER_ENABLED or not d:
+        return None
+    support_modules = support_modules or []
+    extra = extra or {}
+    required = int(required_score or GOLD_RED_REQUIRED_SCORE)
+
+    score_candidates = [
+        extra.get("elite_score"), d.get("elite_score"), d.get("elite_candidate_score"),
+        d.get("elite_confidence_score"), d.get("score")
+    ]
+    gold_score = 0
+    for val in score_candidates:
+        try:
+            if val is not None:
+                gold_score = int(float(val)); break
+        except Exception:
+            pass
+    missing_points = max(0, required - gold_score)
+
+    reasons = []
+    passed = []
+    module = str(d.get("module", "UNKNOWN"))
+
+    radar_count = 1 + len(support_modules or [])
+    if radar_count >= 3:
+        passed.append(f"Radar {radar_count}")
+    else:
+        reasons.append({"reason": "Radar sayisi az", "penalty": 4, "value": str(radar_count)})
+
+    rs_val = gra_float(d.get("rs", d.get("rs_score", 0)))
+    if rs_val >= 80:
+        passed.append("RS guclu")
+    elif rs_val > 0 and rs_val < 65:
+        reasons.append({"reason": "RS zayif", "penalty": 4, "value": f"{rs_val:.1f}"})
+
+    money = max(gra_float(d.get("money_impact")), gra_float(d.get("effective_money_impact")), gra_float(d.get("history_money_max")))
+    if money >= 2.0:
+        passed.append("Para etkisi guclu")
+    elif money > 0:
+        reasons.append({"reason": "Para etkisi sinirda", "penalty": 3, "value": f"{money:.2f}x"})
+
+    power = max(gra_float(d.get("volume_power")), gra_float(d.get("effective_volume_power")), gra_float(d.get("history_power_max")))
+    if power >= 5.0:
+        passed.append("Hacim gucu iyi")
+    elif power > 0:
+        reasons.append({"reason": "Hacim gucu zayif", "penalty": 3, "value": f"{power:.2f}"})
+
+    market = max(gra_float(d.get("market_impact_pct")), gra_float(d.get("effective_market_impact_pct")), gra_float(d.get("history_market_max")))
+    if market >= 1.0:
+        passed.append("Market etki guclu")
+    elif market > 0 and market < 0.25:
+        reasons.append({"reason": "Market etki dusuk", "penalty": 3, "value": f"%{market:.2f}"})
+
+    rsi_val = gra_float(d.get("rsi", d.get("rsi15", 0)))
+    if rsi_val >= 78:
+        reasons.append({"reason": "RSI/FOMO riski", "penalty": 4, "value": f"{rsi_val:.1f}"})
+    elif 45 <= rsi_val <= 74:
+        passed.append("RSI uygun")
+
+    oi_status = str(d.get("oi_status", d.get("oi_label", ""))).upper()
+    if d.get("oi_weak") or "ZAYIF" in oi_status:
+        reasons.append({"reason": "OI zayif", "penalty": 4, "value": oi_status or "ZAYIF"})
+    elif d.get("oi_long_supported") or d.get("oi_strong_long_supported") or "GUCLU" in oi_status:
+        passed.append("OI destekli")
+
+    if d.get("seller_dominant") or d.get("strong_seller_dominant") or gra_float(d.get("net_delta_15m")) < 0:
+        reasons.append({"reason": "Delta satici", "penalty": 4, "value": str(d.get("net_delta_15m", ""))})
+    elif d.get("buyer_dominant") or d.get("strong_buyer_dominant"):
+        passed.append("Delta alici")
+
+    order_flow = int(gra_float(d.get("order_flow_score"), 50))
+    if order_flow <= 40:
+        reasons.append({"reason": "Order Flow zayif", "penalty": 3, "value": f"{order_flow}/100"})
+    elif order_flow >= 60:
+        passed.append("Order Flow iyi")
+
+    orderbook = int(gra_float(d.get("orderbook_score"), 50))
+    if orderbook <= 38:
+        reasons.append({"reason": "Order Book zayif", "penalty": 3, "value": f"{orderbook}/100"})
+    elif orderbook >= 60:
+        passed.append("Order Book iyi")
+
+    htf = int(gra_float(d.get("htf_trend_score"), 50))
+    if htf < 45:
+        reasons.append({"reason": "HTF trend zayif", "penalty": 4, "value": f"{htf}/100"})
+    elif htf >= 65:
+        passed.append("HTF trend guclu")
+
+    resistance = gra_float(d.get("sr_resistance_distance_pct"), 999)
+    if 0 <= resistance <= 0.8:
+        reasons.append({"reason": "Direnc cok yakin", "penalty": 5, "value": f"%{resistance:.2f}"})
+    elif 0.8 < resistance <= 1.5:
+        reasons.append({"reason": "Direnc yakin", "penalty": 3, "value": f"%{resistance:.2f}"})
+    elif resistance < 999:
+        passed.append("Direnc mesafesi uygun")
+
+    funding_status = str(extra.get("funding_status") or d.get("funding_status") or d.get("funding_label") or "").upper()
+    if "LONG KALABALIK" in funding_status:
+        reasons.append({"reason": "Funding long kalabalik", "penalty": 3, "value": funding_status})
+    elif funding_status:
+        passed.append("Funding normal")
+
+    btc_status = str(extra.get("btc_status") or d.get("btc_status") or "").upper()
+    if "ZAYIF" in btc_status:
+        reasons.append({"reason": "BTC zayif", "penalty": 3, "value": btc_status})
+    elif "DESTEK" in btc_status:
+        passed.append("BTC destekli")
+
+    if d.get("live_guard_ok") is False:
+        reasons.append({"reason": "Live Guard red", "penalty": int(gra_float(d.get("live_penalty"), 6) or 6), "value": str(d.get("live_guard_reason", ""))})
+    if d.get("gtu_block"):
+        reasons.append({"reason": "Grafik-teknik uyumsuz", "penalty": int(gra_float(d.get("gtu_penalty"), 6) or 6), "value": str(d.get("gtu_reasons", ""))[:60]})
+    if d.get("fatigue_block"):
+        reasons.append({"reason": "Yorgunluk/tepe riski", "penalty": 5, "value": "fatigue"})
+
+    main_repeat = int(gra_float(d.get("main_signal_count_120m", d.get("main_signal_count_60m", 0))))
+    if main_repeat >= 3:
+        passed.append(f"Ana tekrar {main_repeat}")
+
+    uniq = []
+    seen = set()
+    for r in sorted(reasons, key=lambda x: int(x.get("penalty", 0)), reverse=True):
+        key = r.get("reason")
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+
+    closeness = "UZAK"
+    if missing_points <= 2:
+        closeness = "COK_YAKIN"
+    elif missing_points <= GOLD_RED_NEAR_SCORE_GAP:
+        closeness = "YAKIN"
+
+    return {
+        "module": module,
+        "gold_score": gold_score,
+        "required_score": required,
+        "missing_points": missing_points,
+        "closeness": closeness,
+        "reasons": uniq[:6],
+        "passed": passed[:8],
+        "radar_count": radar_count,
+    }
+
+
+def gra_reason_line(analysis):
+    if not analysis:
+        return "Sebep: veri yok"
+    reasons = analysis.get("reasons") or []
+    if not reasons:
+        return "Sebep: Gold skoru/esik veya kapı şartı eksik"
+    return "Sebep: " + ", ".join([f"{r.get('reason')}(-{r.get('penalty')})" for r in reasons[:3]])
+
+
+def gra_stats_from_records(records):
+    stats = {}
+    near = 0
+    for r in records:
+        if r.get("gold_sent"):
+            continue
+        a = r.get("gold_red_analysis") or {}
+        if a.get("closeness") in ("COK_YAKIN", "YAKIN"):
+            near += 1
+        for reason in a.get("reasons", []) or []:
+            name = reason.get("reason", "BILINMIYOR")
+            st = stats.setdefault(name, {"n": 0, "tp3": 0})
+            st["n"] += 1
+            if r.get("virtual_tp3_hit"):
+                st["tp3"] += 1
+    return stats, near
+
+
+def gra_stats_text(records):
+    stats, near = gra_stats_from_records(records)
+    if not stats:
+        return "🧠 GOLD RED ANALYZER\nHenüz Gold red nedeni için yeterli kayıt yok."
+    rows = sorted(stats.items(), key=lambda kv: (kv[1]["n"], kv[1]["tp3"]), reverse=True)[:8]
+    lines = ["🧠 GOLD RED ANALYZER", f"Gold'a yakin kalan aday: {near}", "", "En cok eleyen sebepler:"]
+    for name, st in rows:
+        lines.append(f"{name}: {st['n']} | TP3 yapan: {st['tp3']}")
+    best = None
+    for name, st in rows:
+        rate = (st['tp3'] / st['n']) if st['n'] else 0
+        if st['n'] >= 3 and rate >= 0.40:
+            best = (name, st, rate); break
+    if best:
+        name, st, rate = best
+        lines += ["", "🤖 AI NOTU", f"{name} filtresi {st['n']} adayi elemis; bunlarin {st['tp3']} tanesi TP3 yapmis. Bu filtre veri arttikca incelenebilir."]
+    return "\n".join(lines)
+
+
+def gra_missed_details_text(records, limit=8):
+    rows = sorted(
+        [r for r in records if r.get("missed_after_main") and not r.get("gold_sent")],
+        key=lambda r: ft_float(r.get("max_gain_pct"), 0),
+        reverse=True
+    )[:limit]
+    if not rows:
+        return "🧠 GOLD RED DETAY\nGold olmadan kaçan detay kaydı yok."
+    lines = ["🧠 GOLD RED DETAY"]
+    for r in rows:
+        a = r.get("gold_red_analysis") or {}
+        lines.append(
+            "{} +{:.2f}% | Skor:{}/{} | Eksik:{} | {}".format(
+                r.get("symbol", "?"),
+                ft_float(r.get("max_gain_pct"), 0),
+                a.get("gold_score", 0),
+                a.get("required_score", GOLD_RED_REQUIRED_SCORE),
+                a.get("missing_points", 0),
+                gra_reason_line(a)
+            )
+        )
+    return "\n".join(lines)
+
 def ft_record_stage(symbol, d, stage, support_modules=None, extra=None):
     if not FULL_TRACKING_ENABLED or not d:
         return
@@ -598,6 +834,14 @@ def ft_record_stage(symbol, d, stage, support_modules=None, extra=None):
         "support_modules": list(support_modules),
     }
     stage_row.update(extra)
+    if stage != "GOLD":
+        gra = gold_red_analyze(d, support_modules, extra)
+        if gra:
+            rec["gold_red_analysis"] = gra
+            stage_row["gold_red_analysis"] = gra
+    else:
+        rec["gold_sent"] = True
+        rec["gold_red_analysis"] = None
     rec.setdefault("stages", []).append(stage_row)
     if rec.get("main_count", 0) > 0 and not rec.get("gold_sent") and ft_float(rec.get("max_gain_pct"), 0) >= FULL_TRACKING_MISSED_GAIN_PCT:
         rec["missed_after_main"] = True
@@ -741,12 +985,16 @@ Gold Olmadan Sanal TP3: {}
 🔻 Ana Kanaldan Stop Olanlar
 {}
 
+{}
+
+{}
+
 Ort. Max Hareket: %{:.2f}
 En iyi erken mod: {}
 
 Not:
 Bu rapor gideni, gitmeyeni ve Gold'a donusmeyen erken firsatlari coin bazli gosterir.
-""".format(market_name, main, prep, gold, FULL_TRACKING_MISSED_GAIN_PCT, main_10, missed, FULL_TRACKING_VTP1_PCT, vtp1, FULL_TRACKING_VTP2_PCT, vtp2, FULL_TRACKING_VTP3_PCT, vtp3, FULL_TRACKING_VSTOP_PCT, vstop, vtp3_no_gold, vtp3_text, missed_text, stopped_text, avg_max, best_mod).strip()
+""".format(market_name, main, prep, gold, FULL_TRACKING_MISSED_GAIN_PCT, main_10, missed, FULL_TRACKING_VTP1_PCT, vtp1, FULL_TRACKING_VTP2_PCT, vtp2, FULL_TRACKING_VTP3_PCT, vtp3, FULL_TRACKING_VSTOP_PCT, vstop, vtp3_no_gold, vtp3_text, missed_text, stopped_text, gra_missed_details_text(recent), gra_stats_text(recent), avg_max, best_mod).strip()
 
 
 def ft_period_report_text(days=7, label="HAFTALIK", market_name="BOT"):
@@ -826,8 +1074,12 @@ Gold olmadan kacan: {}
 🚨 En cok kacan firsatlar
 {}
 
+{}
+
+{}
+
 Ort. Max Hareket: %{:.2f}
-""".format(market_name, label, days, main, prep, prep_rate, gold, gold_rate, vtp1, vtp2, vtp3, tp3_rate, vstop, vtp3_no_gold, missed, top_modules(recent), missed_text, avg_max).strip()
+""".format(market_name, label, days, main, prep, prep_rate, gold, gold_rate, vtp1, vtp2, vtp3, tp3_rate, vstop, vtp3_no_gold, missed, top_modules(recent), missed_text, gra_missed_details_text(recent), gra_stats_text(recent), avg_max).strip()
 
 
 def performance_center_reports_if_due(chat_id=None, market_name="BOT"):
