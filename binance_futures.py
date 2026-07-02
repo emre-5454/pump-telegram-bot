@@ -32,10 +32,21 @@ BINANCE_ELITE_GOLD_CHAT_ID = os.getenv("BINANCE_ELITE_GOLD_CHAT_ID") or "-100437
 BINANCE_PERFORMANCE_CHAT_ID = os.getenv("BINANCE_PERFORMANCE_CHAT_ID") or BINANCE_ELITE_GOLD_CHAT_ID
 BINANCE_LOG_CHAT_ID = os.getenv("BINANCE_LOG_CHAT_ID") or CHAT_ID
 
-BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.1"
+BOT_NAME = "BINANCE SAFE ENTRY DECISION BOT V56.2"
 
 MAX_SYMBOLS = int(os.getenv("BINANCE_MAX_SYMBOLS", "160"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "120"))
+
+# V56.2 BINANCE API RATE LIMIT GUARD
+# Binance 418 / too many requests durumunda bot ayni coini zorlamaz, kisa sure cache kullanir.
+BINANCE_API_GUARD_ENABLED = os.getenv("BINANCE_API_GUARD_ENABLED", "1") == "1"
+BINANCE_OHLCV_CACHE_SECONDS = int(os.getenv("BINANCE_OHLCV_CACHE_SECONDS", "90"))
+BINANCE_TICKER_CACHE_SECONDS = int(os.getenv("BINANCE_TICKER_CACHE_SECONDS", "60"))
+BINANCE_418_DEFAULT_COOLDOWN = int(os.getenv("BINANCE_418_DEFAULT_COOLDOWN", "900"))
+BINANCE_API_BAN_UNTIL = 0.0
+BINANCE_API_LAST_WARN_TS = 0.0
+BINANCE_OHLCV_CACHE = {}
+BINANCE_TICKER_CACHE = {}
 
 # V43 BINANCE ANA KANAL GEVSETME:
 # Binance tarafinda ana radara az sinyal dustugu icin sadece ana radar/adayi gevsetildi.
@@ -105,6 +116,88 @@ FULL_TRACKING_VSTOP_PCT = float(os.getenv("FULL_TRACKING_VSTOP_PCT", "3"))
 
 
 
+
+
+def binance_api_guard_now():
+    return time.time()
+
+
+def binance_api_guard_is_418(err):
+    s = str(err)
+    return ("418" in s) or ("Way too many requests" in s) or ("banned until" in s)
+
+
+def binance_api_guard_extract_until(err):
+    """Binance mesajindaki banned until timestamp'ini yakalamaya calisir."""
+    import re
+    s = str(err)
+    m = re.search(r"banned until\s+(\d+)", s)
+    if not m:
+        return binance_api_guard_now() + BINANCE_418_DEFAULT_COOLDOWN
+    raw = float(m.group(1))
+    # Binance bazen milisaniye epoch dondurur.
+    if raw > 10_000_000_000:
+        raw = raw / 1000.0
+    if raw < binance_api_guard_now():
+        raw = binance_api_guard_now() + BINANCE_418_DEFAULT_COOLDOWN
+    return raw
+
+
+def binance_api_guard_set_ban(err):
+    global BINANCE_API_BAN_UNTIL, BINANCE_API_LAST_WARN_TS
+    if not BINANCE_API_GUARD_ENABLED:
+        return
+    until_ts = binance_api_guard_extract_until(err)
+    BINANCE_API_BAN_UNTIL = max(float(BINANCE_API_BAN_UNTIL or 0), until_ts)
+    now_ts = binance_api_guard_now()
+    # Log spam olmasin diye 60 sn'de bir yaz.
+    if now_ts - float(BINANCE_API_LAST_WARN_TS or 0) > 60:
+        kalan = int(max(0, BINANCE_API_BAN_UNTIL - now_ts))
+        print(f"BINANCE API GUARD: 418/rate limit yakalandi. {kalan} sn fetch azaltildi.", flush=True)
+        BINANCE_API_LAST_WARN_TS = now_ts
+
+
+def binance_api_guard_active():
+    return BINANCE_API_GUARD_ENABLED and binance_api_guard_now() < float(BINANCE_API_BAN_UNTIL or 0)
+
+
+def safe_fetch_ticker(symbol):
+    """Ticker icin cache + 418 guard."""
+    now_ts = binance_api_guard_now()
+    cached = BINANCE_TICKER_CACHE.get(symbol)
+    if cached and now_ts - cached[0] <= BINANCE_TICKER_CACHE_SECONDS:
+        return cached[1]
+    if binance_api_guard_active():
+        return cached[1] if cached else None
+    try:
+        t = exchange.fetch_ticker(symbol)
+        BINANCE_TICKER_CACHE[symbol] = (now_ts, t)
+        return t
+    except Exception as e:
+        if binance_api_guard_is_418(e):
+            binance_api_guard_set_ban(e)
+            return cached[1] if cached else None
+        raise
+
+
+def safe_fetch_ohlcv(symbol, timeframe, limit=120):
+    """OHLCV icin cache + 418 guard."""
+    now_ts = binance_api_guard_now()
+    key = (symbol, timeframe, int(limit))
+    cached = BINANCE_OHLCV_CACHE.get(key)
+    if cached and now_ts - cached[0] <= BINANCE_OHLCV_CACHE_SECONDS:
+        return cached[1]
+    if binance_api_guard_active():
+        return cached[1] if cached else None
+    try:
+        data = safe_fetch_ohlcv(symbol, timeframe, limit=limit)
+        BINANCE_OHLCV_CACHE[key] = (now_ts, data)
+        return data
+    except Exception as e:
+        if binance_api_guard_is_418(e):
+            binance_api_guard_set_ban(e)
+            return cached[1] if cached else None
+        raise
 
 def radar_health_today_key():
     return datetime.utcnow().strftime("%Y-%m-%d")
@@ -867,7 +960,9 @@ def ft_update_open_records():
         if not symbol or first <= 0:
             continue
         try:
-            ticker = exchange.fetch_ticker(symbol)
+            ticker = safe_fetch_ticker(symbol)
+            if not ticker:
+                continue
             price = ft_float(ticker.get("last") or ticker.get("close") or ticker.get("bid") or ticker.get("ask"))
             if price <= 0:
                 continue
@@ -1557,7 +1652,9 @@ def pie_update_open_signals(chat_id=None):
         if not symbol or entry <= 0:
             continue
         try:
-            ticker = exchange.fetch_ticker(symbol)
+            ticker = safe_fetch_ticker(symbol)
+            if not ticker:
+                continue
             price = pie_float(ticker.get("last") or ticker.get("close") or ticker.get("bid") or ticker.get("ask"))
             if price <= 0:
                 continue
@@ -1651,7 +1748,7 @@ def indicators(df):
 def fetch_df(symbol, timeframe, limit=120):
     for _ in range(3):
         try:
-            data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            data = safe_fetch_ohlcv(symbol, timeframe, limit=limit)
             if not data or len(data) < 40:
                 return None
 
@@ -1800,7 +1897,7 @@ def fetch_taker_flow(symbol, period="15m", limit=4):
                 sell_vol += float(x.get("sellVol", x.get("takerSellVol", 0)) or 0)
 
             # buyVol/sellVol coin miktari gibi gelir; USDT karsiligina cevirmek icin son fiyati kullan.
-            ticker = exchange.fetch_ticker(symbol)
+            ticker = safe_fetch_ticker(symbol)
             last_price = float(ticker.get("last") or ticker.get("close") or 0)
             long_flow = buy_vol * last_price
             short_flow = sell_vol * last_price
